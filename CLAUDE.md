@@ -5,7 +5,8 @@
 iOS app (iOS 26+, Swift 6, SwiftUI) that syncs Apple Health data to a
 `health_processing` server. See `SPEC.md` for full specification.
 
-Companion server: https://github.com/Dzarlax-AI/health_dashboard
+Companion server: https://github.com/Dzarlax-AI/health_dashboard  
+Local server path: `/Users/dzarlax/Projects/Code/Personal/health_processing`
 
 ## Commands
 
