@@ -1,9 +1,12 @@
 import SwiftUI
+import UserNotifications
 
 struct SettingsView: View {
     @AppStorage("serverURL") private var serverURL = ""
     @AppStorage("backgroundSync") private var backgroundSync = true
     @AppStorage("syncOnLaunch") private var syncOnLaunch = true
+    @AppStorage("notifyOnSync") private var notifyOnSync = false
+    @AppStorage("syncIntervalMinutes") private var syncIntervalMinutes = 15
     @AppStorage("syncVitals") private var syncVitals = true
     @AppStorage("syncActivity") private var syncActivity = true
     @AppStorage("syncSleep") private var syncSleep = true
@@ -76,6 +79,36 @@ struct SettingsView: View {
                 DSToggleRow(label: "Background sync", isOn: $backgroundSync)
                 Divider().padding(.leading, .dsSpacing)
                 DSToggleRow(label: "Sync on launch", isOn: $syncOnLaunch)
+                Divider().padding(.leading, .dsSpacing)
+                DSPickerRow(
+                    label: "Sync frequency",
+                    selection: $syncIntervalMinutes,
+                    options: [
+                        (1,   "Every 1 min"),
+                        (15,  "Every 15 min"),
+                        (30,  "Every 30 min"),
+                        (60,  "Every hour"),
+                        (180, "Every 3 hours"),
+                        (360, "Every 6 hours"),
+                    ]
+                )
+                Divider().padding(.leading, .dsSpacing)
+                DSToggleRow(
+                    label: "Notify on sync",
+                    subtitle: "Local push after each successful sync",
+                    isOn: Binding(
+                        get: { notifyOnSync },
+                        set: { newValue in
+                            if newValue {
+                                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                                    DispatchQueue.main.async { notifyOnSync = granted }
+                                }
+                            } else {
+                                notifyOnSync = false
+                            }
+                        }
+                    )
+                )
             }
         }
         .dsCard()
@@ -222,6 +255,29 @@ private struct DSSecureField: View {
         }
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, .dsSpacingSm)
+    }
+}
+
+private struct DSPickerRow: View {
+    let label: String
+    @Binding var selection: Int
+    let options: [(Int, String)]
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.dsBody)
+                .foregroundStyle(Color.dsText)
+            Spacer()
+            Picker("", selection: $selection) {
+                ForEach(options, id: \.0) { value, title in
+                    Text(title).tag(value)
+                }
+            }
+            .labelsHidden()
+        }
+        .padding(.horizontal, .dsSpacing)
+        .padding(.vertical, 12)
     }
 }
 
