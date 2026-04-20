@@ -29,6 +29,7 @@ struct SettingsView: View {
                 }
                 .padding(.dsSpacing)
             }
+            .scrollDismissesKeyboard(.immediately)
             .background(Color.dsBackground)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
