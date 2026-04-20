@@ -3,7 +3,7 @@ import Foundation
 
 // MARK: - Metric definition
 
-struct MetricDef {
+struct MetricDef: Sendable {
     let identifier: HKQuantityTypeIdentifier
     let name: String
     let unit: HKUnit
@@ -14,10 +14,10 @@ struct MetricDef {
 
 // MARK: - Sleep phase accumulator
 
-private struct SleepPhases {
-    var deep: Double = 0
-    var rem: Double = 0
-    var core: Double = 0
+private struct SleepPhases: Sendable {
+    var deep:  Double = 0
+    var rem:   Double = 0
+    var core:  Double = 0
     var awake: Double = 0
     var total: Double = 0
 
@@ -156,10 +156,9 @@ actor HealthKitManager {
                 serverUnits: "degC", isSUM: false, useAvgField: false
             ))
         }
-
         return try await withThrowingTaskGroup(of: MetricData?.self) { group in
             for def in defs {
-                group.addTask { [self] in try await self.fetchAVGMetric(def, since: since) }
+                group.addTask { try await self.fetchAVGMetric(def, since: since) }
             }
             var out: [MetricData] = []
             for try await item in group { if let item { out.append(item) } }
@@ -183,9 +182,10 @@ actor HealthKitManager {
         }
 
         guard !samples.isEmpty else { return nil }
-        let data = samples.map { s -> MetricSample in
-            let val = s.quantity.doubleValue(for: def.unit)
-            let src = s.sourceRevision.source.name
+
+        let data: [MetricSample] = samples.map { s in
+            let val  = s.quantity.doubleValue(for: def.unit)
+            let src  = s.sourceRevision.source.name
             let date = formatForServer(s.startDate)
             return def.useAvgField
                 ? .avg(date: date, value: val, source: src)
@@ -199,7 +199,7 @@ actor HealthKitManager {
     private func fetchSUMMetrics(since: Date) async throws -> [MetricData] {
         return try await withThrowingTaskGroup(of: MetricData?.self) { group in
             for def in Self.sumMetrics {
-                group.addTask { [self] in try await self.fetchSUMMetric(def, since: since) }
+                group.addTask { try await self.fetchSUMMetric(def, since: since) }
             }
             var out: [MetricData] = []
             for try await item in group { if let item { out.append(item) } }
@@ -213,7 +213,6 @@ actor HealthKitManager {
         let anchor = cal.date(
             from: cal.dateComponents([.year, .month, .day, .hour], from: since)
         ) ?? since
-
         let pred = HKQuery.predicateForSamples(withStart: since, end: nil)
 
         return try await withCheckedThrowingContinuation { cont in
@@ -224,31 +223,25 @@ actor HealthKitManager {
                 anchorDate: anchor,
                 intervalComponents: DateComponents(hour: 1)
             )
-            q.initialResultsHandler = { [self] _, collection, err in
+            q.initialResultsHandler = { _, collection, err in
                 if let err { cont.resume(throwing: err); return }
                 guard let collection else { cont.resume(returning: nil); return }
 
                 var samples: [MetricSample] = []
                 collection.enumerateStatistics(from: since, to: Date()) { stats, _ in
-                    // Pick best source: Apple Watch > iPhone > other
                     let sources = stats.sources ?? []
-                    let bestSource = sources.first {
+                    let bestSource = sources.first(where: {
                         $0.name.localizedCaseInsensitiveContains("Ultra") ||
                         $0.name.localizedCaseInsensitiveContains("Apple Watch") ||
                         $0.name.localizedCaseInsensitiveContains("Watch")
-                    } ?? sources.first { $0.name.localizedCaseInsensitiveContains("iPhone") }
-                      ?? sources.first
+                    }) ?? sources.first(where: {
+                        $0.name.localizedCaseInsensitiveContains("iPhone")
+                    }) ?? sources.first
 
-                    let quantity: HKQuantity?
-                    if let bestSource,
-                       let perSource = stats.sumQuantity(for: bestSource) {
-                        quantity = perSource
-                    } else {
-                        quantity = stats.sumQuantity()
-                    }
-
-                    guard let q = quantity else { return }
-                    let val = q.doubleValue(for: def.unit)
+                    let quantity = bestSource.flatMap { stats.sumQuantity(for: $0) }
+                                ?? stats.sumQuantity()
+                    guard let quantity else { return }
+                    let val = quantity.doubleValue(for: def.unit)
                     guard val > 0 else { return }
                     samples.append(.qty(
                         date: formatForServer(stats.startDate),
@@ -282,8 +275,8 @@ actor HealthKitManager {
         }
         guard !samples.isEmpty else { return [] }
 
-        // Group by source × night-date (calendar day of wake-up)
-        struct NightKey: Hashable { let source: String; let date: String }
+        struct NightKey: Hashable, Sendable { let source: String; let date: String }
+
         var grouped: [NightKey: SleepPhases] = [:]
         let cal = Calendar.current
 
@@ -296,8 +289,16 @@ actor HealthKitManager {
         }
 
         // Source filter: Apple Watch present for a date → drop RingConn for that date
-        let watchDates = Set(grouped.keys.filter { isAppleWatch($0.source) }.map(\.date))
-        let filtered   = grouped.filter { isAppleWatch($0.source) || !watchDates.contains($0.date) }
+        let watchDates = grouped.keys.reduce(into: Set<String>()) { set, key in
+            if isAppleWatch(key.source) { set.insert(key.date) }
+        }
+
+        var filtered: [NightKey: SleepPhases] = [:]
+        for (key, phases) in grouped {
+            if isAppleWatch(key.source) || !watchDates.contains(key.date) {
+                filtered[key] = phases
+            }
+        }
 
         let data = filtered
             .sorted { $0.key.date < $1.key.date }
@@ -312,7 +313,7 @@ actor HealthKitManager {
     // MARK: - Helpers
 
     private func isAppleWatch(_ source: String) -> Bool {
-        source.localizedCaseInsensitiveContains("Ultra")      ||
+        source.localizedCaseInsensitiveContains("Ultra")       ||
         source.localizedCaseInsensitiveContains("Apple Watch") ||
         source.localizedCaseInsensitiveContains("Watch")
     }

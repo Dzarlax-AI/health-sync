@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - Top-level payload
 
-struct HealthPayload: Encodable {
-    struct DataWrapper: Encodable {
+struct HealthPayload: Encodable, Sendable {
+    struct DataWrapper: Encodable, Sendable {
         let metrics: [MetricData]
     }
     let data: DataWrapper
@@ -13,7 +13,7 @@ struct HealthPayload: Encodable {
     }
 }
 
-struct MetricData: Encodable {
+struct MetricData: Encodable, Sendable {
     let name: String
     let units: String
     let data: [MetricSample]
@@ -21,7 +21,7 @@ struct MetricData: Encodable {
 
 // MARK: - Sample (flexible encoding for different server field names)
 
-enum MetricSample: Encodable {
+enum MetricSample: Encodable, Sendable {
     /// Most metrics → `qty` field
     case qty(date: String, value: Double, source: String)
     /// heart_rate → `Avg` field
@@ -58,18 +58,21 @@ enum MetricSample: Encodable {
     }
 }
 
-// MARK: - Date formatting (matches server format: "2026-04-20 07:01:00 +0200")
+// MARK: - Date formatting (matches server: "2026-04-20 07:01:00 +0200")
+// Uses Calendar to avoid DateFormatter's @MainActor inference in Swift 6.
 
 func formatForServer(_ date: Date, in tz: TimeZone = .current) -> String {
-    let f = DateFormatter()
-    f.locale = Locale(identifier: "en_US_POSIX")
-    f.timeZone = tz
-    f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-    let base = f.string(from: date)
-    let seconds = tz.secondsFromGMT(for: date)
-    let sign = seconds >= 0 ? "+" : "-"
-    let absSeconds = abs(seconds)
-    let hours = absSeconds / 3600
-    let minutes = (absSeconds % 3600) / 60
-    return String(format: "%@ %@%02d%02d", base, sign, hours, minutes)
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = tz
+    let c = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+    let offset = tz.secondsFromGMT(for: date)
+    let sign = offset >= 0 ? "+" : "-"
+    let h = abs(offset) / 3600
+    let m = (abs(offset) % 3600) / 60
+    return String(
+        format: "%04d-%02d-%02d %02d:%02d:%02d %@%02d%02d",
+        c.year ?? 0, c.month ?? 0, c.day ?? 0,
+        c.hour ?? 0, c.minute ?? 0, c.second ?? 0,
+        sign, h, m
+    )
 }
