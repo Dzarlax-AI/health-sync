@@ -1,25 +1,33 @@
 import Foundation
 import HealthKit
 import BackgroundTasks
+import UIKit
+import UserNotifications
 
-actor BackgroundSyncManager {
+// Box for mutable bg task id shared between expiration handler and async code
+@MainActor
+private final class BGTaskHolder {
+    var id: UIBackgroundTaskIdentifier = .invalid
+}
+
+final class BackgroundSyncManager: @unchecked Sendable {
     static let shared = BackgroundSyncManager()
     static let taskIdentifier = "com.health-sync.background-sync"
 
     private let store = HKHealthStore()
-    private var debounceTask: Task<Void, Never>?
+    private let lock = NSLock()
     private var observersRegistered = false
 
     private init() {}
 
     // MARK: - BGTask registration — must be called before app finishes launching
 
-    nonisolated func registerBGTask() {
+    func registerBGTask() {
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.taskIdentifier,
             using: nil
         ) { task in
-            Task { await BackgroundSyncManager.shared.handleBGTask(task as! BGProcessingTask) }
+            Task { await Self.handleBGTask(task as! BGProcessingTask) }
         }
     }
 
@@ -35,8 +43,8 @@ actor BackgroundSyncManager {
 
     // MARK: - BGTask handler
 
-    private func handleBGTask(_ task: BGProcessingTask) async {
-        scheduleNextSync()
+    private static func handleBGTask(_ task: BGProcessingTask) async {
+        BackgroundSyncManager.shared.scheduleNextSync()
 
         let syncTask = Task { @MainActor in
             await SyncEngine.shared.syncNow()
@@ -48,25 +56,65 @@ actor BackgroundSyncManager {
         task.setTaskCompleted(success: !syncTask.isCancelled)
     }
 
-    // MARK: - HKObserverQuery + background delivery — called once after authorization
+    // MARK: - HKObserverQuery + background delivery
+    //
+    // Subscribe only to a small set of high-frequency "trigger" metrics.
+    // When any of these fire, we sync ALL metrics. Subscribing to all 100+
+    // types causes iOS to throttle background wake-ups.
+
+    private static let triggerTypes: [HKQuantityTypeIdentifier] = [
+        .stepCount,           // fires during any walking/movement
+        .heartRate,           // fires ~every few minutes from Apple Watch
+        .activeEnergyBurned,  // fires during activity
+    ]
 
     func setupObserverQueriesIfNeeded() {
-        guard !observersRegistered else { return }
+        lock.lock()
+        if observersRegistered { lock.unlock(); return }
         observersRegistered = true
+        lock.unlock()
 
-        for type in HealthKitManager.allReadTypes {
-            guard let sampleType = type as? HKSampleType else { continue }
-
-            // Required for HealthKit to wake the app in background
-            store.enableBackgroundDelivery(for: sampleType, frequency: .immediate) { _, _ in }
+        for id in Self.triggerTypes {
+            let sampleType = HKQuantityType(id)
+            store.enableBackgroundDelivery(for: sampleType, frequency: .immediate) { success, err in
+                Self.debugNotify(title: "bgDelivery \(id.rawValue.suffix(20))",
+                                 body: "ok=\(success) err=\(err?.localizedDescription ?? "-")")
+            }
 
             let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { _, completionHandler, error in
                 completionHandler() // must be called immediately
+                Self.debugNotify(title: "observer fired",
+                                 body: "\(id.rawValue.suffix(20)) err=\(error?.localizedDescription ?? "-")")
                 guard error == nil else { return }
-                // BGTaskScheduler deduplicates by identifier — safe to call 80+ times
-                Task { await BackgroundSyncManager.shared.scheduleNextSync() }
+                Task { @MainActor in
+                    // Proper bg task lifecycle — if we run out of time, iOS calls
+                    // the expiration handler and we MUST end the task there or iOS
+                    // punishes us with more aggressive throttling on next wake.
+                    let holder = BGTaskHolder()
+                    holder.id = UIApplication.shared.beginBackgroundTask(withName: "health-sync") {
+                        if holder.id != .invalid {
+                            UIApplication.shared.endBackgroundTask(holder.id)
+                            holder.id = .invalid
+                        }
+                    }
+                    await SyncEngine.shared.syncNow()
+                    if holder.id != .invalid {
+                        UIApplication.shared.endBackgroundTask(holder.id)
+                        holder.id = .invalid
+                    }
+                }
             }
             store.execute(query)
         }
+    }
+
+    // Debug helper — remove once stable
+    private static func debugNotify(title: String, body: String) {
+        let n = UNMutableNotificationContent()
+        n.title = title
+        n.body = body
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: n, trigger: nil)
+        )
     }
 }

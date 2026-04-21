@@ -15,9 +15,26 @@ final class SyncEngine {
 
     private let defaults = UserDefaults.standard
     private let lastSyncKey = "health-sync.last-sync-date"
+    private var foregroundTimer: Timer?
 
     private init() {
         lastSync = defaults.object(forKey: lastSyncKey) as? Date
+    }
+
+    // Call when app becomes active, cancel when it goes to background
+    func startForegroundTimer() {
+        stopForegroundTimer()
+        let minutes = defaults.integer(forKey: "syncIntervalMinutes")
+        let interval = TimeInterval((minutes > 0 ? minutes : 15) * 60)
+        foregroundTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in await self.syncNow() }
+        }
+    }
+
+    func stopForegroundTimer() {
+        foregroundTimer?.invalidate()
+        foregroundTimer = nil
     }
 
     var syncSince: Date {
@@ -32,8 +49,6 @@ final class SyncEngine {
 
         do {
             try await HealthKitManager.shared.requestAuthorization()
-            await BackgroundSyncManager.shared.setupObserverQueriesIfNeeded()
-            await BackgroundSyncManager.shared.scheduleNextSync()
             let since = await resolvedSyncSince()
             let metrics = try await HealthKitManager.shared.fetchAll(since: since)
             let count = metrics.reduce(0) { $0 + $1.data.count }
@@ -47,7 +62,7 @@ final class SyncEngine {
             history.insert(SyncEntry(date: now, points: count, success: true, error: nil), at: 0)
             if history.count > 50 { history = Array(history.prefix(50)) }
             if defaults.bool(forKey: "notifyOnSync") { sendSyncNotification(points: count) }
-        } catch let hkErr as HKError where hkErr.code == .errorProtectedDataNotAvailable {
+        } catch let hkErr as HKError where hkErr.code == .errorDatabaseInaccessible {
             // Device is locked — silent skip, next BGProcessingTask will retry
         } catch {
             let msg = error.localizedDescription
@@ -65,7 +80,7 @@ final class SyncEngine {
         let fallback = syncSince
         guard
             let serverURL = defaults.string(forKey: "serverURL"), !serverURL.isEmpty,
-            let url = URL(string: serverURL + "/api/sync/checkpoint")
+            let url = URL(string: serverURL + "/health/checkpoint")
         else { return fallback }
 
         var req = URLRequest(url: url, timeoutInterval: 10)
