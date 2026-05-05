@@ -413,13 +413,27 @@ actor HealthKitManager {
 
     // MARK: - Fetch all
 
-    func fetchAll(since: Date, until: Date? = nil) async throws -> [MetricData] {
+    func fetchAll(since: Date, until: Date? = nil, includeSleep: Bool = true) async throws -> [MetricData] {
         async let avg    = fetchAVGMetrics(since: since, until: until)
         async let sum    = fetchSUMMetrics(since: since, until: until)
-        async let sleep  = fetchSleep(since: since, until: until)
         async let events = fetchCategoryEvents(since: since, until: until)
-        let metrics = try await avg + sum + sleep + events
+        var metrics = try await avg + sum + events
+        if includeSleep {
+            let sleep = try await fetchSleep(since: since, until: until)
+            metrics += sleep
+        }
         return metrics.filter { !$0.data.isEmpty }
+    }
+
+    // Public entry point for the chunked re-sync: sleep is fetched ONCE for the
+    // whole re-sync window instead of per day-chunk. Per-day chunking caused
+    // earlier chunks to overwrite later chunks' sleep aggregates because each
+    // chunk's 12h-overlap window saw a different subset of sleep sessions
+    // (one chunk: full night; next chunk: only a nap). With a single window
+    // covering the entire re-sync period, every session is grouped under its
+    // wake-up date exactly once and the server upserts a complete value.
+    func fetchSleepOnly(since: Date, until: Date? = nil) async throws -> [MetricData] {
+        return try await fetchSleep(since: since, until: until)
     }
 
     // MARK: - Date formatting (actor-isolated — avoids calling @MainActor formatForServer)
@@ -615,7 +629,19 @@ actor HealthKitManager {
 
     private func fetchSleep(since: Date, until: Date? = nil) async throws -> [MetricData] {
         let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis)!
-        let pred = HKQuery.predicateForSamples(withStart: since, end: until)
+        // Always look back at least 7 days so any "live" sync (regular
+        // foreground / background / HKObserverQuery wake) sees full sleep
+        // sessions for recent nights, not just whatever sliver overlaps the
+        // 24h incremental-sync window. A truncated 24h window catches only
+        // the late-morning fragment of the previous night and ships
+        // total=2.5h, which the server's UPSERT then locks in via the
+        // inflation guard before the next chunked re-sync can correct it.
+        // Sleep is low-volume (~1–10 samples/day), the extra fetch is free.
+        // For long re-sync windows we still honour `since`.
+        let sevenDaysAgo = Date().addingTimeInterval(-7 * 24 * 3600)
+        let twelveBefore = since.addingTimeInterval(-12 * 3600)
+        let sleepWindowStart = min(twelveBefore, sevenDaysAgo)
+        let pred = HKQuery.predicateForSamples(withStart: sleepWindowStart, end: until)
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
 
         let samples: [HKCategorySample] = try await withCheckedThrowingContinuation { cont in
@@ -637,21 +663,112 @@ actor HealthKitManager {
         var grouped: [NightKey: Accum] = [:]
         let cal = Calendar.current
 
-        for s in samples {
+        // Group samples into "sessions" first, then assign a NightKey to each
+        // session based on the LAST asleep-* fragment's wake-up date — that's
+        // how Apple Health UI reports sleep ("4h on May 3" means woke up on
+        // May 3, regardless of when the night started). Naive grouping by
+        // each fragment's `endDate.startOfDay` splits a single night across
+        // two days when fragments cross midnight (e.g. asleepCore ending
+        // 23:55 → date 04-26; asleepREM ending 00:30 → date 04-27).
+        //
+        // Session = consecutive samples from the same source whose gap
+        // ≤ 30 min. Inactivity longer than that = different session.
+        let sessionGap: TimeInterval = 30 * 60
+        let sortedBySource = samples.sorted {
+            if $0.sourceRevision.source.name == $1.sourceRevision.source.name {
+                return $0.startDate < $1.startDate
+            }
+            return $0.sourceRevision.source.name < $1.sourceRevision.source.name
+        }
+
+        struct Session {
+            let source: String
+            var samples: [HKCategorySample]
+            var lastAsleepEnd: Date? // wake-up moment for date assignment
+        }
+        var sessions: [Session] = []
+
+        for s in sortedBySource {
             let src = s.sourceRevision.source.name
-            let day = cal.startOfDay(for: s.endDate)
-            let key = NightKey(source: src, date: serverDate(day))
-            let hrs = s.endDate.timeIntervalSince(s.startDate) / 3600.0
+            if var last = sessions.last,
+               last.source == src,
+               let prevEnd = last.samples.last?.endDate,
+               s.startDate.timeIntervalSince(prevEnd) <= sessionGap {
+                last.samples.append(s)
+                if isAsleepValue(s.value) { last.lastAsleepEnd = s.endDate }
+                sessions[sessions.count - 1] = last
+            } else {
+                sessions.append(Session(
+                    source: src,
+                    samples: [s],
+                    lastAsleepEnd: isAsleepValue(s.value) ? s.endDate : nil
+                ))
+            }
+        }
+
+        // Per-session asleep duration (sum of asleep* fragments, no awake/inBed)
+        // so we can classify and split into main vs nap below.
+        func asleepHours(_ session: Session) -> Double {
+            session.samples.reduce(into: 0.0) { acc, s in
+                if isAsleepValue(s.value) {
+                    acc += s.endDate.timeIntervalSince(s.startDate) / 3600.0
+                }
+            }
+        }
+
+        // Group sessions by (source, wake-up date) to classify within each day.
+        // Within a (source, day) the LONGEST asleep session is "main"; every
+        // other session is a "nap". Apple's own UI uses Sleep Schedule
+        // configuration to pick the main block, but HealthKit doesn't expose
+        // that flag, so longest-wins is the most robust public-API heuristic.
+        // No minimum threshold: even a 2h "main" night is still classified as
+        // main if it's the only or longest sleep that day — better than
+        // hiding it. Naps are everything else.
+        struct DayKey: Hashable { let source: String; let date: String }
+        var sessionsByDay: [DayKey: [Session]] = [:]
+        for session in sessions {
+            let wakeMoment = session.lastAsleepEnd ?? session.samples.last!.endDate
+            let day = cal.startOfDay(for: wakeMoment)
+            let dk = DayKey(source: session.source, date: serverDate(day))
+            sessionsByDay[dk, default: []].append(session)
+        }
+
+        // Build the legacy phase aggregate per NightKey (sum of all sessions —
+        // unchanged, preserves backward-compatible sleep_total / sleep_deep / …)
+        // AND the new main_total / nap_total per (source, day).
+        var mainTotals: [DayKey: Double] = [:]
+        var napTotals:  [DayKey: Double] = [:]
+
+        for (dk, dailySessions) in sessionsByDay {
+            // Identify main = the session with the largest asleep duration.
+            let durations = dailySessions.map { asleepHours($0) }
+            let maxDuration = durations.max() ?? 0
+            let mainIndex = durations.firstIndex(of: maxDuration) ?? 0
+            let withDurations = zip(dailySessions, durations)
+            let key = NightKey(source: dk.source, date: dk.date)
+
             var p = grouped[key] ?? (deep: 0, rem: 0, core: 0, awake: 0, total: 0)
-            switch HKCategoryValueSleepAnalysis(rawValue: s.value) {
-            case .asleepDeep:                       p.deep  += hrs; p.total += hrs
-            case .asleepREM:                        p.rem   += hrs; p.total += hrs
-            case .asleepCore, .asleepUnspecified,
-                 .asleep:                           p.core  += hrs; p.total += hrs
-            case .awake:                            p.awake += hrs
-            case .inBed, .none, .some(_):           break
+            var mainHrs = 0.0
+            var napHrs  = 0.0
+
+            for (i, (session, asleepHrs)) in withDurations.enumerated() {
+                let isMain = (i == mainIndex && asleepHrs > 0)
+                for s in session.samples {
+                    let hrs = s.endDate.timeIntervalSince(s.startDate) / 3600.0
+                    switch HKCategoryValueSleepAnalysis(rawValue: s.value) {
+                    case .asleepDeep:                       p.deep  += hrs; p.total += hrs
+                    case .asleepREM:                        p.rem   += hrs; p.total += hrs
+                    case .asleepCore, .asleepUnspecified,
+                         .asleep:                           p.core  += hrs; p.total += hrs
+                    case .awake:                            p.awake += hrs
+                    case .inBed, .none, .some(_):           break
+                    }
+                }
+                if isMain { mainHrs += asleepHrs } else { napHrs += asleepHrs }
             }
             grouped[key] = p
+            mainTotals[dk] = mainHrs
+            napTotals[dk]  = napHrs
         }
 
         // Drop only known-duplicate sources (e.g. RingConn) when an Apple Watch
@@ -663,16 +780,42 @@ actor HealthKitManager {
         let watchDates = grouped.keys.reduce(into: Set<String>()) { set, key in
             if isAppleWatch(key.source) { set.insert(key.date) }
         }
+        let dropKnownDup: (String, String) -> Bool = { source, date in
+            Self.isKnownDuplicateName(source) && watchDates.contains(date)
+        }
 
-        let data = grouped
-            .filter { !isKnownDuplicate($0.key.source) || !watchDates.contains($0.key.date) }
+        let sleepAnalysisData = grouped
+            .filter { !dropKnownDup($0.key.source, $0.key.date) }
             .sorted { $0.key.date < $1.key.date }
             .map { (key, p) -> MetricSample in
                 .sleep(date: key.date, deep: p.deep, rem: p.rem,
                        core: p.core, awake: p.awake, total: p.total, source: key.source)
             }
 
-        return [MetricData(name: "sleep_analysis", units: "hr", data: data)]
+        let mainData = mainTotals
+            .filter { !dropKnownDup($0.key.source, $0.key.date) }
+            .sorted { $0.key.date < $1.key.date }
+            .map { dk, hrs in
+                MetricSample.qty(date: dk.date, value: hrs, source: dk.source)
+            }
+        let napData = napTotals
+            .filter { !dropKnownDup($0.key.source, $0.key.date) }
+            .sorted { $0.key.date < $1.key.date }
+            .map { dk, hrs in
+                MetricSample.qty(date: dk.date, value: hrs, source: dk.source)
+            }
+
+        // Use names WITHOUT the `sleep_` prefix so the server-side guards on
+        // `sleep_%` (zero-overwrite, ≥1.3× inflation, ≥50% deflation) don't
+        // get triggered by legitimate intra-day growth — e.g. nap_total of
+        // 0h → 1h → 2.5h as the user takes another nap; or night_sleep_total
+        // climbing from 1h to 7h as more of the watch's sleep classifier
+        // output trickles in throughout the morning.
+        return [
+            MetricData(name: "sleep_analysis",   units: "hr", data: sleepAnalysisData),
+            MetricData(name: "night_sleep_total", units: "hr", data: mainData),
+            MetricData(name: "nap_total",        units: "hr", data: napData),
+        ]
     }
 
     // MARK: - Helpers
@@ -684,7 +827,27 @@ actor HealthKitManager {
     }
 
     private func isKnownDuplicate(_ source: String) -> Bool {
+        Self.isKnownDuplicateName(source)
+    }
+
+    /// Static counterpart of isKnownDuplicate — usable from non-isolated
+    /// closures (e.g. inside the actor's local computations) without
+    /// triggering Swift 6 actor-isolation diagnostics on `self` capture.
+    static func isKnownDuplicateName(_ source: String) -> Bool {
         source.localizedCaseInsensitiveContains("RingConn") ||
         source.localizedCaseInsensitiveContains("Ring")
+    }
+
+    /// True for HKCategoryValueSleepAnalysis values that represent actual
+    /// sleep (any phase). Used to identify the "wake-up" boundary of a
+    /// sleep session — the moment of the last asleep fragment, regardless
+    /// of trailing awake/inBed records.
+    private func isAsleepValue(_ raw: Int) -> Bool {
+        switch HKCategoryValueSleepAnalysis(rawValue: raw) {
+        case .asleepDeep, .asleepREM, .asleepCore, .asleepUnspecified, .asleep:
+            return true
+        default:
+            return false
+        }
     }
 }
