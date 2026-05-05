@@ -21,7 +21,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         BackgroundSyncManager.shared.scheduleNextSync()
         BackgroundSyncManager.shared.scheduleDailyResync()
 
-        // Debug: notify every time app launches (including background wakeups)
+        #if DEBUG
+        // Notify every launch (including background wakeups) so we can see
+        // when iOS is firing BGTasks vs. observer callbacks during dev.
         let n = UNMutableNotificationContent()
         n.title = "App launched"
         let isBG = UIApplication.shared.applicationState == .background
@@ -29,6 +31,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: n, trigger: nil)
         )
+        #endif
 
         return true
     }

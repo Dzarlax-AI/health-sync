@@ -20,6 +20,16 @@ final class SyncEngine {
     private let historyKey = "health-sync.history"
     private var foregroundTimer: Timer?
 
+    /// Every regular incremental sync re-pulls at least this many hours back,
+    /// regardless of when we last successfully synced. Apple Watch and the
+    /// HealthKit sleep classifier routinely write samples for past intervals
+    /// hours after the fact (e.g. a morning nap whose record gets created at
+    /// 15:00 with startDate 09:14). Pure incremental sync — `since = lastSync` —
+    /// would never see those late additions because their startDate is earlier
+    /// than `lastSync`. Server upserts on (metric_name, date, source) so the
+    /// overlap is idempotent; cost is a few extra HR/step samples per sync.
+    private let runSyncOverlapHours: TimeInterval = 24
+
     private init() {
         lastSync = defaults.object(forKey: lastSyncKey) as? Date
         if let data = defaults.data(forKey: historyKey),
@@ -54,8 +64,14 @@ final class SyncEngine {
     }
 
     var syncSince: Date {
-        if let last = lastSync { return last }
-        return Calendar.current.date(byAdding: .day, value: -3, to: Date()) ?? Date()
+        let overlapFloor = Date().addingTimeInterval(-runSyncOverlapHours * 3600)
+        if let last = lastSync {
+            // Always look back at least `runSyncOverlapHours`, even if we just
+            // synced a moment ago — catches late-added HK samples for past dates.
+            return min(last, overlapFloor)
+        }
+        // Bootstrap: no anchor yet, pull the last 3 days.
+        return Calendar.current.date(byAdding: .day, value: -3, to: Date()) ?? overlapFloor
     }
 
     func syncNow() async {
@@ -137,13 +153,41 @@ final class SyncEngine {
         var totalPoints = 0
         var failed = 0
         var firstError: String? = nil
-        let session = SyncSession(id: UUID().uuidString, total: total)
+        // +1 chunk for the up-front sleep payload that covers the entire
+        // re-sync window in one go (see fetchSleepOnly). Server unions all
+        // dates and runs UpsertRecentCache once after the last chunk lands.
+        let session = SyncSession(id: UUID().uuidString, total: total + 1)
 
+        // Sleep is fetched in a SINGLE pass for the whole window. Per-day
+        // chunking caused later chunks to overwrite earlier ones whenever
+        // a chunk's 12h overlap saw only a partial slice of a sleep session
+        // (e.g. one chunk had the full 8h night, the next had only the 1h
+        // afternoon nap whose wake-up landed on the same date — server's
+        // UPSERT then dropped the 8h record to 1h).
+        do {
+            let sleepMetrics = try await HealthKitManager.shared.fetchSleepOnly(
+                since: startOfFirstDay, until: endOfToday
+            )
+            let sleepCount = sleepMetrics.reduce(0) { $0 + $1.data.count }
+            try await upload(HealthPayload(metrics: sleepMetrics), session: session)
+            totalPoints += sleepCount
+        } catch let hkErr as HKError where hkErr.code == .errorDatabaseInaccessible {
+            firstError = "device locked"
+            failed += total + 1
+        } catch {
+            failed += 1
+            if firstError == nil { firstError = "sleep pass: \(error.localizedDescription)" }
+        }
+
+        // If the sleep pass failed with a device-lock the loop below short-circuits;
+        // otherwise we still process per-day chunks for the rest of the metrics
+        // (HR, steps, etc.) — sleep is excluded via includeSleep:false.
+        if !(failed > total) {
         for (idx, chunk) in chunks.enumerated() {
-            resyncProgress = (current: idx + 1, total: total)
+            resyncProgress = (current: idx + 2, total: total + 1)
             do {
                 let metrics = try await HealthKitManager.shared.fetchAll(
-                    since: chunk.start, until: chunk.end
+                    since: chunk.start, until: chunk.end, includeSleep: false
                 )
                 let count = metrics.reduce(0) { $0 + $1.data.count }
                 let payload = HealthPayload(metrics: metrics)
@@ -162,12 +206,14 @@ final class SyncEngine {
                 // continue with the next day; partial progress is still useful
             }
         }
+        }
 
         let summary: String
+        let totalChunks = total + 1 // +1 for the up-front sleep pass
         if failed == 0 {
-            summary = "full re-sync (last \(daysBack)d, \(total) chunks)"
+            summary = "full re-sync (last \(daysBack)d, \(totalChunks) chunks)"
         } else {
-            summary = "full re-sync \(total - failed)/\(total) chunks ok" +
+            summary = "full re-sync \(totalChunks - failed)/\(totalChunks) chunks ok" +
                       (firstError.map { " — \($0)" } ?? "")
         }
         history.insert(
@@ -179,9 +225,11 @@ final class SyncEngine {
         if failed > 0 { lastError = firstError }
     }
 
-    // Returns the earliest date to sync from:
-    // max(serverCheckpoint - 1h buffer, localLastSync, 3 days ago)
-    // Falls back gracefully if the server is unreachable.
+    // Returns the earliest date to sync from. Picks the EARLIEST of:
+    //   - server checkpoint − 1h buffer (when reachable)
+    //   - local syncSince  (≤ now − overlap floor; never just `lastSync`)
+    // so we always look back at least one overlap window even if both the
+    // server and local anchor say "you're up to date".
     private func resolvedSyncSince() async -> Date {
         let fallback = syncSince
         guard

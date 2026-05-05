@@ -14,7 +14,10 @@ final class BackgroundSyncManager: @unchecked Sendable {
     static let shared = BackgroundSyncManager()
     static let taskIdentifier = "com.health-sync.background-sync"
     static let dailyResyncIdentifier = "com.health-sync.daily-resync"
-    static let dailyResyncDaysBack = 2
+    // Window the nightly BGProcessingTask re-pulls. Bigger than the live sync
+    // overlap because watch-side classifiers and shared-device dribbles can
+    // drop samples into HK days after the fact.
+    static let dailyResyncDaysBack = 7
 
     private let store = HKHealthStore()
     private let lock = NSLock()
@@ -104,10 +107,19 @@ final class BackgroundSyncManager: @unchecked Sendable {
     // When any of these fire, we sync ALL metrics. Subscribing to all 100+
     // types causes iOS to throttle background wake-ups.
 
-    private static let triggerTypes: [HKQuantityTypeIdentifier] = [
+    private static let triggerQuantityTypes: [HKQuantityTypeIdentifier] = [
         .stepCount,           // fires during any walking/movement
         .heartRate,           // fires ~every few minutes from Apple Watch
         .activeEnergyBurned,  // fires during activity
+    ]
+
+    // Sleep is added to HealthKit asynchronously (often hours after the fact,
+    // when the watch syncs to phone or the classifier reanalyses). Observing
+    // it here means a fresh sleep_analysis sample wakes the app and triggers
+    // a sync — which then pulls the last 24h overlap window, picking up the
+    // late record. Sleep volume is ~1–10 samples/day, no throttling concern.
+    private static let triggerCategoryTypes: [HKCategoryTypeIdentifier] = [
+        .sleepAnalysis,
     ]
 
     func setupObserverQueriesIfNeeded() {
@@ -116,17 +128,25 @@ final class BackgroundSyncManager: @unchecked Sendable {
         observersRegistered = true
         lock.unlock()
 
-        for id in Self.triggerTypes {
-            let sampleType = HKQuantityType(id)
+        let quantitySampleTypes: [(label: String, type: HKSampleType)] =
+            Self.triggerQuantityTypes.map { id in
+                (label: id.rawValue, type: HKQuantityType(id))
+            }
+        let categorySampleTypes: [(label: String, type: HKSampleType)] =
+            Self.triggerCategoryTypes.map { id in
+                (label: id.rawValue, type: HKObjectType.categoryType(forIdentifier: id)!)
+            }
+
+        for (label, sampleType) in quantitySampleTypes + categorySampleTypes {
             store.enableBackgroundDelivery(for: sampleType, frequency: .immediate) { success, err in
-                Self.debugNotify(title: "bgDelivery \(id.rawValue.suffix(20))",
+                Self.debugNotify(title: "bgDelivery \(label.suffix(20))",
                                  body: "ok=\(success) err=\(err?.localizedDescription ?? "-")")
             }
 
             let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { _, completionHandler, error in
                 completionHandler() // must be called immediately
                 Self.debugNotify(title: "observer fired",
-                                 body: "\(id.rawValue.suffix(20)) err=\(error?.localizedDescription ?? "-")")
+                                 body: "\(label.suffix(20)) err=\(error?.localizedDescription ?? "-")")
                 guard error == nil else { return }
                 Task { @MainActor in
                     // Proper bg task lifecycle — if we run out of time, iOS calls
@@ -150,13 +170,16 @@ final class BackgroundSyncManager: @unchecked Sendable {
         }
     }
 
-    // Debug helper — remove once stable
+    // Debug helper — DEBUG-only, no-op in release. Keeps observer/BGDelivery
+    // diagnostics visible in Xcode dev runs without spamming users.
     private static func debugNotify(title: String, body: String) {
+        #if DEBUG
         let n = UNMutableNotificationContent()
         n.title = title
         n.body = body
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: n, trigger: nil)
         )
+        #endif
     }
 }
