@@ -654,12 +654,18 @@ actor HealthKitManager {
             grouped[key] = p
         }
 
+        // Drop only known-duplicate sources (e.g. RingConn) when an Apple Watch
+        // record exists for the same night. Other sources (iPhone Sleep
+        // Schedule, third-party trackers without known duplication) are
+        // preserved — Apple Watch sometimes only logs a short fragment while
+        // the iPhone holds the rest of the night, and dropping it loses real
+        // sleep time.
         let watchDates = grouped.keys.reduce(into: Set<String>()) { set, key in
             if isAppleWatch(key.source) { set.insert(key.date) }
         }
 
         let data = grouped
-            .filter { isAppleWatch($0.key.source) || !watchDates.contains($0.key.date) }
+            .filter { !isKnownDuplicate($0.key.source) || !watchDates.contains($0.key.date) }
             .sorted { $0.key.date < $1.key.date }
             .map { (key, p) -> MetricSample in
                 .sleep(date: key.date, deep: p.deep, rem: p.rem,
@@ -675,5 +681,10 @@ actor HealthKitManager {
         source.localizedCaseInsensitiveContains("Ultra")       ||
         source.localizedCaseInsensitiveContains("Apple Watch") ||
         source.localizedCaseInsensitiveContains("Watch")
+    }
+
+    private func isKnownDuplicate(_ source: String) -> Bool {
+        source.localizedCaseInsensitiveContains("RingConn") ||
+        source.localizedCaseInsensitiveContains("Ring")
     }
 }
