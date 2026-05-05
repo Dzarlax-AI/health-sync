@@ -13,6 +13,8 @@ private final class BGTaskHolder {
 final class BackgroundSyncManager: @unchecked Sendable {
     static let shared = BackgroundSyncManager()
     static let taskIdentifier = "com.health-sync.background-sync"
+    static let dailyResyncIdentifier = "com.health-sync.daily-resync"
+    static let dailyResyncDaysBack = 2
 
     private let store = HKHealthStore()
     private let lock = NSLock()
@@ -29,6 +31,12 @@ final class BackgroundSyncManager: @unchecked Sendable {
         ) { task in
             Task { await Self.handleBGTask(task as! BGProcessingTask) }
         }
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: Self.dailyResyncIdentifier,
+            using: nil
+        ) { task in
+            Task { await Self.handleDailyResync(task as! BGProcessingTask) }
+        }
     }
 
     func scheduleNextSync() {
@@ -36,6 +44,26 @@ final class BackgroundSyncManager: @unchecked Sendable {
         let interval = TimeInterval((minutes > 0 ? minutes : 15) * 60)
         let req = BGProcessingTaskRequest(identifier: Self.taskIdentifier)
         req.earliestBeginDate = Date(timeIntervalSinceNow: interval)
+        req.requiresNetworkConnectivity = true
+        req.requiresExternalPower = false
+        try? BGTaskScheduler.shared.submit(req)
+    }
+
+    // Schedules the next daily full-day re-sync to fire after the next 03:00 local time.
+    // BG tasks run at iOS's discretion; this is an "earliest" hint, not a guarantee.
+    func scheduleDailyResync() {
+        let cal = Calendar.current
+        let now = Date()
+        var next = cal.nextDate(
+            after: now,
+            matching: DateComponents(hour: 3, minute: 0),
+            matchingPolicy: .nextTime
+        ) ?? now.addingTimeInterval(24 * 3600)
+        // Safety: if for some reason `next` is in the past, push forward 24h
+        if next <= now { next = now.addingTimeInterval(24 * 3600) }
+
+        let req = BGProcessingTaskRequest(identifier: Self.dailyResyncIdentifier)
+        req.earliestBeginDate = next
         req.requiresNetworkConnectivity = true
         req.requiresExternalPower = false
         try? BGTaskScheduler.shared.submit(req)
@@ -54,6 +82,20 @@ final class BackgroundSyncManager: @unchecked Sendable {
 
         _ = await syncTask.result
         task.setTaskCompleted(success: !syncTask.isCancelled)
+    }
+
+    private static func handleDailyResync(_ task: BGProcessingTask) async {
+        // Reschedule first so we always have a next slot queued, even if this run fails.
+        BackgroundSyncManager.shared.scheduleDailyResync()
+
+        let resyncTask = Task { @MainActor in
+            await SyncEngine.shared.syncFullDays(daysBack: dailyResyncDaysBack)
+        }
+
+        task.expirationHandler = { resyncTask.cancel() }
+
+        _ = await resyncTask.result
+        task.setTaskCompleted(success: !resyncTask.isCancelled)
     }
 
     // MARK: - HKObserverQuery + background delivery

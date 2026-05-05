@@ -413,11 +413,11 @@ actor HealthKitManager {
 
     // MARK: - Fetch all
 
-    func fetchAll(since: Date) async throws -> [MetricData] {
-        async let avg    = fetchAVGMetrics(since: since)
-        async let sum    = fetchSUMMetrics(since: since)
-        async let sleep  = fetchSleep(since: since)
-        async let events = fetchCategoryEvents(since: since)
+    func fetchAll(since: Date, until: Date? = nil) async throws -> [MetricData] {
+        async let avg    = fetchAVGMetrics(since: since, until: until)
+        async let sum    = fetchSUMMetrics(since: since, until: until)
+        async let sleep  = fetchSleep(since: since, until: until)
+        async let events = fetchCategoryEvents(since: since, until: until)
         let metrics = try await avg + sum + sleep + events
         return metrics.filter { !$0.data.isEmpty }
     }
@@ -440,10 +440,10 @@ actor HealthKitManager {
 
     // MARK: - AVG metrics
 
-    private func fetchAVGMetrics(since: Date) async throws -> [MetricData] {
+    private func fetchAVGMetrics(since: Date, until: Date? = nil) async throws -> [MetricData] {
         return try await withThrowingTaskGroup(of: MetricData?.self) { group in
             for def in Self.avgMetrics {
-                group.addTask { try await self.fetchAVGMetric(def, since: since) }
+                group.addTask { try await self.fetchAVGMetric(def, since: since, until: until) }
             }
             var out: [MetricData] = []
             for try await item in group { if let item { out.append(item) } }
@@ -451,8 +451,15 @@ actor HealthKitManager {
         }
     }
 
-    private func fetchAVGMetric(_ def: MetricDef, since: Date) async throws -> MetricData? {
-        let pred = HKQuery.predicateForSamples(withStart: since, end: nil)
+    // HKUnit.percent() returns a fraction (0.0–1.0). Server expects 0–100.
+    private static let percentUnit = HKUnit.percent()
+    private func scaledValue(_ q: HKQuantity, def: MetricDef) -> Double {
+        let v = q.doubleValue(for: def.unit)
+        return def.unit == Self.percentUnit ? v * 100.0 : v
+    }
+
+    private func fetchAVGMetric(_ def: MetricDef, since: Date, until: Date? = nil) async throws -> MetricData? {
+        let pred = HKQuery.predicateForSamples(withStart: since, end: until)
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
 
         let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation { cont in
@@ -469,7 +476,7 @@ actor HealthKitManager {
         guard !samples.isEmpty else { return nil }
 
         let data: [MetricSample] = samples.map { s in
-            let val  = s.quantity.doubleValue(for: def.unit)
+            let val  = self.scaledValue(s.quantity, def: def)
             let src  = s.sourceRevision.source.name
             let date = serverDate(s.startDate)
             return def.useAvgField
@@ -481,10 +488,10 @@ actor HealthKitManager {
 
     // MARK: - SUM metrics (hourly)
 
-    private func fetchSUMMetrics(since: Date) async throws -> [MetricData] {
+    private func fetchSUMMetrics(since: Date, until: Date? = nil) async throws -> [MetricData] {
         return try await withThrowingTaskGroup(of: MetricData?.self) { group in
             for def in Self.sumMetrics {
-                group.addTask { try await self.fetchSUMMetric(def, since: since) }
+                group.addTask { try await self.fetchSUMMetric(def, since: since, until: until) }
             }
             var out: [MetricData] = []
             for try await item in group { if let item { out.append(item) } }
@@ -497,13 +504,14 @@ actor HealthKitManager {
         let date: Date; let value: Double; let source: String
     }
 
-    private func fetchSUMMetric(_ def: MetricDef, since: Date) async throws -> MetricData? {
+    private func fetchSUMMetric(_ def: MetricDef, since: Date, until: Date? = nil) async throws -> MetricData? {
         var cal = Calendar.current
         cal.timeZone = .current
         let anchor = cal.date(
             from: cal.dateComponents([.year, .month, .day, .hour], from: since)
         ) ?? since
-        let pred = HKQuery.predicateForSamples(withStart: since, end: nil)
+        let pred = HKQuery.predicateForSamples(withStart: since, end: until)
+        let endDate = until ?? Date()
 
         let rawPoints: [SumPoint]? = try await withCheckedThrowingContinuation { cont in
             let q = HKStatisticsCollectionQuery(
@@ -518,7 +526,7 @@ actor HealthKitManager {
                 guard let collection else { cont.resume(returning: nil); return }
 
                 var points: [SumPoint] = []
-                collection.enumerateStatistics(from: since, to: Date()) { stats, _ in
+                collection.enumerateStatistics(from: since, to: endDate) { stats, _ in
                     let sources = stats.sources ?? []
                     let best = sources.first(where: {
                         $0.name.localizedCaseInsensitiveContains("Ultra") ||
@@ -549,10 +557,10 @@ actor HealthKitManager {
 
     // MARK: - Category events
 
-    private func fetchCategoryEvents(since: Date) async throws -> [MetricData] {
+    private func fetchCategoryEvents(since: Date, until: Date? = nil) async throws -> [MetricData] {
         return try await withThrowingTaskGroup(of: MetricData?.self) { group in
             for def in Self.categoryEvents {
-                group.addTask { try await self.fetchCategoryEvent(def, since: since) }
+                group.addTask { try await self.fetchCategoryEvent(def, since: since, until: until) }
             }
             var out: [MetricData] = []
             for try await item in group { if let item { out.append(item) } }
@@ -560,11 +568,11 @@ actor HealthKitManager {
         }
     }
 
-    private func fetchCategoryEvent(_ def: CategoryEventDef, since: Date) async throws -> MetricData? {
+    private func fetchCategoryEvent(_ def: CategoryEventDef, since: Date, until: Date? = nil) async throws -> MetricData? {
         guard let sampleType = HKObjectType.categoryType(forIdentifier: HKCategoryTypeIdentifier(rawValue: def.identifierRaw)) else {
             return nil
         }
-        let pred = HKQuery.predicateForSamples(withStart: since, end: nil)
+        let pred = HKQuery.predicateForSamples(withStart: since, end: until)
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
 
         let samples: [HKCategorySample] = try await withCheckedThrowingContinuation { cont in
@@ -605,9 +613,9 @@ actor HealthKitManager {
 
     // MARK: - Sleep
 
-    private func fetchSleep(since: Date) async throws -> [MetricData] {
+    private func fetchSleep(since: Date, until: Date? = nil) async throws -> [MetricData] {
         let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis)!
-        let pred = HKQuery.predicateForSamples(withStart: since, end: nil)
+        let pred = HKQuery.predicateForSamples(withStart: since, end: until)
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
 
         let samples: [HKCategorySample] = try await withCheckedThrowingContinuation { cont in
@@ -635,12 +643,13 @@ actor HealthKitManager {
             let key = NightKey(source: src, date: serverDate(day))
             let hrs = s.endDate.timeIntervalSince(s.startDate) / 3600.0
             var p = grouped[key] ?? (deep: 0, rem: 0, core: 0, awake: 0, total: 0)
-            switch s.value {
-            case 5:        p.deep  += hrs; p.total += hrs
-            case 6:        p.rem   += hrs; p.total += hrs
-            case 1, 3, 4:  p.core  += hrs; p.total += hrs
-            case 2:        p.awake += hrs
-            default:       break
+            switch HKCategoryValueSleepAnalysis(rawValue: s.value) {
+            case .asleepDeep:                       p.deep  += hrs; p.total += hrs
+            case .asleepREM:                        p.rem   += hrs; p.total += hrs
+            case .asleepCore, .asleepUnspecified,
+                 .asleep:                           p.core  += hrs; p.total += hrs
+            case .awake:                            p.awake += hrs
+            case .inBed, .none, .some(_):           break
             }
             grouped[key] = p
         }

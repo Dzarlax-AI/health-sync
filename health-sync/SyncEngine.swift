@@ -12,13 +12,29 @@ final class SyncEngine {
     private(set) var lastPointCount: Int = 0
     private(set) var lastError: String? = nil
     private(set) var history: [SyncEntry] = []
+    /// Set during chunked re-syncs (e.g. syncFullDays). nil otherwise.
+    private(set) var resyncProgress: (current: Int, total: Int)? = nil
 
     private let defaults = UserDefaults.standard
     private let lastSyncKey = "health-sync.last-sync-date"
+    private let historyKey = "health-sync.history"
     private var foregroundTimer: Timer?
 
     private init() {
         lastSync = defaults.object(forKey: lastSyncKey) as? Date
+        if let data = defaults.data(forKey: historyKey),
+           let saved = try? JSONDecoder().decode([SyncEntry].self, from: data) {
+            history = saved
+            lastPointCount = saved.first(where: { $0.success })?.points ?? 0
+        }
+    }
+
+    private func persistHistory() {
+        if let data = try? JSONEncoder().encode(history) {
+            defaults.set(data, forKey: historyKey)
+            // Force disk flush — background tasks may be suspended before async write completes
+            defaults.synchronize()
+        }
     }
 
     // Call when app becomes active, cancel when it goes to background
@@ -61,6 +77,7 @@ final class SyncEngine {
             lastPointCount = count
             history.insert(SyncEntry(date: now, points: count, success: true, error: nil), at: 0)
             if history.count > 50 { history = Array(history.prefix(50)) }
+            persistHistory()
             if defaults.bool(forKey: "notifyOnSync") { sendSyncNotification(points: count) }
         } catch let hkErr as HKError where hkErr.code == .errorDatabaseInaccessible {
             // Device is locked — silent skip, next BGProcessingTask will retry
@@ -68,9 +85,98 @@ final class SyncEngine {
             let msg = error.localizedDescription
             lastError = msg
             history.insert(SyncEntry(date: Date(), points: 0, success: false, error: msg), at: 0)
+            persistHistory()
         }
 
         isSyncing = false
+    }
+
+    // Re-syncs the last `daysBack` days, ignoring incremental checkpoints.
+    // Chunks per calendar day to keep memory + payload size small and make
+    // partial failures recoverable. Server upserts on (metric_name, date, source).
+    // Does NOT advance `lastSync` — incremental sync continues as usual.
+    func syncFullDays(daysBack: Int = 2) async {
+        guard !isSyncing else { return }
+        isSyncing = true
+        lastError = nil
+        defer {
+            isSyncing = false
+            resyncProgress = nil
+        }
+
+        do {
+            try await HealthKitManager.shared.requestAuthorization()
+        } catch let hkErr as HKError where hkErr.code == .errorDatabaseInaccessible {
+            return
+        } catch {
+            let msg = error.localizedDescription
+            lastError = msg
+            history.insert(SyncEntry(date: Date(), points: 0, success: false,
+                                     error: "full re-sync auth: \(msg)"), at: 0)
+            persistHistory()
+            return
+        }
+
+        let cal = Calendar.current
+        let now = Date()
+        guard let endOfToday = cal.date(bySettingHour: 23, minute: 59, second: 59, of: now),
+              let startOfFirstDay = cal.date(byAdding: .day, value: -(daysBack - 1),
+                                             to: cal.startOfDay(for: now))
+        else { return }
+
+        // Build day-chunks oldest → newest
+        var chunks: [(start: Date, end: Date)] = []
+        var dayStart = startOfFirstDay
+        while dayStart <= now {
+            let dayEnd = cal.date(byAdding: .day, value: 1, to: dayStart) ?? endOfToday
+            chunks.append((start: dayStart, end: min(dayEnd, endOfToday)))
+            dayStart = dayEnd
+        }
+
+        let total = chunks.count
+        var totalPoints = 0
+        var failed = 0
+        var firstError: String? = nil
+        let session = SyncSession(id: UUID().uuidString, total: total)
+
+        for (idx, chunk) in chunks.enumerated() {
+            resyncProgress = (current: idx + 1, total: total)
+            do {
+                let metrics = try await HealthKitManager.shared.fetchAll(
+                    since: chunk.start, until: chunk.end
+                )
+                let count = metrics.reduce(0) { $0 + $1.data.count }
+                let payload = HealthPayload(metrics: metrics)
+                // Always send — even empty payloads count toward the session's
+                // chunk total so the server flushes once at the end.
+                try await upload(payload, session: session)
+                totalPoints += count
+            } catch let hkErr as HKError where hkErr.code == .errorDatabaseInaccessible {
+                // device locked mid-resync — abort the rest, the daily task will pick up
+                firstError = firstError ?? "device locked"
+                failed += (total - idx)
+                break
+            } catch {
+                failed += 1
+                if firstError == nil { firstError = error.localizedDescription }
+                // continue with the next day; partial progress is still useful
+            }
+        }
+
+        let summary: String
+        if failed == 0 {
+            summary = "full re-sync (last \(daysBack)d, \(total) chunks)"
+        } else {
+            summary = "full re-sync \(total - failed)/\(total) chunks ok" +
+                      (firstError.map { " — \($0)" } ?? "")
+        }
+        history.insert(
+            SyncEntry(date: Date(), points: totalPoints, success: failed == 0, error: summary),
+            at: 0
+        )
+        if history.count > 50 { history = Array(history.prefix(50)) }
+        persistHistory()
+        if failed > 0 { lastError = firstError }
     }
 
     // Returns the earliest date to sync from:
@@ -110,7 +216,15 @@ final class SyncEngine {
         UNUserNotificationCenter.current().add(req)
     }
 
-    private func upload(_ payload: HealthPayload) async throws {
+    /// Optional batched-sync hint for the server. When set, the server holds
+    /// off on the per-POST cache rebuild until `total` chunks of `id` arrive
+    /// (or a safety timeout fires) and runs aggregation once for the union.
+    struct SyncSession {
+        let id: String
+        let total: Int
+    }
+
+    private func upload(_ payload: HealthPayload, session: SyncSession? = nil) async throws {
         let serverURL = defaults.string(forKey: "serverURL") ?? ""
         guard !serverURL.isEmpty, let url = URL(string: serverURL + "/health") else {
             throw SyncError.invalidURL
@@ -120,6 +234,10 @@ final class SyncEngine {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let key = KeychainStore.apiKey, !key.isEmpty {
             req.setValue(key, forHTTPHeaderField: "X-API-Key")
+        }
+        if let session {
+            req.setValue(session.id, forHTTPHeaderField: "X-Sync-Session")
+            req.setValue(String(session.total), forHTTPHeaderField: "X-Sync-Session-Total")
         }
         req.httpBody = try JSONEncoder().encode(payload)
 

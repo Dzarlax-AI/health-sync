@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // same launch, so they must be running before we return.
         BackgroundSyncManager.shared.setupObserverQueriesIfNeeded()
         BackgroundSyncManager.shared.scheduleNextSync()
+        BackgroundSyncManager.shared.scheduleDailyResync()
 
         // Debug: notify every time app launches (including background wakeups)
         let n = UNMutableNotificationContent()

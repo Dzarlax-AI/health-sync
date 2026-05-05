@@ -2,6 +2,8 @@ import SwiftUI
 
 struct StatusView: View {
     private let engine = SyncEngine.shared
+    @State private var customDays: Int = 7
+    @State private var showCustomSheet = false
 
     var body: some View {
         NavigationStack {
@@ -68,9 +70,87 @@ struct StatusView: View {
             }
             .buttonStyle(DSPrimaryButtonStyle())
             .disabled(engine.isSyncing)
+
+            Button(action: { showCustomSheet = true }) {
+                HStack {
+                    Image(systemName: "calendar.badge.clock")
+                    Text("Re-sync last N days…")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(DSSecondaryButtonStyle())
+            .disabled(engine.isSyncing)
+
+            if let progress = engine.resyncProgress {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Re-syncing")
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsTextTertiary)
+                        Spacer()
+                        Text("\(progress.current) / \(progress.total)")
+                            .font(.dsMono)
+                            .foregroundStyle(Color.dsTextSecondary)
+                    }
+                    ProgressView(value: Double(progress.current),
+                                 total: Double(max(progress.total, 1)))
+                }
+            }
+        }
+        .sheet(isPresented: $showCustomSheet) {
+            customResyncSheet
         }
         .padding(.dsSpacing)
         .dsCard()
+    }
+
+    // MARK: - Custom re-sync sheet
+
+    private var customResyncSheet: some View {
+        NavigationStack {
+            VStack(spacing: .dsSpacingLg) {
+                VStack(alignment: .leading, spacing: .dsSpacingSm) {
+                    Text("Days to re-sync")
+                        .font(.dsCaption)
+                        .foregroundStyle(Color.dsTextTertiary)
+                    Stepper(value: $customDays, in: 1...90) {
+                        Text("\(customDays) day\(customDays == 1 ? "" : "s")")
+                            .font(.dsHeading)
+                            .foregroundStyle(Color.dsText)
+                    }
+                    Text("Re-pulls all metrics from HealthKit for the last \(customDays) day\(customDays == 1 ? "" : "s") and uploads. Server upserts on (metric, date, source), so duplicates are safe.")
+                        .font(.dsBodySm)
+                        .foregroundStyle(Color.dsTextSecondary)
+                }
+                .padding(.dsSpacing)
+                .dsCard()
+
+                Button(action: {
+                    let days = customDays
+                    showCustomSheet = false
+                    Task { await engine.syncFullDays(daysBack: days) }
+                }) {
+                    HStack {
+                        Image(systemName: "arrow.trianglehead.2.clockwise")
+                        Text("Start re-sync")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(DSPrimaryButtonStyle())
+                .disabled(engine.isSyncing)
+
+                Spacer()
+            }
+            .padding(.dsSpacing)
+            .background(Color.dsBackground)
+            .navigationTitle("Custom re-sync")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { showCustomSheet = false }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -131,8 +211,8 @@ struct StatusView: View {
 
 // MARK: - SyncEntry model
 
-struct SyncEntry: Identifiable {
-    let id = UUID()
+struct SyncEntry: Identifiable, Codable {
+    var id = UUID()
     let date: Date
     let points: Int
     let success: Bool
