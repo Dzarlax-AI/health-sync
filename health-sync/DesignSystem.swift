@@ -97,7 +97,7 @@ extension View {
 struct DSStatusBadge: View {
     enum Status { case good, warn, danger, neutral }
 
-    let text: String
+    let text: LocalizedStringKey
     let status: Status
 
     var body: some View {

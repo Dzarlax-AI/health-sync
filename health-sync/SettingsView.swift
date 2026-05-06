@@ -17,6 +17,8 @@ struct SettingsView: View {
     @State private var apiKey = KeychainStore.apiKey ?? ""
     @State private var connectionState: ConnectionState = .idle
 
+    private let engine = SyncEngine.shared
+
     enum ConnectionState {
         case idle, testing, ok, failed(String)
     }
@@ -25,6 +27,7 @@ struct SettingsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: .dsSpacingLg) {
+                    syncStatusSection
                     serverSection
                     syncSection
                     metricsSection
@@ -36,6 +39,99 @@ struct SettingsView: View {
             .background(Color.dsBackground)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
+        }
+    }
+
+    // MARK: - Sync status (was StatusView, now merged into Settings)
+
+    private var syncStatusSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeader(title: "Sync")
+
+            VStack(alignment: .leading, spacing: .dsSpacing) {
+                // Header row: last-sync timestamp + status badge.
+                HStack(alignment: .top, spacing: .dsSpacing) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Last sync")
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsTextTertiary)
+                        if let lastSync = engine.lastSync {
+                            Text(lastSync, style: .relative)
+                                .font(.dsHeading)
+                                .foregroundStyle(Color.dsText)
+                            Text("\(engine.lastPointCount) points")
+                                .font(.dsBodySm)
+                                .foregroundStyle(Color.dsTextSecondary)
+                        } else {
+                            Text("Never")
+                                .font(.dsHeading)
+                                .foregroundStyle(Color.dsTextSecondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    syncStatusBadge
+                }
+
+                Button(action: { Task { await engine.syncNow() } }) {
+                    HStack {
+                        Image(systemName: "arrow.trianglehead.2.clockwise")
+                        Text(engine.isSyncing ? "Syncing…" : "Sync Now")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(DSPrimaryButtonStyle())
+                .disabled(engine.isSyncing)
+
+                if let error = engine.lastError {
+                    HStack(alignment: .top, spacing: .dsSpacingSm) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color.dsDanger)
+                        Text(error)
+                            .font(.dsBodySm)
+                            .foregroundStyle(Color.dsDanger)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .padding(.horizontal, .dsSpacing)
+            .padding(.top, .dsSpacingSm)
+            .padding(.bottom, .dsSpacing)
+
+            // Recent activity row: full-width tappable list-style row with
+            // a divider above so it reads as an action, not floating text.
+            Divider()
+            NavigationLink(destination: StatusView()) {
+                HStack(spacing: .dsSpacing) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .foregroundStyle(Color.dsTextSecondary)
+                        .frame(width: 20)
+                    Text("Recent activity & re-sync")
+                        .font(.dsBody)
+                        .foregroundStyle(Color.dsText)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(Color.dsTextTertiary)
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .padding(.horizontal, .dsSpacing)
+                .padding(.vertical, 14)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .dsCard()
+    }
+
+    @ViewBuilder
+    private var syncStatusBadge: some View {
+        if engine.isSyncing {
+            DSStatusBadge(text: "Syncing", status: .warn)
+        } else if let lastSync = engine.lastSync, Date().timeIntervalSince(lastSync) < 3600 {
+            DSStatusBadge(text: "Up to date", status: .good)
+        } else if engine.lastSync != nil {
+            DSStatusBadge(text: "Stale", status: .warn)
+        } else {
+            DSStatusBadge(text: "Never synced", status: .neutral)
         }
     }
 
@@ -182,7 +278,7 @@ struct SettingsView: View {
         case .ok:
             DSStatusBadge(text: "Connected", status: .good)
         case .failed(let msg):
-            DSStatusBadge(text: msg, status: .danger)
+            DSStatusBadge(text: LocalizedStringKey(msg), status: .danger)
         }
     }
 
@@ -209,8 +305,8 @@ struct SettingsView: View {
 
 // MARK: - Subviews
 
-private struct SectionHeader: View {
-    let title: String
+struct SectionHeader: View {
+    let title: LocalizedStringKey
     var body: some View {
         Text(title)
             .font(.dsSubhead)
@@ -221,8 +317,8 @@ private struct SectionHeader: View {
 }
 
 private struct DSTextField: View {
-    let label: String
-    let placeholder: String
+    let label: LocalizedStringKey
+    let placeholder: LocalizedStringKey
     @Binding var text: String
 
     var body: some View {
@@ -240,8 +336,8 @@ private struct DSTextField: View {
 }
 
 private struct DSSecureField: View {
-    let label: String
-    let placeholder: String
+    let label: LocalizedStringKey
+    let placeholder: LocalizedStringKey
     @Binding var text: String
 
     var body: some View {
@@ -259,9 +355,9 @@ private struct DSSecureField: View {
 }
 
 private struct DSPickerRow: View {
-    let label: String
+    let label: LocalizedStringKey
     @Binding var selection: Int
-    let options: [(Int, String)]
+    let options: [(Int, LocalizedStringKey)]
 
     var body: some View {
         HStack {
@@ -282,8 +378,8 @@ private struct DSPickerRow: View {
 }
 
 private struct DSToggleRow: View {
-    let label: String
-    var subtitle: String? = nil
+    let label: LocalizedStringKey
+    var subtitle: LocalizedStringKey? = nil
     var color: Color = .dsAccent
     @Binding var isOn: Bool
 

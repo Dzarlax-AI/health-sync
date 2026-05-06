@@ -6,31 +6,29 @@ struct StatusView: View {
     @State private var showCustomSheet = false
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: .dsSpacingLg) {
-                    summaryCard
-                    if let error = engine.lastError {
-                        errorCard(error)
-                    }
-                    historyCard
+        ScrollView {
+            VStack(spacing: .dsSpacingLg) {
+                summaryCard
+                if let error = engine.lastError {
+                    errorCard(error)
                 }
-                .padding(.dsSpacing)
+                historyCard
             }
-            .background(Color.dsBackground)
-            .navigationTitle("Health Sync")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: { Task { await engine.syncNow() } }) {
-                        if engine.isSyncing {
-                            ProgressView().scaleEffect(0.8)
-                        } else {
-                            Label("Sync", systemImage: "arrow.trianglehead.2.clockwise")
-                        }
+            .padding(.dsSpacing)
+        }
+        .background(Color.dsBackground)
+        .navigationTitle("Sync activity")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: { Task { await engine.syncNow() } }) {
+                    if engine.isSyncing {
+                        ProgressView().scaleEffect(0.8)
+                    } else {
+                        Label("Sync", systemImage: "arrow.trianglehead.2.clockwise")
                     }
-                    .disabled(engine.isSyncing)
                 }
+                .disabled(engine.isSyncing)
             }
         }
     }
@@ -114,11 +112,11 @@ struct StatusView: View {
                         .font(.dsCaption)
                         .foregroundStyle(Color.dsTextTertiary)
                     Stepper(value: $customDays, in: 1...90) {
-                        Text("\(customDays) day\(customDays == 1 ? "" : "s")")
+                        Text("\(customDays) day")
                             .font(.dsHeading)
                             .foregroundStyle(Color.dsText)
                     }
-                    Text("Re-pulls all metrics from HealthKit for the last \(customDays) day\(customDays == 1 ? "" : "s") and uploads. Server upserts on (metric, date, source), so duplicates are safe.")
+                    Text("Re-pulls all metrics from HealthKit for the last \(customDays) day and uploads. Server upserts on (metric, date, source), so duplicates are safe.")
                         .font(.dsBodySm)
                         .foregroundStyle(Color.dsTextSecondary)
                 }

@@ -1,7 +1,7 @@
 # Health Sync iOS — Specification
 
-iOS app for syncing Apple Health data to a `health_processing` server.
-Open-source, no data viewing — collect and send only.
+iOS app for syncing Apple Health data to a `health_processing` server,
+with native read-only views of the server-side dashboard.
 
 **Target**: iOS 26+, Swift 6, SwiftUI  
 **Repo**: `health-sync-ios` (separate from `health_processing`)
@@ -14,6 +14,9 @@ Open-source, no data viewing — collect and send only.
 - Filter data at source (e.g. skip RingConn midnight summaries when Watch data exists)
 - Add workout sync (not available in Health Auto Export)
 - One-endpoint, one-payload design — no artificial metric splits
+- Show the same data the web dashboard shows, natively, without duplicating
+  business logic — server stays the single source of truth, the app is a
+  thin Chart/List renderer over its JSON APIs
 
 ---
 
@@ -129,41 +132,141 @@ New server endpoint: `POST /health/workouts`
 
 ---
 
-## Settings UI
+## Dashboard / Read-only Views
+
+The app renders the same data the web dashboard shows, using server JSON
+APIs. **No business logic is duplicated client-side** — readiness scoring,
+aggregations, source priority, sleep dedup, AI briefing are all computed
+on the server and shipped as ready-to-render JSON. The client only does
+chart rendering, list formatting, and navigation.
+
+Auth: same `X-API-Key` already stored in Keychain for `POST /health`.
+All `/api/*` endpoints accept it via `guard()` on the server.
+
+### Localization
+
+Two layers, independent on purpose:
+
+- **UI chrome** (tab labels, section titles, buttons, error banners, settings)
+  is localized client-side via a String Catalog (`Localizable.xcstrings`),
+  languages: `en`, `ru`, `sr`. Follows iOS locale; iOS provides a per-app
+  language toggle in Settings → Health Sync (enabled via
+  `UIPrefersShowingLanguageSettings`).
+
+- **Server-side content** (briefing text, alert wording, section names,
+  metric labels) is localized **on the server** — the iOS app passes
+  `?lang=…` and the server returns ready-to-render strings. The lang value
+  comes from the user's `report_lang` on the server (`/api/settings`),
+  not from the device locale. Rationale: when new metrics or copy ship,
+  no app update is needed — the server's `internal/health/i18n_*.go`
+  catalogues are the single source of truth.
+
+The two layers can disagree (e.g. iOS UI in Russian, server content in
+Serbian if the user set `report_lang=sr` on the web). That's intentional.
+
+### TabBar (5 tabs)
+
+| Tab | Endpoints | Purpose |
+|---|---|---|
+| Today | `/api/health-briefing` (+ planned `ai_insight` field) | Hero ribbon, today's tiles, alerts, AI insight, section overview |
+| Sleep | `/api/metrics/latest`, `/api/metrics/data?name=sleep_*` | Last night detail + 7/30d trend |
+| Trends | `/api/readiness-history`, `/api/metrics/data` | Readiness history + push to Cardio/Activity/Recovery |
+| Metrics | `/api/metrics?lang=…`, `/api/metrics/data`, `/api/metrics/range` | Full metric list (with localized `display_name`) and detail charts |
+| Settings | `/api/settings` + local `SyncEngine` state | Sync controls, server config, app prefs (combined with former Status tab) |
+
+### Today
+
+Scrollable, organised top-to-bottom:
+
+All five blocks are powered by `/api/health-briefing` (the server returns
+`BriefingResponse` with `readiness_today`, `headline`, `energy_bank`,
+`metric_cards`, `alerts`, `sections`, `insights`, `correlation`, `sleep`).
+The AI Insight block requires a new server field — see Server Changes.
+
+1. **Hero (header)** — `readiness_today`, status label, `headline` chip with
+   detail, `energy_bank` verdict + bar (current/capacity), 30d readiness
+   sparkline (from `/api/readiness-history`). Status colour mirrors web
+   (`good ≥70`, `fair ≥40`, `low <40`).
+2. **At a glance** — grid of `metric_cards` with current value, unit, mini
+   sparkline, 7d/30d trend chips. Tap → Metric Detail.
+3. **Health alerts** — banner list from `alerts` (when present).
+4. **AI Insight** — collapsible, Gemini-generated narrative. Currently
+   only embedded in the server-rendered HTML (`db.GetAIBriefing(today,
+   lang)`); needs to be exposed via API — preferred approach: add
+   `ai_insight string` field to `BriefingResponse`. Cached server-side in
+   `ai_briefings` table.
+5. **Health overview** — `sections` rows (Sleep / Cardio / Activity /
+   Recovery) with status badge, summary, 2–3 deltas. Tap → corresponding
+   tab (Sleep tab for Sleep, Trends → push view for Cardio / Activity /
+   Recovery).
+
+Pull-to-refresh refetches `/api/health-briefing` and
+`/api/readiness-history` in parallel.
+
+### Sleep
+
+- Last night: total / deep / REM / core / awake hours, efficiency.
+- 7 / 30 / 90d chart (segmented control), stacked stages or total bar.
+- Source row: which device's data was used (Apple Watch / RingConn /
+  cross-validated) — uses the same priority the server applied.
+
+### Trends
+
+Root view:
+- Readiness history chart (`/api/readiness-history`) with 7/30/90d range.
+- List rows pushing to:
+  - **CardioDetailView** — RHR, HRV, VO2, respiratory rate.
+  - **ActivityDetailView** — steps, active energy, exercise minutes,
+    distance, flights.
+  - **RecoveryDetailView** — sleep summary, HRV CV, wrist temperature.
+
+Push (not segmented) — each detail has multiple charts and benefits from
+its own scroll context and back gesture.
+
+### Metrics
+
+- Full list with search (`/api/metrics`).
+- Tap → Metric Detail: chart over selectable range
+  (`/api/metrics/data?range=...`), summary stats (`/api/metrics/range`).
+
+### Settings (merged with former Status tab)
+
+Single scrollable list, top-to-bottom:
 
 ```
+Sync
+  ▶ Sync Now
+  Last sync: 2 min ago / Failed (3 retries)
+  Recent activity (collapsible — last 5 from SyncHistory)
+
 Server
   URL          https://health.example.com
   API Key      ••••••••••
   [Test Connection]                  ✓ OK
 
-Sync
+Account
+  Username, tenant, timezone, language       (read-only, /api/settings)
+
+Sync settings
   Background sync                      ON
   On app launch                        ON
-
-Metrics
-  Heart rate, HRV, SpO2…              ON
-  Steps, calories, sleep…             ON
-  [Customize metrics…]
+  Source filtering                     ON
+  Metrics                              [Customize…]
 
 Workouts
   Sync workouts                        ON
   Include HR timeline                  ON
   Include GPS route                   OFF
 
-[Sync Now]
+About
+  Version, build, logs
 ```
 
-API Key stored in Keychain. URL and preferences in SwiftData.
+Telegram config, AI model, admin controls (backfill, quality audit, user
+management) stay on the web — out of scope for the mobile app.
 
----
-
-## Status UI
-
-- Last successful sync: timestamp + points sent
-- Per-metric last sync date
-- Recent sync log (last 50 entries): date, metrics, points, status, error
-- Errors shown with human-readable description + retry button
+API Key in Keychain. URL and prefs in SwiftData. Sync history in SwiftData
+(last 50). On sync error → red badge on the Settings tab icon.
 
 ---
 
@@ -184,7 +287,15 @@ SyncEngine (actor)
 
 ServerClient
   ├── POST /health        (metrics)
-  └── POST /health/workouts
+  ├── POST /health/workouts
+  ├── GET  /api/dashboard
+  ├── GET  /api/health-briefing
+  ├── GET  /api/readiness-history
+  ├── GET  /api/metrics
+  ├── GET  /api/metrics/latest
+  ├── GET  /api/metrics/data
+  ├── GET  /api/metrics/range
+  └── GET  /api/settings
 
 Persistence (SwiftData)
   ├── Settings
@@ -219,12 +330,16 @@ are actors. Network calls via `async/await` + `URLSession`.
 | `workouts` table | ❌ new |
 | `workout_hr_samples` table | ❌ new |
 | `workout_route` table | ❌ new |
+| `BriefingResponse.ai_insight` field | ❌ expose Gemini briefing text via API for native Today screen |
 
 ---
 
 ## Out of Scope (v1)
 
-- Data viewing in the app (use the web dashboard)
+- HealthKit cross-check (compare server values against HealthKit on device
+  to detect ingest gaps) — deferred to a later phase
+- Admin / config that lives on the web: Telegram, AI model, backfill,
+  quality audit, user management
 - Android
 - Apple Watch app
 - Settings export/import
