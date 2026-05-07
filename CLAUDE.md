@@ -3,7 +3,9 @@
 ## Project
 
 iOS app (iOS 26+, Swift 6, SwiftUI) that syncs Apple Health data to a
-`health_processing` server. See `SPEC.md` for full specification.
+`health_processing` server **and** renders a native read-only dashboard
+over the same server's JSON API (Today / Sleep / Trends / Metrics /
+Settings). See `SPEC.md` for full specification.
 
 Companion server: https://github.com/Dzarlax-AI/health_dashboard  
 Local server path: `/Users/dzarlax/Projects/Code/Personal/health_processing`
@@ -54,6 +56,37 @@ health-sync/
 - **HKQueryAnchor per metric** — incremental sync, only new samples since
   last successful delivery
 - **Keychain for API key** — never stored in SwiftData or UserDefaults
+
+### UI / Theming
+
+All UI colors must go through `Color.ds*` helpers from `DesignSystem.swift`.
+They are dynamic (`UIColor(dynamicProvider:)`-backed) and switch automatically
+with iOS dark mode — no `@Environment(\.colorScheme)` plumbing needed at call
+sites. Never use literal `Color.white` / `Color.black` / `Color.red` etc. in
+views — it breaks dark mode silently. `DesignSystem.swift` mirrors
+`tokens/ios/DesignSystemColors.swift` from the `dzarlax/design-system` repo;
+when tokens change, update both.
+
+### Read-only dashboard
+
+- **Server is the single source of truth.** No business logic on the
+  client: scoring, aggregation, source priority, sleep dedup, metric
+  display names, section narratives, "How it works" copy and AI insights
+  all come from server JSON (`/api/health-briefing`, `/api/section/{key}`,
+  `/api/metrics?lang=…`, `/api/metrics/data`, `/api/readiness-history`,
+  `/api/settings`). iOS only renders charts + handles navigation.
+- **Two-layer localization** is intentional. UI chrome follows iOS
+  locale via `Localizable.xcstrings` (en/ru/sr); content follows the
+  server-side `report_lang` from `/api/settings`, which `ServerClient`
+  caches and forwards as `?lang=` on content endpoints. Per-app
+  language toggle on iOS is independent from `report_lang`. When new
+  metrics or copy ship, no app update is needed.
+- **`ServerClient` is a `@MainActor final class`, NOT `actor`.** The
+  project uses Swift 6 default actor isolation = MainActor, so all
+  Decodable conformances become MainActor-isolated. An actor
+  `ServerClient` couldn't call them or access MainActor-isolated
+  `KeychainStore.apiKey`. URLSession.data() releases the main actor
+  while awaiting, so concurrent network overlap is preserved anyway.
 
 ## Payload Format
 

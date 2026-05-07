@@ -1,12 +1,16 @@
 # health-sync
 
-iOS client that streams Apple HealthKit data to a self-hosted [health-dashboard](https://github.com/Dzarlax-AI/health_dashboard) server.
+Native iOS client for the self-hosted [health-dashboard](https://github.com/Dzarlax-AI/health_dashboard) server: streams Apple HealthKit data up, renders a read-only dashboard over the server's JSON API back down.
 
 ## What it does
 
 Reads 100+ HealthKit metrics (vitals, body, gait, running, cycling, dietary, sleep, activity) and POSTs them as JSON to your own server. Sync runs automatically in background when HealthKit delivers new data, with a foreground timer as fallback while the app is open.
 
+On the same data, it renders a native dashboard mirroring the web UI — Today (briefing + cards + alerts + AI Insight + Health overview), Sleep (last-night stages + 7/30/90d trend), Trends (readiness history + push to Cardio / Activity / Recovery section pages), Metrics (full list with detail charts), Settings (sync controls + Account). The entire content layer (metric names, section narratives, "How it works" explanations, AI text) comes from the server, so the app never needs an update when copy or metrics change.
+
 ## Features
+
+### Sync
 
 - **Background sync** via `HKObserverQuery` + `enableBackgroundDelivery` for step/HR/energy trigger metrics
 - **Server checkpoint** — queries `/health/checkpoint` to resume from the last known timestamp (avoids gaps on reinstall or lost local state)
@@ -14,6 +18,14 @@ Reads 100+ HealthKit metrics (vitals, body, gait, running, cycling, dietary, sle
 - **Optional local push** after each sync for diagnostics
 - **Apple Watch dedup** for sleep across sources (Watch > other)
 - Fully editable list of synced metric categories in Settings
+
+### Dashboard
+
+- **5 tabs** (Today / Sleep / Trends / Metrics / Settings) backed by `/api/health-briefing`, `/api/section/{key}`, `/api/readiness-history`, `/api/metrics`, `/api/metrics/data`, `/api/settings`
+- **Localization (en / ru / sr)** — UI chrome follows iOS locale via String Catalog with a per-app language toggle in iOS Settings; content (briefing, alerts, section text) follows the server-side `report_lang` from `/api/settings` so the two layers can diverge intentionally
+- **Account section** with `Logged in as X · Tenant Y` so a wrong API key in the keychain is visible at a glance
+- **AI Insight** parsed into four typed blocks (Sleep / Yesterday / Recovery / Recommendation) instead of a wall of text
+- **"How it works" cards** on each section page surface the server's medical-literature-grounded explanations (HRV, RHR, readiness, sleep stages, VO2, SpO2, …)
 
 ## Architecture
 
