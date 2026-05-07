@@ -10,21 +10,24 @@ enum ServerError: LocalizedError {
     case unexpectedContentType(String, sample: String)
     case decode(String, sample: String)
 
+    /// Strings interpolated through `String(localized:)` so each variant is
+    /// a catalog key the user sees in their iOS locale. Format placeholders
+    /// (`%lld`, `%@`) are inferred from the typed interpolation.
     var errorDescription: String? {
         switch self {
         case .missingConfig:
-            return "Server URL or API key is not configured"
+            return String(localized: "Server URL or API key is not configured")
         case .invalidURL:
-            return "Invalid server URL"
+            return String(localized: "Invalid server URL")
         case .http(let c, let body):
-            if let body, !body.isEmpty { return "HTTP \(c): \(body)" }
-            return "HTTP \(c)"
+            if let body, !body.isEmpty { return String(localized: "HTTP \(c): \(body)") }
+            return String(localized: "HTTP \(c)")
         case .redirected(let to):
-            return "Auth required — server redirected to \(to). Check your API key or proxy (e.g. Authentik) configuration."
+            return String(localized: "Auth required — server redirected to \(to). Check your API key or proxy (e.g. Authentik) configuration.")
         case .unexpectedContentType(let ct, let sample):
-            return "Expected JSON, got \(ct). Body starts with: \(sample)"
+            return String(localized: "Expected JSON, got \(ct). Body starts with: \(sample)")
         case .decode(let m, let sample):
-            return "Decode error: \(m). Body starts with: \(sample)"
+            return String(localized: "Decode error: \(m). Body starts with: \(sample)")
         }
     }
 }
@@ -223,11 +226,13 @@ final class ServerClient {
     func metricData(name: String,
                     from: String? = nil,
                     to: String? = nil,
-                    bucket: String? = nil) async throws -> MetricDataResponse {
+                    bucket: String? = nil,
+                    bySource: Bool = false) async throws -> MetricDataResponse {
         var q: [URLQueryItem] = [URLQueryItem(name: "metric", value: name)]
         if let from { q.append(URLQueryItem(name: "from", value: from)) }
         if let to { q.append(URLQueryItem(name: "to", value: to)) }
         if let bucket { q.append(URLQueryItem(name: "bucket", value: bucket)) }
+        if bySource { q.append(URLQueryItem(name: "by_source", value: "1")) }
         return try await get(MetricDataResponse.self, path: "/api/metrics/data", query: q)
     }
 

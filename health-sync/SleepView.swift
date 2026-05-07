@@ -31,6 +31,7 @@ private struct SleepStagePoint: Identifiable {
 
 struct SleepView: View {
     @State private var nights: [SleepNight] = []
+    @State private var lastNightSource: String?
     @State private var days: Int = 30
     @State private var isLoading = false
     @State private var loadError: String?
@@ -48,6 +49,9 @@ struct SleepView: View {
                     } else {
                         if let last = nights.last {
                             lastNightCard(last)
+                        }
+                        if let source = lastNightSource {
+                            sourceCard(source)
                         }
                         chartCard
                     }
@@ -191,6 +195,38 @@ struct SleepView: View {
 
     // MARK: - Empty / error
 
+    /// Tiny "data from <device>" footer under the last-night card. Helpful
+    /// when you wear both an Apple Watch and a smart ring — at a glance you
+    /// see which one the server cross-validated to. Chosen as the source
+    /// with the largest sleep_total contribution on the most recent night.
+    private func sourceCard(_ source: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: sourceIcon(for: source))
+                .foregroundStyle(Color.dsTextSecondary)
+                .frame(width: 18)
+            Text("Source")
+                .font(.dsCaption)
+                .foregroundStyle(Color.dsTextTertiary)
+            Text(source)
+                .font(.dsCaption.weight(.medium))
+                .foregroundStyle(Color.dsTextSecondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, .dsSpacing)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.dsSurface2.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func sourceIcon(for source: String) -> String {
+        let s = source.lowercased()
+        if s.contains("watch") || s.contains("ultra") { return "applewatch" }
+        if s.contains("ring") { return "circle.dashed" }
+        if s.contains("iphone") { return "iphone" }
+        return "applewatch"
+    }
+
     private func emptyState(_ message: LocalizedStringKey, isError: Bool) -> some View {
         VStack(spacing: .dsSpacingSm) {
             Image(systemName: isError ? "exclamationmark.triangle" : "moon.zzz")
@@ -213,13 +249,20 @@ struct SleepView: View {
         let cal = Calendar(identifier: .gregorian)
         let to = isoDate(Date())
         let from = isoDate(cal.date(byAdding: .day, value: -days, to: Date()) ?? Date())
+        let lastFrom = isoDate(cal.date(byAdding: .day, value: -2, to: Date()) ?? Date())
 
         do {
-            async let totalT = ServerClient.shared.metricData(name: "sleep_total", from: from, to: to, bucket: "day")
-            async let deepT  = ServerClient.shared.metricData(name: "sleep_deep",  from: from, to: to, bucket: "day")
-            async let remT   = ServerClient.shared.metricData(name: "sleep_rem",   from: from, to: to, bucket: "day")
-            async let coreT  = ServerClient.shared.metricData(name: "sleep_core",  from: from, to: to, bucket: "day")
-            async let awakeT = ServerClient.shared.metricData(name: "sleep_awake", from: from, to: to, bucket: "day")
+            async let totalT  = ServerClient.shared.metricData(name: "sleep_total", from: from, to: to, bucket: "day")
+            async let deepT   = ServerClient.shared.metricData(name: "sleep_deep",  from: from, to: to, bucket: "day")
+            async let remT    = ServerClient.shared.metricData(name: "sleep_rem",   from: from, to: to, bucket: "day")
+            async let coreT   = ServerClient.shared.metricData(name: "sleep_core",  from: from, to: to, bucket: "day")
+            async let awakeT  = ServerClient.shared.metricData(name: "sleep_awake", from: from, to: to, bucket: "day")
+            // Last-night-only by-source query — covers two days to handle
+            // sleep that crosses midnight. Pick the source with the largest
+            // contribution; failure is non-fatal (source row hides itself).
+            async let sourceT = ServerClient.shared.metricData(
+                name: "sleep_total", from: lastFrom, to: to, bucket: "day", bySource: true
+            )
 
             let (totalR, deepR, remR, coreR, awakeR) = try await (totalT, deepT, remT, coreT, awakeT)
 
@@ -228,10 +271,32 @@ struct SleepView: View {
                                  rem: remR.points,
                                  core: coreR.points,
                                  awake: awakeR.points)
+
+            if let sourceR = try? await sourceT {
+                lastNightSource = dominantSource(from: sourceR.pointsBySource)
+            } else {
+                lastNightSource = nil
+            }
         } catch {
             loadError = error.localizedDescription
         }
         isLoading = false
+    }
+
+    /// Pick the source with the largest sleep_total contribution across the
+    /// returned points. Server already cross-validates between Apple Watch
+    /// and ring sources for the daily aggregate; here we just surface which
+    /// one dominated for the latest day with data.
+    private func dominantSource(from groups: [SourceDataPoints]?) -> String? {
+        guard let groups, !groups.isEmpty else { return nil }
+        var best: (name: String, total: Double) = ("", 0)
+        for g in groups {
+            let total = (g.points.map(\.qty).max() ?? 0)  // most-recent day in this source
+            if total > best.total {
+                best = (g.source, total)
+            }
+        }
+        return best.total > 0 ? best.name : nil
     }
 
     private func mergeNights(total: [DataPoint]?,

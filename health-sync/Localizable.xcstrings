@@ -17,6 +17,62 @@
         "sr" : { "stringUnit" : { "state" : "translated", "value" : "Nalog" } }
       }
     },
+    "Source" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Source" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Источник" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Izvor" } }
+      }
+    },
+    "Server URL or API key is not configured" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Server URL or API key is not configured" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "URL сервера или API-ключ не настроены" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "URL servera ili API ključ nisu podešeni" } }
+      }
+    },
+    "Invalid server URL" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Invalid server URL" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Неправильный URL сервера" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Neispravan URL servera" } }
+      }
+    },
+    "HTTP %lld" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "HTTP %lld" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "HTTP %lld" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "HTTP %lld" } }
+      }
+    },
+    "HTTP %lld: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "HTTP %1$lld: %2$@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "HTTP %1$lld: %2$@" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "HTTP %1$lld: %2$@" } }
+      }
+    },
+    "Auth required — server redirected to %@. Check your API key or proxy (e.g. Authentik) configuration." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Auth required — server redirected to %@. Check your API key or proxy (e.g. Authentik) configuration." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Требуется авторизация — сервер перенаправил на %@. Проверьте API-ключ или настройки прокси (например, Authentik)." } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Potrebna autorizacija — server je preusmerio na %@. Proverite API ključ ili podešavanja proksija (npr. Authentik)." } }
+      }
+    },
+    "Expected JSON, got %@. Body starts with: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Expected JSON, got %1$@. Body starts with: %2$@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ожидался JSON, получен %1$@. Начало тела: %2$@" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Očekivan JSON, dobijeno %1$@. Početak tela: %2$@" } }
+      }
+    },
+    "Decode error: %@. Body starts with: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Decode error: %1$@. Body starts with: %2$@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ошибка декодирования: %1$@. Начало тела: %2$@" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Greška dekodiranja: %1$@. Početak tela: %2$@" } }
+      }
+    },
     "Logged in as" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Logged in as" } },
