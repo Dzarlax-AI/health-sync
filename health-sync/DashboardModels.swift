@@ -186,6 +186,32 @@ struct SleepSourceSummary: Decodable, Sendable, Identifiable {
     let awake: Double
 }
 
+// MARK: - AI briefing (separate endpoint, never blocks)
+
+/// Response from `/api/ai-briefing`. The narrative now lives in its own
+/// endpoint so a cold cache doesn't block `/api/health-briefing`. Clients
+/// poll this endpoint until `generating == false` and `insight != ""`.
+///
+/// `disabled == true` means the tenant has no Gemini API key configured —
+/// the AI section should be hidden entirely rather than left in a loading
+/// state forever.
+struct AIBriefingResponse: Decodable, Sendable {
+    let date: String
+    let lang: String
+    /// Joined SLEEP / YESTERDAY / RECOVERY / RECOMMENDATION text.
+    /// Empty when cache is cold or AI is disabled.
+    let insight: String
+    /// Per-block dict, e.g. `["SLEEP": "...", "RECOVERY": "..."]`.
+    /// Always present; empty when no blocks are cached yet.
+    let blocks: [String: String]
+    /// True when the server is currently regenerating the briefing in a
+    /// background goroutine. Clients should keep polling until this flips
+    /// to false.
+    let generating: Bool
+    /// True when the tenant has no AI configured.
+    let disabled: Bool
+}
+
 // MARK: - Readiness history
 
 struct ReadinessPoint: Decodable, Sendable, Identifiable, Hashable {

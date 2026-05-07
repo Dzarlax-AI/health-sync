@@ -200,6 +200,17 @@ final class ServerClient {
                              query: [URLQueryItem(name: "lang", value: lang)])
     }
 
+    /// Fetch the AI narrative independently of the rest of the briefing.
+    /// Cold cache returns `insight: ""` + `generating: true`; the server
+    /// kicks off async regen so polling this endpoint will eventually return
+    /// the populated text (typically within 30-60s).
+    func aiBriefing() async throws -> AIBriefingResponse {
+        let lang = await serverLang()
+        return try await get(AIBriefingResponse.self,
+                             path: "/api/ai-briefing",
+                             query: [URLQueryItem(name: "lang", value: lang)])
+    }
+
     func readinessHistory(days: Int = 30) async throws -> [ReadinessPoint] {
         struct Wrap: Decodable { let points: [ReadinessPoint] }
         let w = try await get(Wrap.self,

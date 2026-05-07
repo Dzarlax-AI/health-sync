@@ -7,7 +7,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // Show notifications even when app is in foreground (for debugging)
+        // Foreground presentation rules for the user-facing sync notification
+        // (gated behind the Settings toggle in SyncEngine.sendSyncNotification).
         UNUserNotificationCenter.current().delegate = self
 
         // Must register before app finishes launching
@@ -20,18 +21,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         BackgroundSyncManager.shared.setupObserverQueriesIfNeeded()
         BackgroundSyncManager.shared.scheduleNextSync()
         BackgroundSyncManager.shared.scheduleDailyResync()
-
-        #if DEBUG
-        // Notify every launch (including background wakeups) so we can see
-        // when iOS is firing BGTasks vs. observer callbacks during dev.
-        let n = UNMutableNotificationContent()
-        n.title = "App launched"
-        let isBG = UIApplication.shared.applicationState == .background
-        n.body = "background: \(isBG ? "yes" : "no")"
-        UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: UUID().uuidString, content: n, trigger: nil)
-        )
-        #endif
 
         return true
     }
