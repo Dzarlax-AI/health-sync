@@ -2,7 +2,6 @@ import Foundation
 import HealthKit
 import BackgroundTasks
 import UIKit
-import UserNotifications
 
 // Box for mutable bg task id shared between expiration handler and async code
 @MainActor
@@ -139,14 +138,16 @@ final class BackgroundSyncManager: @unchecked Sendable {
 
         for (label, sampleType) in quantitySampleTypes + categorySampleTypes {
             store.enableBackgroundDelivery(for: sampleType, frequency: .immediate) { success, err in
-                Self.debugNotify(title: "bgDelivery \(label.suffix(20))",
-                                 body: "ok=\(success) err=\(err?.localizedDescription ?? "-")")
+                if !success || err != nil {
+                    print("[bgDelivery] \(label.suffix(20)) ok=\(success) err=\(err?.localizedDescription ?? "-")")
+                }
             }
 
             let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { _, completionHandler, error in
                 completionHandler() // must be called immediately
-                Self.debugNotify(title: "observer fired",
-                                 body: "\(label.suffix(20)) err=\(error?.localizedDescription ?? "-")")
+                if let error = error {
+                    print("[observer] \(label.suffix(20)) err=\(error.localizedDescription)")
+                }
                 guard error == nil else { return }
                 Task { @MainActor in
                     // Proper bg task lifecycle — if we run out of time, iOS calls
@@ -170,16 +171,4 @@ final class BackgroundSyncManager: @unchecked Sendable {
         }
     }
 
-    // Debug helper — DEBUG-only, no-op in release. Keeps observer/BGDelivery
-    // diagnostics visible in Xcode dev runs without spamming users.
-    private static func debugNotify(title: String, body: String) {
-        #if DEBUG
-        let n = UNMutableNotificationContent()
-        n.title = title
-        n.body = body
-        UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: UUID().uuidString, content: n, trigger: nil)
-        )
-        #endif
-    }
 }

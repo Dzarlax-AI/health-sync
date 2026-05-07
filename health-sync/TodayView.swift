@@ -9,6 +9,15 @@ struct TodayView: View {
     @State private var isLoading = false
     @State private var loadError: String?
 
+    // AI briefing state — fetched independently from /api/ai-briefing so a
+    // cold Gemini cache does not block the rest of the Today view. nil =
+    // not fetched yet; "" + generating = server is regenerating; non-empty
+    // = ready to render. `aiDisabled` hides the section entirely.
+    @State private var aiInsight: String = ""
+    @State private var aiGenerating: Bool = false
+    @State private var aiDisabled: Bool = false
+    @State private var aiPollTask: Task<Void, Never>? = nil
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -21,8 +30,8 @@ struct TodayView: View {
                         if let alerts = b.alerts, !alerts.isEmpty {
                             alertsBlock(alerts)
                         }
-                        if let ai = b.aiInsight, !ai.isEmpty {
-                            aiInsightBlock(ai)
+                        if !aiDisabled {
+                            aiInsightBlock(aiInsight, generating: aiGenerating)
                         }
                         if let sections = b.sections, !sections.isEmpty {
                             overviewBlock(sections: sections)
@@ -43,6 +52,7 @@ struct TodayView: View {
             .refreshable { await load() }
         }
         .task { await load() }
+        .onDisappear { aiPollTask?.cancel(); aiPollTask = nil }
     }
 
     // MARK: - Load
@@ -52,6 +62,7 @@ struct TodayView: View {
         loadError = nil
         async let briefingTask = ServerClient.shared.healthBriefing()
         async let historyTask = ServerClient.shared.readinessHistory(days: 30)
+        async let aiTask: AIBriefingResponse? = try? ServerClient.shared.aiBriefing()
         do {
             let (b, h) = try await (briefingTask, historyTask)
             self.briefing = b
@@ -59,7 +70,38 @@ struct TodayView: View {
         } catch {
             self.loadError = error.localizedDescription
         }
+        // AI is independent — even if briefing failed, render what we have.
+        if let ai = await aiTask {
+            applyAI(ai)
+            scheduleAIPolling()
+        }
         isLoading = false
+    }
+
+    /// Update local AI state from a server response.
+    private func applyAI(_ r: AIBriefingResponse) {
+        aiDisabled = r.disabled
+        aiGenerating = r.generating
+        if !r.insight.isEmpty {
+            aiInsight = r.insight
+        }
+    }
+
+    /// Poll /api/ai-briefing while the server reports a regen in flight and
+    /// the cache is still empty. Stops on first non-empty insight or after
+    /// 5 minutes (10 ticks × 30 s) so we don't loop forever on a stuck regen.
+    private func scheduleAIPolling() {
+        aiPollTask?.cancel()
+        guard aiInsight.isEmpty, !aiDisabled, aiGenerating else { return }
+        aiPollTask = Task { @MainActor in
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                if Task.isCancelled { return }
+                guard let r = try? await ServerClient.shared.aiBriefing() else { continue }
+                applyAI(r)
+                if !aiInsight.isEmpty || aiDisabled { return }
+            }
+        }
     }
 
     // MARK: - Hero
@@ -247,7 +289,33 @@ struct TodayView: View {
 
     // MARK: - AI Insight
 
-    private func aiInsightBlock(_ text: String) -> some View {
+    @ViewBuilder
+    private func aiInsightBlock(_ text: String, generating: Bool) -> some View {
+        if text.isEmpty {
+            // Cache cold — show a placeholder so the user knows the section
+            // exists and an update is on the way. Polling drives the
+            // transition to the populated state without a manual refresh.
+            HStack(spacing: 10) {
+                if generating {
+                    ProgressView().controlSize(.small)
+                }
+                Image(systemName: "sparkles")
+                    .foregroundStyle(Color.dsAccent)
+                Text(generating
+                     ? "AI is preparing today's briefing…"
+                     : "AI briefing not available yet.")
+                    .font(.dsBodySm)
+                    .foregroundStyle(Color.dsTextSecondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.dsSpacing)
+            .dsCard()
+        } else {
+            aiInsightExpanded(text)
+        }
+    }
+
+    private func aiInsightExpanded(_ text: String) -> some View {
         let parsed = parseAIInsight(text)
         return DisclosureGroup {
             VStack(alignment: .leading, spacing: .dsSpacing) {
