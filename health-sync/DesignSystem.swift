@@ -4,8 +4,18 @@ import UIKit
 // MARK: - Hex parsing
 
 extension UIColor {
+    /// Parse a hex color string. Accepts only 6-char (RRGGBB) or 8-char
+    /// (RRGGBBAA) hex; CSS shorthand (3-char #RGB) and other lengths fail
+    /// fast in DEBUG builds and fall through to opaque black in Release so
+    /// a typo doesn't crash users in the wild. Leading `#` and other
+    /// non-alphanumerics are stripped before validation.
     convenience init(hex: String) {
         let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        guard hex.count == 6 || hex.count == 8 else {
+            assertionFailure("UIColor(hex:) requires 6- or 8-char hex; got \(hex.count) chars: \"\(hex)\"")
+            self.init(red: 0, green: 0, blue: 0, alpha: 1)
+            return
+        }
         var int: UInt64 = 0
         Scanner(string: hex).scanHexInt64(&int)
         let r, g, b, a: CGFloat
