@@ -10,6 +10,27 @@
     "·" : {
 
     },
+    "Account" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Account" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Аккаунт" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Nalog" } }
+      }
+    },
+    "Logged in as" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Logged in as" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Вы вошли как" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Prijavljeni kao" } }
+      }
+    },
+    "Tenant" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tenant" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Тенант" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Tenant" } }
+      }
+    },
     "%@ efficiency" : {
       "localizations" : {
         "en" : {

@@ -16,6 +16,7 @@ struct SettingsView: View {
 
     @State private var apiKey = KeychainStore.apiKey ?? ""
     @State private var connectionState: ConnectionState = .idle
+    @State private var account: UserSettings?
 
     private let engine = SyncEngine.shared
 
@@ -28,6 +29,7 @@ struct SettingsView: View {
             ScrollView {
                 VStack(spacing: .dsSpacingLg) {
                     syncStatusSection
+                    accountSection
                     serverSection
                     syncSection
                     metricsSection
@@ -39,7 +41,60 @@ struct SettingsView: View {
             .background(Color.dsBackground)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
+            .task { await loadAccount() }
         }
+    }
+
+    // MARK: - Account
+
+    /// Compact identity block — confirms which user / tenant the API key
+    /// resolves to on the server, so a wrong key doesn't silently route
+    /// to someone else's data. Read-only; everything is managed on the web.
+    @ViewBuilder
+    private var accountSection: some View {
+        if let username = account?.username, !username.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                SectionHeader(title: "Account")
+                VStack(alignment: .leading, spacing: 0) {
+                    accountRow(label: "Logged in as", value: username,
+                               trailing: account?.isAdmin == true ? "admin" : nil)
+                    if let tenant = account?.tenant, !tenant.isEmpty, tenant != username {
+                        Divider().padding(.leading, .dsSpacing)
+                        accountRow(label: "Tenant", value: tenant, trailing: nil)
+                    }
+                }
+            }
+            .dsCard()
+        }
+    }
+
+    private func accountRow(label: LocalizedStringKey, value: String, trailing: String?) -> some View {
+        HStack(spacing: .dsSpacing) {
+            Text(label)
+                .font(.dsBody)
+                .foregroundStyle(Color.dsText)
+            Spacer()
+            Text(value)
+                .font(.dsMono)
+                .foregroundStyle(Color.dsTextSecondary)
+            if let trailing {
+                Text(trailing)
+                    .font(.dsCaption.weight(.medium))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.dsAccent.opacity(0.10))
+                    .foregroundStyle(Color.dsAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .padding(.horizontal, .dsSpacing)
+        .padding(.vertical, 12)
+    }
+
+    private func loadAccount() async {
+        // Best-effort: silent failure leaves the section hidden, which is
+        // already its empty state.
+        account = try? await ServerClient.shared.userSettings()
     }
 
     // MARK: - Sync status (was StatusView, now merged into Settings)

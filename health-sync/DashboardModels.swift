@@ -355,12 +355,18 @@ struct SectionExplain: Decodable, Sendable, Hashable {
 
 /// Server returns a heavy payload that mostly belongs to the web (Telegram,
 /// reports). We only decode the fields the mobile app actually shows.
+/// `username` / `tenant` / `isAdmin` are optional — older servers (pre PR #18)
+/// don't ship them; the iOS Account block degrades to "unknown" gracefully.
 struct UserSettings: Decodable, Sendable {
     let timezone: String?
     let reportLang: String?
+    let username: String?
+    let tenant: String?
+    let isAdmin: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case timezone
+        case timezone, username, tenant
         case reportLang = "report_lang"
+        case isAdmin = "is_admin"
     }
 }
