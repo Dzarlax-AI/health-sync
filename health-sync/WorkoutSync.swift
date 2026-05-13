@@ -178,19 +178,24 @@ extension HealthKitManager {
             unit: .kilocalorie(),
             units: "kcal"
         )
-        let avgHR = quantity(
-            stat: w.statistics(for: HKQuantityType(.heartRate)),
-            kind: .average,
-            unit: HKUnit.count().unitDivided(by: .minute()),
+
+        // HR — fetched via `predicateForObjects(from: workout)` rather
+        // than `workout.statistics(for: .heartRate)` because the latter
+        // returns nil for many Apple-Watch workouts (the heart-rate
+        // samples are linked to the workout but not "saved into" it via
+        // HKWorkoutBuilder.addSamples — `.statistics(for:)` requires the
+        // latter). Empirically observed in 78/78 walking workouts after
+        // the first 60-day backfill on PR #3. Same query feeds the
+        // optional per-sample timeline so we don't pay for two passes.
+        let hrPoints = try await heartRateSamples(for: w)
+        let avgHR = hrPoints.isEmpty ? nil : WorkoutItem.Quantity(
+            qty: hrPoints.reduce(0.0) { $0 + $1.Avg } / Double(hrPoints.count),
             units: "bpm"
         )
-        let maxHR = quantity(
-            stat: w.statistics(for: HKQuantityType(.heartRate)),
-            kind: .maximum,
-            unit: HKUnit.count().unitDivided(by: .minute()),
-            units: "bpm"
-        )
-        let distance = distanceQuantity(for: w)
+        let maxHR: WorkoutItem.Quantity? = hrPoints.map(\.Avg).max().map {
+            WorkoutItem.Quantity(qty: $0, units: "bpm")
+        }
+        let distance = try await distanceQuantity(for: w)
 
         // Derived avg/max speed from samples when the activity records a
         // running/walking/cycling speed series. Apple does NOT expose
@@ -210,7 +215,7 @@ extension HealthKitManager {
         let stepCadence: WorkoutItem.Quantity? = nil
 
         let hrSamples: [WorkoutItem.HRSamplePoint] =
-            includeHRTimeline ? (try await heartRateTimeline(for: w)) : []
+            includeHRTimeline ? hrPoints : []
 
         return WorkoutItem(
             id: w.uuid.uuidString,
@@ -255,7 +260,7 @@ extension HealthKitManager {
         return WorkoutItem.Quantity(qty: v, units: units)
     }
 
-    private func distanceQuantity(for w: HKWorkout) -> WorkoutItem.Quantity? {
+    private func distanceQuantity(for w: HKWorkout) async throws -> WorkoutItem.Quantity? {
         // Pick the distance HKQuantityType that matches the activity. For
         // activities that don't track distance (yoga, strength training)
         // both branches yield nil and we report no distance.
@@ -275,7 +280,21 @@ extension HealthKitManager {
             type = nil
         }
         guard let type else { return nil }
-        return quantity(stat: w.statistics(for: type), kind: .sum, unit: .meterUnit(with: .kilo), units: "km")
+        // Same `predicateForObjects(from: workout)` strategy as for HR —
+        // `w.statistics(for:)` came back nil on every walking workout in
+        // the first 60-day backfill (see commit message). Sum across all
+        // samples linked to the workout regardless of whether they were
+        // saved-into vs. associated-with via HKObjectAssociation.
+        let pred = HKQuery.predicateForObjects(from: w)
+        let stats: HKStatistics? = try await withCheckedThrowingContinuation { cont in
+            let q = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: pred,
+                                      options: [.cumulativeSum]) { _, s, err in
+                if let err { cont.resume(throwing: err); return }
+                cont.resume(returning: s)
+            }
+            store.execute(q)
+        }
+        return quantity(stat: stats, kind: .sum, unit: .meterUnit(with: .kilo), units: "km")
     }
 
     private func speedQuantity(for w: HKWorkout, kind: AggKind) -> WorkoutItem.Quantity? {
@@ -321,7 +340,12 @@ extension HealthKitManager {
         return WorkoutItem.Quantity(qty: v, units: units)
     }
 
-    private func heartRateTimeline(for w: HKWorkout) async throws -> [WorkoutItem.HRSamplePoint] {
+    /// Returns HR samples linked to the workout, formatted as server
+    /// HRSamplePoint items. Single source of truth — `buildWorkoutItem`
+    /// reuses the same array to compute avg/max in Swift AND (optionally)
+    /// to emit the per-sample timeline. Avoids running two near-identical
+    /// queries per workout.
+    private func heartRateSamples(for w: HKWorkout) async throws -> [WorkoutItem.HRSamplePoint] {
         let hrType = HKQuantityType(.heartRate)
         // Scope strictly to HR samples associated with THIS workout. A
         // pure time predicate would also pick up unrelated HR samples
