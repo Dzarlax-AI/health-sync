@@ -96,6 +96,9 @@ struct WorkoutSyncTests {
             humidity:           nil,
             heartRateData: [
                 .init(date: "2026-05-13 07:01:00 +0200", Avg: 142.0)
+            ],
+            stepCount: [
+                .init(date: "2026-05-13 07:00:00 +0200", qty: 8421)
             ]
         )
         let payload = WorkoutsPayload(items: [item])
@@ -128,6 +131,12 @@ struct WorkoutSyncTests {
         // server reads `Avg` (mirrors HAE manual-export's mixed casing for
         // heart_rate). Lowercase `avg` would silently fail.
         #expect(json.contains(#""heartRateData":[{"Avg":142"#))
+
+        // Step count — array of `{date, qty}`. Server sums `qty` across
+        // entries to populate `step_count_total`. One entry with the
+        // cumulative total is the minimal valid emission.
+        #expect(json.contains(#""stepCount":[{"date":"#))
+        #expect(json.contains(#""qty":8421"#))
     }
 
     @Test func humidityPercentSerialisesAs0to100() throws {
@@ -154,7 +163,8 @@ struct WorkoutSyncTests {
             elevationUp: nil, stepCadence: nil,
             temperature: nil,
             humidity: .init(qty: 65, units: "%"),   // post-conversion
-            heartRateData: []
+            heartRateData: [],
+            stepCount: []
         )
         let bytes = try JSONEncoder().encode(WorkoutsPayload(items: [item]))
         let json = String(decoding: bytes, as: UTF8.self)
@@ -181,7 +191,8 @@ struct WorkoutSyncTests {
             distance: nil, avgSpeed: nil, maxSpeed: nil,
             elevationUp: nil, stepCadence: nil,
             temperature: nil, humidity: nil,
-            heartRateData: []
+            heartRateData: [],
+            stepCount: []
         )
         let bytes = try JSONEncoder().encode(WorkoutsPayload(items: [item]))
         let json = String(decoding: bytes, as: UTF8.self)

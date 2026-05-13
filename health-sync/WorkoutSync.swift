@@ -61,6 +61,15 @@ struct WorkoutItem: Encodable, Sendable {
     /// Per-sample HR timeline. Empty array if HR-timeline is disabled.
     let heartRateData: [HRSamplePoint]
 
+    /// Step-count samples linked to the workout. Server sums these
+    /// (`internal/handler/workouts.go::convertHAEWorkout`) to populate
+    /// `step_count_total`. We ship ONE entry with the cumulative total
+    /// rather than the raw per-bucket stream — server doesn't keep the
+    /// timeline, only the sum, so a single sample is the minimal valid
+    /// payload. Empty array when the workout type has no step count
+    /// (cycling, swimming, …) or when no samples are linked.
+    let stepCount: [StepSample]
+
     struct Quantity: Encodable, Sendable {
         let qty: Double
         let units: String
@@ -69,6 +78,11 @@ struct WorkoutItem: Encodable, Sendable {
     struct HRSamplePoint: Encodable, Sendable {
         let date: String
         let Avg:  Double        // Server reads camelCase `Avg`; do not rename.
+    }
+
+    struct StepSample: Encodable, Sendable {
+        let date: String
+        let qty:  Double
     }
 }
 
@@ -196,6 +210,7 @@ extension HealthKitManager {
             WorkoutItem.Quantity(qty: $0, units: "bpm")
         }
         let distance = try await distanceQuantity(for: w)
+        let stepCount = try await stepCountSamples(for: w)
 
         // Derived avg/max speed from samples when the activity records a
         // running/walking/cycling speed series. Apple does NOT expose
@@ -236,7 +251,8 @@ extension HealthKitManager {
             stepCadence: stepCadence,
             temperature: temperature,
             humidity: humidity,
-            heartRateData: hrSamples
+            heartRateData: hrSamples,
+            stepCount: stepCount
         )
     }
 
@@ -295,6 +311,38 @@ extension HealthKitManager {
             store.execute(q)
         }
         return quantity(stat: stats, kind: .sum, unit: .meterUnit(with: .kilo), units: "km")
+    }
+
+    /// Sums step samples linked to the workout and returns a single
+    /// `StepSample` carrying the total (server-side `convertHAEWorkout`
+    /// loops and adds, so one entry with the full count is equivalent to
+    /// many small entries while keeping the payload tiny). Only emitted
+    /// for activities where steps are meaningful (walking, running,
+    /// hiking) — cycling/swimming/etc. legitimately have no step count.
+    private func stepCountSamples(for w: HKWorkout) async throws -> [WorkoutItem.StepSample] {
+        switch w.workoutActivityType {
+        case .walking, .running, .hiking, .crossTraining, .stairs,
+             .stairClimbing, .stepTraining:
+            break
+        default:
+            return []
+        }
+        let type = HKQuantityType(.stepCount)
+        let pred = HKQuery.predicateForObjects(from: w)
+        let stats: HKStatistics? = try await withCheckedThrowingContinuation { cont in
+            let q = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: pred,
+                                      options: [.cumulativeSum]) { _, s, err in
+                if let err { cont.resume(throwing: err); return }
+                cont.resume(returning: s)
+            }
+            store.execute(q)
+        }
+        guard let total = stats?.sumQuantity()?.doubleValue(for: .count()),
+              total.isFinite, total > 0
+        else { return [] }
+        return [
+            WorkoutItem.StepSample(date: formatForServer(w.startDate), qty: total)
+        ]
     }
 
     private func speedQuantity(for w: HKWorkout, kind: AggKind) -> WorkoutItem.Quantity? {
