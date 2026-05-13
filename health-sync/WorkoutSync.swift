@@ -173,13 +173,17 @@ extension HealthKitManager {
         var out: [WorkoutItem] = []
         out.reserveCapacity(workouts.count)
         for w in workouts {
-            let item = try await buildWorkoutItem(w, includeHRTimeline: includeHRTimeline)
+            let item = await buildWorkoutItem(w, includeHRTimeline: includeHRTimeline)
             out.append(item)
         }
         return out
     }
 
-    private func buildWorkoutItem(_ w: HKWorkout, includeHRTimeline: Bool) async throws -> WorkoutItem {
+    // Non-throwing: each inner metric query that can throw is wrapped
+    // in `try?` so a transient HealthKit error on one sub-query falls
+    // back to nil/[] without aborting the workout (or the surrounding
+    // batch in fetchWorkouts).
+    private func buildWorkoutItem(_ w: HKWorkout, includeHRTimeline: Bool) async -> WorkoutItem {
         let isIndoor = (w.metadata?[HKMetadataKeyIndoorWorkout] as? Bool) ?? false
         let name = workoutDisplayName(w.workoutActivityType, isIndoor: isIndoor)
 
@@ -201,7 +205,14 @@ extension HealthKitManager {
         // latter). Empirically observed in 78/78 walking workouts after
         // the first 60-day backfill on PR #3. Same query feeds the
         // optional per-sample timeline so we don't pay for two passes.
-        let hrPoints = try await heartRateSamples(for: w)
+        //
+        // Each of the three async metric queries is wrapped in `try?` so
+        // a transient HealthKit error on one workout's HR (or distance,
+        // or step count) doesn't abort the whole batch via the parent
+        // `fetchWorkouts` for-loop — the workout ships with whatever
+        // fields succeeded, others fall back to nil/[]. Flagged by
+        // CodeRabbit on PR #4.
+        let hrPoints = (try? await heartRateSamples(for: w)) ?? []
         let avgHR = hrPoints.isEmpty ? nil : WorkoutItem.Quantity(
             qty: hrPoints.reduce(0.0) { $0 + $1.Avg } / Double(hrPoints.count),
             units: "bpm"
@@ -209,8 +220,11 @@ extension HealthKitManager {
         let maxHR: WorkoutItem.Quantity? = hrPoints.map(\.Avg).max().map {
             WorkoutItem.Quantity(qty: $0, units: "bpm")
         }
-        let distance = try await distanceQuantity(for: w)
-        let stepCount = try await stepCountSamples(for: w)
+        // `?? nil` collapses the `Quantity??` from `try?` on a method
+        // that itself returns `Quantity?` back to `Quantity?`. Without
+        // it the WorkoutItem field type wouldn't match.
+        let distance: WorkoutItem.Quantity? = (try? await distanceQuantity(for: w)) ?? nil
+        let stepCount = (try? await stepCountSamples(for: w)) ?? []
 
         // Derived avg/max speed from samples when the activity records a
         // running/walking/cycling speed series. Apple does NOT expose
