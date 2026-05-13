@@ -330,21 +330,46 @@ extension HealthKitManager {
             type = nil
         }
         guard let type else { return nil }
-        // Same `predicateForObjects(from: workout)` strategy as for HR —
-        // `w.statistics(for:)` came back nil on every walking workout in
-        // the first 60-day backfill (see commit message). Sum across all
-        // samples linked to the workout regardless of whether they were
-        // saved-into vs. associated-with via HKObjectAssociation.
-        let pred = HKQuery.predicateForObjects(from: w)
-        let stats: HKStatistics? = try await withCheckedThrowingContinuation { cont in
-            let q = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: pred,
+        // Two-stage query: try workout-scoped predicate first
+        // (`predicateForObjects(from:)`), and fall back to a time-window
+        // predicate when that returns zero. Background:
+        //
+        //   - Apple Watch explicit workouts → distance samples are
+        //     associated with the workout via HKObjectAssociation;
+        //     predicateForObjects matches them. Empirically 6/78 walks
+        //     on the first 60-day backfill (PR #3).
+        //   - Passive iPhone-detected walks → CMPedometer writes the
+        //     distance as standalone samples in the same time window
+        //     but doesn't link them to the workout. predicateForObjects
+        //     returns nothing for these; time-window query catches them.
+        //
+        // The time-window fallback risks summing data from a concurrent
+        // workout, but in practice walks don't overlap with other
+        // distance-tracking activities. Empirically these are the
+        // walks the user wants in the dashboard.
+        let workoutPred = HKQuery.predicateForObjects(from: w)
+        let windowPred  = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate)
+        if let q = try await sumQuantity(type: type, predicate: workoutPred),
+           let qty = quantity(stat: q, kind: .sum, unit: .meterUnit(with: .kilo), units: "km") {
+            return qty
+        }
+        let fallback = try await sumQuantity(type: type, predicate: windowPred)
+        return quantity(stat: fallback, kind: .sum, unit: .meterUnit(with: .kilo), units: "km")
+    }
+
+    /// Convenience: runs an `HKStatisticsQuery(.cumulativeSum)` and
+    /// returns the resulting `HKStatistics?`. Shared between distance
+    /// and step-count paths so the predicate-fallback dance is
+    /// expressed in one place each.
+    private func sumQuantity(type: HKQuantityType, predicate: NSPredicate) async throws -> HKStatistics? {
+        try await withCheckedThrowingContinuation { cont in
+            let q = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: predicate,
                                       options: [.cumulativeSum]) { _, s, err in
                 if let err { cont.resume(throwing: err); return }
                 cont.resume(returning: s)
             }
             store.execute(q)
         }
-        return quantity(stat: stats, kind: .sum, unit: .meterUnit(with: .kilo), units: "km")
     }
 
     /// Sums step samples linked to the workout and returns a single
@@ -362,14 +387,19 @@ extension HealthKitManager {
             return []
         }
         let type = HKQuantityType(.stepCount)
-        let pred = HKQuery.predicateForObjects(from: w)
-        let stats: HKStatistics? = try await withCheckedThrowingContinuation { cont in
-            let q = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: pred,
-                                      options: [.cumulativeSum]) { _, s, err in
-                if let err { cont.resume(throwing: err); return }
-                cont.resume(returning: s)
-            }
-            store.execute(q)
+        // Same two-stage predicate as distanceQuantity. Step samples
+        // are even less likely to be HKObjectAssociation-linked than
+        // distance (Apple writes them as standalone CMPedometer
+        // intervals), so the predicateForObjects path returns nothing
+        // for every walking workout observed in the 90-day backfill —
+        // including Watch-recorded ones with HR/distance present.
+        // Fall back to time-window predicate to catch the standalone
+        // pedometer samples.
+        let workoutPred = HKQuery.predicateForObjects(from: w)
+        let windowPred  = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate)
+        var stats = try await sumQuantity(type: type, predicate: workoutPred)
+        if (stats?.sumQuantity()?.doubleValue(for: .count()) ?? 0) <= 0 {
+            stats = try await sumQuantity(type: type, predicate: windowPred)
         }
         guard let total = stats?.sumQuantity()?.doubleValue(for: .count()),
               total.isFinite, total > 0
