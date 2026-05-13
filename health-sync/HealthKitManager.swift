@@ -739,6 +739,26 @@ actor HealthKitManager {
         var mainTotals: [DayKey: Double] = [:]
         var napTotals:  [DayKey: Double] = [:]
 
+        // Per-segment emission: one MetricSample per HKCategorySample, attributed
+        // to the wake-up DayKey of its containing session so the dropKnownDup
+        // filter (Apple Watch wins over RingConn for the same night) applies
+        // uniformly across aggregate AND fragment data. Required by the
+        // server-side v2.2 stress methodology (STRESS_MEASUREMENT.md) which
+        // needs per-segment timestamps to derive awake-window, overnight RHR
+        // baselines, and sustained-HR-load hourly z-series. The Health Auto
+        // Export iOS app used to deliver this shape natively; our client
+        // aggregated it away when we replaced HAE. The server's existing
+        // sleepDedupClause excludes the midnight-summary rows whenever
+        // per-segment fragments exist, so shipping both is safe — fragments
+        // win where they exist, the nightly aggregate is kept as fallback for
+        // tools that don't dedup.
+        var perSegmentByPhase: [String: [(dk: DayKey, sample: HKCategorySample)]] = [
+            "sleep_deep":  [],
+            "sleep_rem":   [],
+            "sleep_core":  [],
+            "sleep_awake": [],
+        ]
+
         for (dk, dailySessions) in sessionsByDay {
             // Identify main = the session with the largest asleep duration.
             let durations = dailySessions.map { asleepHours($0) }
@@ -762,6 +782,9 @@ actor HealthKitManager {
                          .asleep:                           p.core  += hrs; p.total += hrs
                     case .awake:                            p.awake += hrs
                     case .inBed, .none, .some(_):           break
+                    }
+                    if let phase = Self.sleepPhaseName(for: s.value) {
+                        perSegmentByPhase[phase]?.append((dk: dk, sample: s))
                     }
                 }
                 if isMain { mainHrs += asleepHrs } else { napHrs += asleepHrs }
@@ -805,17 +828,68 @@ actor HealthKitManager {
                 MetricSample.qty(date: dk.date, value: hrs, source: dk.source)
             }
 
+        // Per-segment payloads — one MetricSample.qty per HKCategorySample.
+        // Same dropKnownDup filter as the aggregate path so Apple Watch
+        // dominates RingConn fragments on shared nights.
+        func buildSegmentData(_ phase: String) -> [MetricSample] {
+            (perSegmentByPhase[phase] ?? [])
+                .filter { !dropKnownDup($0.dk.source, $0.dk.date) }
+                .sorted { $0.sample.startDate < $1.sample.startDate }
+                .map { entry -> MetricSample in
+                    let hrs = entry.sample.endDate.timeIntervalSince(entry.sample.startDate) / 3600.0
+                    return MetricSample.qty(
+                        date: formatForServer(entry.sample.startDate),
+                        value: hrs,
+                        source: entry.dk.source
+                    )
+                }
+        }
+        let deepSeg  = buildSegmentData("sleep_deep")
+        let remSeg   = buildSegmentData("sleep_rem")
+        let coreSeg  = buildSegmentData("sleep_core")
+        let awakeSeg = buildSegmentData("sleep_awake")
+
         // Use names WITHOUT the `sleep_` prefix so the server-side guards on
         // `sleep_%` (zero-overwrite, ≥1.3× inflation, ≥50% deflation) don't
         // get triggered by legitimate intra-day growth — e.g. nap_total of
         // 0h → 1h → 2.5h as the user takes another nap; or night_sleep_total
         // climbing from 1h to 7h as more of the watch's sleep classifier
         // output trickles in throughout the morning.
+        //
+        // The per-segment sleep_deep/rem/core/awake entries DO use the
+        // `sleep_` prefix and so DO hit the server inflation guards. That is
+        // intentional: each per-segment row has a unique timestamped `date`
+        // (e.g. "2026-05-12 04:20 +0200"), so UPSERT-by-(name,date,source)
+        // never overwrites — the inflation guard only triggers on the same
+        // (name,date) pair growing/shrinking, which is what we want for
+        // multi-source nightly aggregates but not a concern for per-second
+        // start-timestamped fragments.
         return [
             MetricData(name: "sleep_analysis",   units: "hr", data: sleepAnalysisData),
             MetricData(name: "night_sleep_total", units: "hr", data: mainData),
             MetricData(name: "nap_total",        units: "hr", data: napData),
+            MetricData(name: "sleep_deep",       units: "hr", data: deepSeg),
+            MetricData(name: "sleep_rem",        units: "hr", data: remSeg),
+            MetricData(name: "sleep_core",       units: "hr", data: coreSeg),
+            MetricData(name: "sleep_awake",      units: "hr", data: awakeSeg),
         ]
+    }
+
+    /// Maps an `HKCategoryValueSleepAnalysis` raw value to the server-side
+    /// per-segment metric name. Returns nil for `.inBed` and unknown values —
+    /// those are dropped from per-segment emission entirely. Pure, no
+    /// HealthKit object construction — keeps the function trivially
+    /// unit-testable via the `HKCategoryValueSleepAnalysis.<case>.rawValue`
+    /// integer constants. Mirrors the classification in `fetchSleep`'s
+    /// inner switch — the two MUST stay in lockstep.
+    static func sleepPhaseName(for rawValue: Int) -> String? {
+        switch HKCategoryValueSleepAnalysis(rawValue: rawValue) {
+        case .asleepDeep:                                           return "sleep_deep"
+        case .asleepREM:                                            return "sleep_rem"
+        case .asleepCore, .asleepUnspecified, .asleep:              return "sleep_core"
+        case .awake:                                                return "sleep_awake"
+        case .inBed, .none, .some(_):                               return nil
+        }
     }
 
     // MARK: - Helpers
