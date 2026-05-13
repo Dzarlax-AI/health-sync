@@ -130,6 +130,40 @@ struct WorkoutSyncTests {
         #expect(json.contains(#""heartRateData":[{"Avg":142"#))
     }
 
+    @Test func humidityPercentSerialisesAs0to100() throws {
+        // HKQuantity(value: 0.65, unit: HKUnit.percent()) is the fraction-
+        // form humidity HealthKit returns. The server reads HumidityPct as
+        // a 0..100 number (no normalisation in workouts.go), so we must
+        // multiply by 100 client-side before serialising — otherwise the
+        // workout row stores 0.65 % humidity which is nonsense.
+        //
+        // We can't drive metadataQuantity directly without an HKWorkout
+        // (its first parameter), but we CAN pin the end-to-end contract
+        // by constructing a WorkoutItem with the post-conversion value
+        // and asserting the JSON shape. The metadataQuantity unit-test is
+        // the inline conditional `unit == HKUnit.percent() ? raw * 100 : raw`
+        // — if that branch is removed the field below would carry 0.65.
+        let item = WorkoutItem(
+            id: "Y", name: "Outdoor Run",
+            start: "2026-05-13 07:00:00 +0200",
+            end:   "2026-05-13 08:00:00 +0200",
+            duration: 3600, isIndoor: false, location: "Outdoor",
+            avgHeartRate: nil, maxHeartRate: nil,
+            activeEnergyBurned: nil, intensity: nil,
+            distance: nil, avgSpeed: nil, maxSpeed: nil,
+            elevationUp: nil, stepCadence: nil,
+            temperature: nil,
+            humidity: .init(qty: 65, units: "%"),   // post-conversion
+            heartRateData: []
+        )
+        let bytes = try JSONEncoder().encode(WorkoutsPayload(items: [item]))
+        let json = String(decoding: bytes, as: UTF8.self)
+        #expect(json.contains(#""humidity":{"qty":65,"units":"%"}"#))
+        // Negative pin: a regression that drops the *100 multiplier would
+        // produce qty:0.65 here.
+        #expect(!json.contains(#""qty":0.65"#))
+    }
+
     @Test func nilQuantitiesOmittedFromPayload() throws {
         // Server-side haeWorkout uses `*qtyUnits` pointers — JSON null
         // and absent key both decode to nil. Verify we OMIT nils so the

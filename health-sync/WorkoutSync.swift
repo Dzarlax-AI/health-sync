@@ -310,14 +310,30 @@ extension HealthKitManager {
         guard let q = w.metadata?[key] as? HKQuantity,
               q.is(compatibleWith: unit)
         else { return nil }
-        let v = q.doubleValue(for: unit)
+        // HKUnit.percent() reports the value as a fraction (0.65 → "65 %").
+        // Server's workouts.HumidityPct expects 0..100 (it stores the
+        // value verbatim with no normalisation in convertHAEWorkout), so
+        // rescale here before serialising. Other units (degC, meters,
+        // MET) round-trip 1:1 — no scaling needed.
+        let raw = q.doubleValue(for: unit)
+        let v = (unit == HKUnit.percent()) ? raw * 100.0 : raw
         guard v.isFinite else { return nil }
         return WorkoutItem.Quantity(qty: v, units: units)
     }
 
     private func heartRateTimeline(for w: HKWorkout) async throws -> [WorkoutItem.HRSamplePoint] {
         let hrType = HKQuantityType(.heartRate)
-        let pred = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate)
+        // Scope strictly to HR samples associated with THIS workout. A
+        // pure time predicate would also pick up unrelated HR samples
+        // recorded in the same interval (e.g. iPhone HR readings while
+        // the Watch is the workout source, or a second device worn
+        // simultaneously) and pollute the server-side time-in-zone
+        // computation. The time predicate is kept as an AND term for
+        // belt-and-braces — `predicateForObjects(from:)` already implies
+        // the workout's interval but explicit beats implicit here.
+        let timePred = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate)
+        let workoutPred = HKQuery.predicateForObjects(from: w)
+        let pred = NSCompoundPredicate(andPredicateWithSubpredicates: [workoutPred, timePred])
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
         let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation { cont in
             let q = HKSampleQuery(
