@@ -231,7 +231,15 @@ final class SyncEngine {
             since: startOfFirstDay, until: endOfToday
         )
         totalPoints += workoutResult.count
-        let workoutChunkCounted = 1
+        // Only count workouts as a chunk when it actually ran — `.disabled`
+        // means the user turned it off in settings, so reporting "N+1
+        // chunks" would overstate the work performed. Flagged by
+        // CodeRabbit follow-up on PR #3.
+        let workoutChunkCounted: Int
+        switch workoutResult {
+        case .disabled:                 workoutChunkCounted = 0
+        case .uploaded, .failure:       workoutChunkCounted = 1
+        }
         var workoutChunkFailed = 0
         if let workoutErr = workoutResult.errorMessage {
             workoutChunkFailed = 1
