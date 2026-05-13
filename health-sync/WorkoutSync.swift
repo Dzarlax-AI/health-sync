@@ -197,28 +197,48 @@ extension HealthKitManager {
             units: "kcal"
         )
 
-        // HR — fetched via `predicateForObjects(from: workout)` rather
-        // than `workout.statistics(for: .heartRate)` because the latter
-        // returns nil for many Apple-Watch workouts (the heart-rate
-        // samples are linked to the workout but not "saved into" it via
-        // HKWorkoutBuilder.addSamples — `.statistics(for:)` requires the
-        // latter). Empirically observed in 78/78 walking workouts after
-        // the first 60-day backfill on PR #3. Same query feeds the
-        // optional per-sample timeline so we don't pay for two passes.
+        // HR strategy. Both branches scope the query by
+        // `predicateForObjects(from: workout)` rather than
+        // `workout.statistics(for: .heartRate)` because the latter
+        // returns nil for many Apple-Watch workouts (their HR samples
+        // are associated via HKObjectAssociation rather than "saved
+        // into" the workout via HKWorkoutBuilder.addSamples).
+        // Empirically observed on 78/78 walking workouts during the
+        // 60-day backfill on PR #3.
         //
-        // Each of the three async metric queries is wrapped in `try?` so
-        // a transient HealthKit error on one workout's HR (or distance,
-        // or step count) doesn't abort the whole batch via the parent
+        //  - includeHRTimeline=true → fetch all samples once, compute
+        //    avg/max in Swift from the same array, ship as
+        //    heartRateData (one query, two outputs).
+        //  - includeHRTimeline=false → one stats-only query computing
+        //    avg+max in HealthKit; no per-sample materialisation. This
+        //    is the ~200ms-per-workout saving advertised on
+        //    `fetchWorkouts`'s docstring. Regression flagged by
+        //    CodeRabbit on PR #4 — fixed here.
+        //
+        // Each async metric query is wrapped in `try?` so a transient
+        // HealthKit error on one workout's HR (or distance, or step
+        // count) doesn't abort the whole batch via the parent
         // `fetchWorkouts` for-loop — the workout ships with whatever
-        // fields succeeded, others fall back to nil/[]. Flagged by
-        // CodeRabbit on PR #4.
-        let hrPoints = (try? await heartRateSamples(for: w)) ?? []
-        let avgHR = hrPoints.isEmpty ? nil : WorkoutItem.Quantity(
-            qty: hrPoints.reduce(0.0) { $0 + $1.Avg } / Double(hrPoints.count),
-            units: "bpm"
-        )
-        let maxHR: WorkoutItem.Quantity? = hrPoints.map(\.Avg).max().map {
-            WorkoutItem.Quantity(qty: $0, units: "bpm")
+        // fields succeeded, others fall back to nil/[].
+        let hrPoints: [WorkoutItem.HRSamplePoint]
+        let avgHR: WorkoutItem.Quantity?
+        let maxHR: WorkoutItem.Quantity?
+        if includeHRTimeline {
+            hrPoints = (try? await heartRateSamples(for: w)) ?? []
+            avgHR = hrPoints.isEmpty ? nil : WorkoutItem.Quantity(
+                qty: hrPoints.reduce(0.0) { $0 + $1.Avg } / Double(hrPoints.count),
+                units: "bpm"
+            )
+            maxHR = hrPoints.map(\.Avg).max().map {
+                WorkoutItem.Quantity(qty: $0, units: "bpm")
+            }
+        } else {
+            hrPoints = []
+            // `?? nil` collapses HKStatistics?? (from `try?` on a
+            // function that itself returns HKStatistics?) to HKStatistics?.
+            let stats: HKStatistics? = (try? await heartRateAggregates(for: w)) ?? nil
+            avgHR = bpmQuantity(stats?.averageQuantity())
+            maxHR = bpmQuantity(stats?.maximumQuantity())
         }
         // `?? nil` collapses the `Quantity??` from `try?` on a method
         // that itself returns `Quantity?` back to `Quantity?`. Without
@@ -400,6 +420,38 @@ extension HealthKitManager {
         let v = (unit == HKUnit.percent()) ? raw * 100.0 : raw
         guard v.isFinite else { return nil }
         return WorkoutItem.Quantity(qty: v, units: units)
+    }
+
+    /// Stats-only HR aggregates (avg + max) for a workout, computed by
+    /// HealthKit without materialising individual samples. Used when
+    /// `includeHRTimeline` is off — saves ~200ms per workout vs the
+    /// full sample fetch + Swift-side aggregation. The
+    /// `predicateForObjects(from: workout)` scope is the same as
+    /// `heartRateSamples` (and is necessary for the reason described
+    /// there).
+    private func heartRateAggregates(for w: HKWorkout) async throws -> HKStatistics? {
+        let pred = HKQuery.predicateForObjects(from: w)
+        return try await withCheckedThrowingContinuation { cont in
+            let q = HKStatisticsQuery(
+                quantityType: HKQuantityType(.heartRate),
+                quantitySamplePredicate: pred,
+                options: [.discreteAverage, .discreteMax]
+            ) { _, s, err in
+                if let err { cont.resume(throwing: err); return }
+                cont.resume(returning: s)
+            }
+            store.execute(q)
+        }
+    }
+
+    /// Maps an `HKQuantity` (in heart-rate units) to a server-shape
+    /// `WorkoutItem.Quantity`. Centralised so both HR code paths
+    /// (timeline-on samples + timeline-off stats) share the same
+    /// finite/positive guards and the same `bpm` unit constant.
+    private func bpmQuantity(_ q: HKQuantity?) -> WorkoutItem.Quantity? {
+        let bpm = HKUnit.count().unitDivided(by: .minute())
+        guard let v = q?.doubleValue(for: bpm), v.isFinite, v > 0 else { return nil }
+        return WorkoutItem.Quantity(qty: v, units: "bpm")
     }
 
     /// Returns HR samples linked to the workout, formatted as server
