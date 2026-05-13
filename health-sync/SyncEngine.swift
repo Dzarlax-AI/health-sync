@@ -87,14 +87,21 @@ final class SyncEngine {
             let payload = HealthPayload(metrics: metrics)
             try await upload(payload)
 
+            // Workouts ship in a separate POST to /health/workouts (the
+            // server has a dedicated handler and DB table). Gated by the
+            // user-facing toggle in SettingsView. Failure here does NOT
+            // fail the whole sync — metric sync is the primary use case
+            // and workout history catches up on the next cycle.
+            let workoutCount = await uploadWorkoutsIfEnabled(since: since)
+
             let now = Date()
             defaults.set(now, forKey: lastSyncKey)
             lastSync = now
-            lastPointCount = count
-            history.insert(SyncEntry(date: now, points: count, success: true, error: nil), at: 0)
+            lastPointCount = count + workoutCount
+            history.insert(SyncEntry(date: now, points: count + workoutCount, success: true, error: nil), at: 0)
             if history.count > 50 { history = Array(history.prefix(50)) }
             persistHistory()
-            if defaults.bool(forKey: "notifyOnSync") { sendSyncNotification(points: count) }
+            if defaults.bool(forKey: "notifyOnSync") { sendSyncNotification(points: count + workoutCount) }
         } catch let hkErr as HKError where hkErr.code == .errorDatabaseInaccessible {
             // Device is locked — silent skip, next BGProcessingTask will retry
         } catch {
@@ -208,6 +215,15 @@ final class SyncEngine {
         }
         }
 
+        // Workouts: one extra POST covering the whole re-sync window.
+        // Server upserts on workout UUID so resending is idempotent. We
+        // do this AFTER metric chunks so a workout's daily metric context
+        // is already in the DB when the workout row lands.
+        let workoutCount = await uploadWorkoutsIfEnabled(
+            since: startOfFirstDay, until: endOfToday
+        )
+        totalPoints += workoutCount
+
         let summary: String
         let totalChunks = total + 1 // +1 for the up-front sleep pass
         if failed == 0 {
@@ -272,6 +288,36 @@ final class SyncEngine {
         let total: Int
     }
 
+    /// Fetches and uploads workouts when the user has enabled the feature.
+    /// Returns the number of workouts successfully shipped (0 on disabled,
+    /// no-new-workouts, or upload failure). Errors are folded into
+    /// `lastError`/history but do NOT propagate — the metric-sync path is
+    /// the primary contract of `syncNow`; workouts are an enrichment that
+    /// retries naturally on the next cycle. Same rule applies in
+    /// `syncFullDays`.
+    private func uploadWorkoutsIfEnabled(since: Date, until: Date? = nil) async -> Int {
+        let syncWorkouts = (defaults.object(forKey: "syncWorkouts") as? Bool) ?? true
+        guard syncWorkouts else { return 0 }
+        let includeHRTimeline = (defaults.object(forKey: "workoutHRTimeline") as? Bool) ?? true
+        do {
+            let items = try await HealthKitManager.shared.fetchWorkouts(
+                since: since, until: until, includeHRTimeline: includeHRTimeline
+            )
+            guard !items.isEmpty else { return 0 }
+            try await uploadWorkouts(WorkoutsPayload(items: items))
+            return items.count
+        } catch {
+            // Log into history with a clear prefix so the user sees workouts
+            // failed without it looking like metric sync failed.
+            history.insert(SyncEntry(
+                date: Date(), points: 0, success: false,
+                error: "workouts: \(error.localizedDescription)"
+            ), at: 0)
+            persistHistory()
+            return 0
+        }
+    }
+
     private func upload(_ payload: HealthPayload, session: SyncSession? = nil) async throws {
         let serverURL = defaults.string(forKey: "serverURL") ?? ""
         guard !serverURL.isEmpty, let url = URL(string: serverURL + "/health") else {
@@ -286,6 +332,30 @@ final class SyncEngine {
         if let session {
             req.setValue(session.id, forHTTPHeaderField: "X-Sync-Session")
             req.setValue(String(session.total), forHTTPHeaderField: "X-Sync-Session-Total")
+        }
+        req.httpBody = try JSONEncoder().encode(payload)
+
+        let (_, response) = try await URLSession.shared.data(for: req)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else {
+            throw SyncError.httpError(code)
+        }
+    }
+
+    /// Twin of `upload` that hits the workouts endpoint. Kept separate
+    /// rather than overloading `upload` because the path, payload type,
+    /// and X-Sync-Session semantics differ — workouts batch as a single
+    /// POST, no chunking.
+    private func uploadWorkouts(_ payload: WorkoutsPayload) async throws {
+        let serverURL = defaults.string(forKey: "serverURL") ?? ""
+        guard !serverURL.isEmpty, let url = URL(string: serverURL + "/health/workouts") else {
+            throw SyncError.invalidURL
+        }
+        var req = URLRequest(url: url, timeoutInterval: 120)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let key = KeychainStore.apiKey, !key.isEmpty {
+            req.setValue(key, forHTTPHeaderField: "X-API-Key")
         }
         req.httpBody = try JSONEncoder().encode(payload)
 
