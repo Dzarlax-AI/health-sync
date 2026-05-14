@@ -100,7 +100,7 @@ struct WorkoutItem: Encodable, Sendable {
 /// with — kept identical so downstream queries
 /// (`name = 'Outdoor Run'`, MCP tool filters, etc.) keep working without
 /// migration.
-func workoutDisplayName(_ type: HKWorkoutActivityType, isIndoor: Bool) -> String {
+nonisolated func workoutDisplayName(_ type: HKWorkoutActivityType, isIndoor: Bool) -> String {
     switch type {
     case .running:                          return isIndoor ? "Indoor Run" : "Outdoor Run"
     case .walking:                          return "Walking"
@@ -269,8 +269,8 @@ extension HealthKitManager {
         return WorkoutItem(
             id: w.uuid.uuidString,
             name: name,
-            start: formatForServer(w.startDate),
-            end:   formatForServer(w.endDate),
+            start: serverDate(w.startDate),
+            end:   serverDate(w.endDate),
             duration: w.duration,
             isIndoor: isIndoor,
             location: isIndoor ? "Indoor" : "Outdoor",
@@ -362,7 +362,10 @@ extension HealthKitManager {
     /// and step-count paths so the predicate-fallback dance is
     /// expressed in one place each.
     private func sumQuantity(type: HKQuantityType, predicate: NSPredicate) async throws -> HKStatistics? {
-        try await withCheckedThrowingContinuation { cont in
+        // Explicit continuation type: Swift 6 won't propagate the `HKStatistics?`
+        // return type into the closure, so `cont.resume(returning: s)` (where
+        // `s` is `HKStatistics?`) wouldn't compile without it.
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<HKStatistics?, Error>) in
             let q = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: predicate,
                                       options: [.cumulativeSum]) { _, s, err in
                 if let err { cont.resume(throwing: err); return }
@@ -405,7 +408,7 @@ extension HealthKitManager {
               total.isFinite, total > 0
         else { return [] }
         return [
-            WorkoutItem.StepSample(date: formatForServer(w.startDate), qty: total)
+            WorkoutItem.StepSample(date: serverDate(w.startDate), qty: total)
         ]
     }
 
@@ -461,7 +464,7 @@ extension HealthKitManager {
     /// there).
     private func heartRateAggregates(for w: HKWorkout) async throws -> HKStatistics? {
         let pred = HKQuery.predicateForObjects(from: w)
-        return try await withCheckedThrowingContinuation { cont in
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<HKStatistics?, Error>) in
             let q = HKStatisticsQuery(
                 quantityType: HKQuantityType(.heartRate),
                 quantitySamplePredicate: pred,
@@ -520,7 +523,7 @@ extension HealthKitManager {
             let v = s.quantity.doubleValue(for: bpm)
             guard v.isFinite, v > 0 else { return nil }
             return WorkoutItem.HRSamplePoint(
-                date: formatForServer(s.startDate),
+                date: serverDate(s.startDate),
                 Avg: v
             )
         }

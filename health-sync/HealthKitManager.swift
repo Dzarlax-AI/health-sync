@@ -17,7 +17,9 @@ struct MetricDef: Sendable {
 
 actor HealthKitManager {
     static let shared = HealthKitManager()
-    private let store = HKHealthStore()
+    // Accessible from same-module extensions in other files (e.g. WorkoutSync.swift)
+    // that issue HKSampleQueries against this actor's store.
+    let store = HKHealthStore()
 
     // MARK: - Metric catalogue
 
@@ -438,7 +440,9 @@ actor HealthKitManager {
 
     // MARK: - Date formatting (actor-isolated — avoids calling @MainActor formatForServer)
 
-    private func serverDate(_ date: Date) -> String {
+    // Internal so same-module extensions in other files (WorkoutSync.swift) can
+    // format dates without hopping to the @MainActor `formatForServer`.
+    func serverDate(_ date: Date) -> String {
         var cal = Calendar(identifier: .gregorian)
         let tz = TimeZone.current
         cal.timeZone = tz
