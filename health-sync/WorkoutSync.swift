@@ -330,31 +330,29 @@ extension HealthKitManager {
             type = nil
         }
         guard let type else { return nil }
-        // Two-stage query: try workout-scoped predicate first
-        // (`predicateForObjects(from:)`), and fall back to a time-window
-        // predicate when that returns zero. Background:
+        // Two-stage query identical in shape to stepCountSamples below:
         //
-        //   - Apple Watch explicit workouts → distance samples are
-        //     associated with the workout via HKObjectAssociation;
-        //     predicateForObjects matches them. Empirically 6/78 walks
-        //     on the first 60-day backfill (PR #3).
-        //   - Passive iPhone-detected walks → CMPedometer writes the
-        //     distance as standalone samples in the same time window
-        //     but doesn't link them to the workout. predicateForObjects
-        //     returns nothing for these; time-window query catches them.
+        //   1. Workout-scoped via predicateForObjects(from:) — catches
+        //      samples that Apple linked to the workout (typical for
+        //      Watch-recorded walks).
+        //   2. Source-filtered time-overlap on the workout's source,
+        //      with manual apportionment for partial-overlap samples.
+        //      Catches CMPedometer distance for passive iPhone walks.
         //
-        // The time-window fallback risks summing data from a concurrent
-        // workout, but in practice walks don't overlap with other
-        // distance-tracking activities. Empirically these are the
-        // walks the user wants in the dashboard.
+        // Source filter is critical: walks on a user with Watch+Phone+
+        // RingConn typically record distance redundantly on multiple
+        // sources. Summing all would inflate by 2-3x. Filtering to the
+        // workout's own source (`w.sourceRevision.source`) picks the
+        // device that recorded the workout and uses its distance only.
         let workoutPred = HKQuery.predicateForObjects(from: w)
-        let windowPred  = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate)
         if let q = try await sumQuantity(type: type, predicate: workoutPred),
            let qty = quantity(stat: q, kind: .sum, unit: .meterUnit(with: .kilo), units: "km") {
             return qty
         }
-        let fallback = try await sumQuantity(type: type, predicate: windowPred)
-        return quantity(stat: fallback, kind: .sum, unit: .meterUnit(with: .kilo), units: "km")
+        if let km = try await overlapApportionedSum(type: type, in: w, unit: .meterUnit(with: .kilo)) {
+            return WorkoutItem.Quantity(qty: km, units: "km")
+        }
+        return nil
     }
 
     /// Convenience: runs an `HKStatisticsQuery(.cumulativeSum)` and
@@ -400,51 +398,74 @@ extension HealthKitManager {
             return [WorkoutItem.StepSample(date: serverDate(w.startDate), qty: total)]
         }
 
-        // Stage 2: time-overlap apportionment. The previous PR #5
-        // fallback used HKStatisticsQuery + `predicateForSamples(withStart:end:)`
-        // (default options), but in practice that predicate only matches
-        // samples whose startDate AND endDate both fall inside the
-        // workout window — strict containment. CMPedometer step
-        // samples are minutes-to-hour-long buckets that almost always
-        // span the workout boundaries, so containment misses every
-        // sample and the sum comes back as 0. Verified empirically on
-        // the 2026-03-06 walking workout (102 walks → 0/102 with
-        // step_count_total even after the time-window fallback shipped).
-        //
-        // Robust path: fetch raw samples whose interval intersects the
-        // workout window (start OR end inside, plus encompassing
-        // samples caught by the strict-start branch when the sample
-        // starts inside), then sum each sample's value scaled by the
-        // fraction of its duration that overlaps the workout. A 1-hour
-        // step bucket of 600 steps shared with a 10-minute workout
-        // counts as 100 steps for that workout, not 600.
-        // Three branches union'd into the overlap predicate:
-        //
-        //   1. .strictStartDate  → sample.startDate ∈ [w.start, w.end)
-        //                          ("starts inside the workout")
-        //   2. .strictEndDate    → sample.endDate   ∈ [w.start, w.end)
-        //                          ("ends inside the workout")
-        //   3. encompassing      → sample.startDate < w.start AND
-        //                          sample.endDate   ≥ w.end
-        //                          ("sample fully covers the workout")
-        //
-        // The encompassing branch is the one CodeRabbit flagged on
-        // PR #7 — without it, a 1-hour CMPedometer bucket 08:00→09:00
-        // doesn't match a workout that lies entirely inside it
-        // (e.g. 08:15→08:45) because neither bucket boundary falls
-        // inside the workout, so both strict predicates miss. With
-        // hour-bucketed step samples and sub-hour walks this is the
-        // common case, not the edge.
-        let strictStart = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate, options: .strictStartDate)
-        let strictEnd   = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate, options: .strictEndDate)
-        let startsBefore = HKQuery.predicateForSamples(withStart: nil, end: w.startDate, options: .strictStartDate)
-        let endsAfter    = HKQuery.predicateForSamples(withStart: w.endDate, end: nil, options: .strictEndDate)
-        let encompassing = NSCompoundPredicate(andPredicateWithSubpredicates: [startsBefore, endsAfter])
-        let overlapPred  = NSCompoundPredicate(orPredicateWithSubpredicates: [strictStart, strictEnd, encompassing])
-        let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation { cont in
+        // Stage 2: source-filtered time-overlap with manual apportionment.
+        // See `overlapApportionedSum` below for the predicate rationale.
+        if let total = try await overlapApportionedSum(type: type, in: w, unit: .count()) {
+            return [WorkoutItem.StepSample(date: serverDate(w.startDate), qty: total)]
+        }
+        return []
+    }
+
+    /// Sums the values of `type`-typed samples that overlap workout `w`,
+    /// scoped to `w.sourceRevision.source`, with each sample's value
+    /// apportioned by the fraction of its duration that overlaps the
+    /// workout window. Returns nil when no sample contributed a
+    /// positive value.
+    ///
+    /// Why each piece:
+    ///
+    ///   - **Time predicate via NSPredicate(format:)** instead of
+    ///     `HKQuery.predicateForSamples(withStart:end:options:)`.
+    ///     PR #5 used the default-options variant — empirically it
+    ///     missed every CMPedometer step bucket on the 90-day backfill
+    ///     (Apple's docs claim default = "intersects range" but
+    ///     observed behaviour was strict-containment). PR #7 tried
+    ///     OR of strict + encompassing predicates with `withStart:nil`
+    ///     to cover encompassing samples — still 0/101 after the
+    ///     re-sync. Direct NSPredicate format using the public
+    ///     `HKPredicateKeyPathStartDate` / `HKPredicateKeyPathEndDate`
+    ///     constants expresses overlap unambiguously:
+    ///     `sample.endDate >= w.startDate AND
+    ///      sample.startDate <= w.endDate`.
+    ///
+    ///   - **Source predicate**. Walks on a user with multiple
+    ///     wearables (Apple Watch + RingConn + iPhone) typically
+    ///     record step and distance redundantly on 2-3 sources.
+    ///     Summing all would inflate the workout's step count by
+    ///     2-3x. The workout itself was recorded by one specific
+    ///     source (`w.sourceRevision.source`); use only that source's
+    ///     samples to avoid double-counting. For explicit Watch
+    ///     workouts this means Watch's pedometer; for passive iPhone-
+    ///     detected walks this means iPhone's CMPedometer.
+    ///
+    ///   - **Manual apportionment**. A 1-hour pedometer bucket of 600
+    ///     steps spanning a 10-minute workout contributes 100 steps,
+    ///     not 600. HKStatisticsQuery doesn't apportion partial
+    ///     overlaps for cumulativeSum, so Swift-side scaling is
+    ///     required.
+    ///
+    /// Used by both step count and distance fallbacks. Heart rate
+    /// stays on the predicateForObjects-only path because for passive
+    /// iPhone walks the workout's source is iPhone, which has no HR
+    /// hardware — source-filtering for HR would yield zero samples
+    /// regardless.
+    private func overlapApportionedSum(
+        type: HKQuantityType,
+        in w: HKWorkout,
+        unit: HKUnit
+    ) async throws -> Double? {
+        let timePred = NSPredicate(
+            format: "%K >= %@ AND %K <= %@",
+            HKPredicateKeyPathEndDate,   w.startDate as NSDate,
+            HKPredicateKeyPathStartDate, w.endDate   as NSDate
+        )
+        let sourcePred = HKQuery.predicateForObjects(from: [w.sourceRevision.source])
+        let pred = NSCompoundPredicate(andPredicateWithSubpredicates: [timePred, sourcePred])
+        let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation {
+            (cont: CheckedContinuation<[HKQuantitySample], Error>) in
             let q = HKSampleQuery(
                 sampleType: type,
-                predicate: overlapPred,
+                predicate: pred,
                 limit: HKObjectQueryNoLimit,
                 sortDescriptors: nil
             ) { _, raw, err in
@@ -460,11 +481,9 @@ extension HealthKitManager {
             guard overlapDur > 0 else { return sum }
             let sampleDur = max(0.001, s.endDate.timeIntervalSince(s.startDate))
             let fraction  = min(1.0, overlapDur / sampleDur)
-            let steps     = s.quantity.doubleValue(for: .count()) * fraction
-            return sum + steps
+            return sum + s.quantity.doubleValue(for: unit) * fraction
         }
-        guard total.isFinite, total > 0 else { return [] }
-        return [WorkoutItem.StepSample(date: serverDate(w.startDate), qty: total)]
+        return (total.isFinite && total > 0) ? total : nil
     }
 
     private func speedQuantity(for w: HKWorkout, kind: AggKind) -> WorkoutItem.Quantity? {
