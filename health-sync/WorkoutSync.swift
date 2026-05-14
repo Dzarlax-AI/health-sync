@@ -411,13 +411,34 @@ extension HealthKitManager {
         guard let q = w.metadata?[key] as? HKQuantity,
               q.is(compatibleWith: unit)
         else { return nil }
-        // HKUnit.percent() reports the value as a fraction (0.65 → "65 %").
-        // Server's workouts.HumidityPct expects 0..100 (it stores the
-        // value verbatim with no normalisation in convertHAEWorkout), so
-        // rescale here before serialising. Other units (degC, meters,
-        // MET) round-trip 1:1 — no scaling needed.
+        // Percent normalisation — server's workouts.HumidityPct expects
+        // 0..100 (stored verbatim by convertHAEWorkout, no scaling).
+        //
+        // The standard `HKUnit.percent()` convention is fraction-form:
+        // 0.42 = 42%. `HealthKitManager.scaledValue` multiplies by 100
+        // for body_fat_percentage / oxygenSaturation and that produces
+        // correct 0..100 numbers on the server — confirming the writer
+        // there follows the docs.
+        //
+        // BUT: `HKMetadataKeyWeatherHumidity` (Apple Watch's workout
+        // weather attachment) writes the value as the percent number
+        // directly — e.g. 71 for 71%, not 0.71. Empirically observed on
+        // 12/12 walks in the 90-day backfill (DB rows landed as
+        // 4200–8100 before this guard — doubled by the previous
+        // unconditional ×100).
+        //
+        // Heuristic: if raw > 1.0 the writer already gave us a percent
+        // value (humidity); otherwise it's a fraction (would-be
+        // percent metrics from compliant writers). The 1.0 boundary is
+        // safe in practice — humidity is rarely below 1% and body-fat
+        // / SpO2 fractions are always well below 1.0.
         let raw = q.doubleValue(for: unit)
-        let v = (unit == HKUnit.percent()) ? raw * 100.0 : raw
+        let v: Double
+        if unit == HKUnit.percent() {
+            v = raw > 1.0 ? raw : raw * 100.0
+        } else {
+            v = raw
+        }
         guard v.isFinite else { return nil }
         return WorkoutItem.Quantity(qty: v, units: units)
     }
