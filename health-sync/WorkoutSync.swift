@@ -418,9 +418,29 @@ extension HealthKitManager {
         // fraction of its duration that overlaps the workout. A 1-hour
         // step bucket of 600 steps shared with a 10-minute workout
         // counts as 100 steps for that workout, not 600.
+        // Three branches union'd into the overlap predicate:
+        //
+        //   1. .strictStartDate  → sample.startDate ∈ [w.start, w.end)
+        //                          ("starts inside the workout")
+        //   2. .strictEndDate    → sample.endDate   ∈ [w.start, w.end)
+        //                          ("ends inside the workout")
+        //   3. encompassing      → sample.startDate < w.start AND
+        //                          sample.endDate   ≥ w.end
+        //                          ("sample fully covers the workout")
+        //
+        // The encompassing branch is the one CodeRabbit flagged on
+        // PR #7 — without it, a 1-hour CMPedometer bucket 08:00→09:00
+        // doesn't match a workout that lies entirely inside it
+        // (e.g. 08:15→08:45) because neither bucket boundary falls
+        // inside the workout, so both strict predicates miss. With
+        // hour-bucketed step samples and sub-hour walks this is the
+        // common case, not the edge.
         let strictStart = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate, options: .strictStartDate)
         let strictEnd   = HKQuery.predicateForSamples(withStart: w.startDate, end: w.endDate, options: .strictEndDate)
-        let overlapPred = NSCompoundPredicate(orPredicateWithSubpredicates: [strictStart, strictEnd])
+        let startsBefore = HKQuery.predicateForSamples(withStart: nil, end: w.startDate, options: .strictStartDate)
+        let endsAfter    = HKQuery.predicateForSamples(withStart: w.endDate, end: nil, options: .strictEndDate)
+        let encompassing = NSCompoundPredicate(andPredicateWithSubpredicates: [startsBefore, endsAfter])
+        let overlapPred  = NSCompoundPredicate(orPredicateWithSubpredicates: [strictStart, strictEnd, encompassing])
         let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation { cont in
             let q = HKSampleQuery(
                 sampleType: type,
