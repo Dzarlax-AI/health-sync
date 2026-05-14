@@ -710,13 +710,30 @@ actor HealthKitManager {
             }
         }
 
-        // Per-session asleep duration (sum of asleep* fragments, no awake/inBed)
-        // so we can classify and split into main vs nap below.
+        // Per-session asleep duration (sum of asleep* fragments, no
+        // awake/inBed) so we can classify and split into main vs
+        // nap below.
+        //
+        // Same coarse-vs-fine guard as the aggregate loop: when the
+        // session has per-stage markers (.asleepDeep/.asleepREM/
+        // .asleepCore), skip the coarse `.asleepUnspecified` /
+        // `.asleep` rows that overlay the same wall-clock window
+        // — otherwise an 8h night with full stage breakdown reports
+        // ~16h asleep, inflating main_total / nap_total.
         func asleepHours(_ session: Session) -> Double {
-            session.samples.reduce(into: 0.0) { acc, s in
-                if isAsleepValue(s.value) {
-                    acc += s.endDate.timeIntervalSince(s.startDate) / 3600.0
+            let hasSpecificStages = session.samples.contains { s in
+                switch HKCategoryValueSleepAnalysis(rawValue: s.value) {
+                case .asleepDeep, .asleepREM, .asleepCore: return true
+                default:                                   return false
                 }
+            }
+            return session.samples.reduce(into: 0.0) { acc, s in
+                guard isAsleepValue(s.value) else { return }
+                let raw = HKCategoryValueSleepAnalysis(rawValue: s.value)
+                if hasSpecificStages && (raw == .asleepUnspecified || raw == .asleep) {
+                    return
+                }
+                acc += s.endDate.timeIntervalSince(s.startDate) / 3600.0
             }
         }
 
@@ -777,17 +794,55 @@ actor HealthKitManager {
 
             for (i, (session, asleepHrs)) in withDurations.enumerated() {
                 let isMain = (i == mainIndex && asleepHrs > 0)
+                // Apple Watch on iOS 26 emits sleep samples in two
+                // concurrent layers for the same wall-clock time:
+                //
+                //   1. A coarse `.asleepUnspecified` (or legacy
+                //      `.asleep`) covering the whole sleep block —
+                //      what older apps relied on.
+                //   2. Fine-grained `.asleepCore` / `.asleepREM` /
+                //      `.asleepDeep` segments breaking that block
+                //      into the stage timeline that Health.app shows.
+                //
+                // Counting both double-bills core: a single 8h night
+                // ends up as 8h "unspecified" + 6h core + 1h REM +
+                // 1h deep ≈ 16h total. Detect the specific-stage
+                // markers per session; when present, skip the
+                // coarse layer to avoid the overlap. When only the
+                // coarse layer exists (older watch, RingConn, iPhone
+                // Sleep Schedule estimates) we keep using it so
+                // those sources don't silently zero out.
+                let hasSpecificStages = session.samples.contains { s in
+                    switch HKCategoryValueSleepAnalysis(rawValue: s.value) {
+                    case .asleepDeep, .asleepREM, .asleepCore: return true
+                    default:                                   return false
+                    }
+                }
                 for s in session.samples {
                     let hrs = s.endDate.timeIntervalSince(s.startDate) / 3600.0
                     switch HKCategoryValueSleepAnalysis(rawValue: s.value) {
-                    case .asleepDeep:                       p.deep  += hrs; p.total += hrs
-                    case .asleepREM:                        p.rem   += hrs; p.total += hrs
-                    case .asleepCore, .asleepUnspecified,
-                         .asleep:                           p.core  += hrs; p.total += hrs
-                    case .awake:                            p.awake += hrs
-                    case .inBed, .none, .some(_):           break
+                    case .asleepDeep:               p.deep += hrs; p.total += hrs
+                    case .asleepREM:                p.rem  += hrs; p.total += hrs
+                    case .asleepCore:               p.core += hrs; p.total += hrs
+                    case .asleepUnspecified, .asleep:
+                        if !hasSpecificStages {
+                            // Fallback: source has no per-stage data,
+                            // attribute coarse asleep time to core so
+                            // bank/score still gets a sleep_total.
+                            p.core += hrs
+                            p.total += hrs
+                        }
+                    case .awake:                    p.awake += hrs
+                    case .inBed, .none, .some(_):   break
                     }
-                    if let phase = Self.sleepPhaseName(for: s.value) {
+                    // Per-segment emission for the server's v2.2
+                    // hourly window — same overlap guard as the
+                    // aggregate so per-stage rows on disk don't
+                    // double-count either.
+                    let raw = HKCategoryValueSleepAnalysis(rawValue: s.value)
+                    let skipCoarseOverlap = hasSpecificStages &&
+                        (raw == .asleepUnspecified || raw == .asleep)
+                    if !skipCoarseOverlap, let phase = Self.sleepPhaseName(for: s.value) {
                         perSegmentByPhase[phase]?.append((dk: dk, sample: s))
                     }
                 }
