@@ -91,7 +91,6 @@ struct WorkoutSyncTests {
             avgSpeed:           nil,
             maxSpeed:           nil,
             elevationUp:        nil,
-            stepCadence:        nil,
             temperature:        nil,
             humidity:           nil,
             heartRateData: [
@@ -140,18 +139,16 @@ struct WorkoutSyncTests {
     }
 
     @Test func humidityPercentSerialisesAs0to100() throws {
-        // HKQuantity(value: 0.65, unit: HKUnit.percent()) is the fraction-
-        // form humidity HealthKit returns. The server reads HumidityPct as
-        // a 0..100 number (no normalisation in workouts.go), so we must
-        // multiply by 100 client-side before serialising — otherwise the
-        // workout row stores 0.65 % humidity which is nonsense.
+        // Server reads HumidityPct as 0..100 verbatim (no normalisation in
+        // workouts.go). Apple Watch writes HKMetadataKeyWeatherHumidity
+        // already in 0..100 form (e.g. `71` for 71%) — non-compliant with
+        // the HKUnit.percent() 0..1 convention but consistent in practice.
+        // metadataQuantity treats humidity specially via the
+        // `percentIsAbsolute: true` flag and passes the value through.
         //
-        // We can't drive metadataQuantity directly without an HKWorkout
-        // (its first parameter), but we CAN pin the end-to-end contract
-        // by constructing a WorkoutItem with the post-conversion value
-        // and asserting the JSON shape. The metadataQuantity unit-test is
-        // the inline conditional `unit == HKUnit.percent() ? raw * 100 : raw`
-        // — if that branch is removed the field below would carry 0.65.
+        // We can't drive metadataQuantity directly without an HKWorkout,
+        // but we CAN pin the on-the-wire contract by constructing the
+        // post-conversion WorkoutItem and asserting the JSON shape.
         let item = WorkoutItem(
             id: "Y", name: "Outdoor Run",
             start: "2026-05-13 07:00:00 +0200",
@@ -160,7 +157,7 @@ struct WorkoutSyncTests {
             avgHeartRate: nil, maxHeartRate: nil,
             activeEnergyBurned: nil, intensity: nil,
             distance: nil, avgSpeed: nil, maxSpeed: nil,
-            elevationUp: nil, stepCadence: nil,
+            elevationUp: nil,
             temperature: nil,
             humidity: .init(qty: 65, units: "%"),   // post-conversion
             heartRateData: [],
@@ -189,7 +186,7 @@ struct WorkoutSyncTests {
             avgHeartRate: nil, maxHeartRate: nil,
             activeEnergyBurned: nil, intensity: nil,
             distance: nil, avgSpeed: nil, maxSpeed: nil,
-            elevationUp: nil, stepCadence: nil,
+            elevationUp: nil,
             temperature: nil, humidity: nil,
             heartRateData: [],
             stepCount: []
