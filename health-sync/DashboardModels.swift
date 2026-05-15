@@ -377,6 +377,33 @@ struct SectionExplain: Decodable, Sendable, Hashable {
     let body: String
 }
 
+// MARK: - Section catalogue
+
+/// Catalogue of detail-page sections returned by `GET /api/sections?lang=`
+/// (`health_dashboard` PR #90). Drives the Trends tab's row list — added
+/// to replace the previous hardcoded three-row block whose titles and
+/// subtitles never localized. New section keys appearing on the server
+/// auto-surface in Trends without an App Store release.
+struct SectionsCatalogueResponse: Decodable, Sendable {
+    let sections: [SectionCatalogueEntry]
+}
+
+struct SectionCatalogueEntry: Decodable, Sendable, Identifiable, Hashable {
+    var id: String { key }
+    /// Stable routing identifier — matches `/api/section/{key}` path,
+    /// used to navigate into `SectionDetailView`.
+    let key: String
+    /// Server-localized title (`section_<key>_title` i18n key).
+    let title: String
+    /// Server-localized subtitle (`section_<key>_subtitle` i18n key).
+    let subtitle: String
+    /// Abstract token: `heart` / `activity` / `leaf` / future values.
+    /// iOS maps to SF Symbol + DS tint client-side because both are
+    /// design semantics, not translations. Unknown values fall back
+    /// to a generic glyph so a server-added section still renders.
+    let icon: String
+}
+
 // MARK: - User / tenant settings
 
 /// Server returns a heavy payload that mostly belongs to the web (Telegram,

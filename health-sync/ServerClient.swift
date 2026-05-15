@@ -266,4 +266,15 @@ final class ServerClient {
                              path: "/api/section/\(key)",
                              query: [URLQueryItem(name: "lang", value: lang)])
     }
+
+    /// Lists the stable catalogue of section detail pages with
+    /// server-localized title + subtitle. Used by Trends to render
+    /// navigation rows dynamically instead of hardcoding the list and
+    /// its labels. `health_dashboard` PR #90.
+    func sections() async throws -> SectionsCatalogueResponse {
+        let lang = await serverLang()
+        return try await get(SectionsCatalogueResponse.self,
+                             path: "/api/sections",
+                             query: [URLQueryItem(name: "lang", value: lang)])
+    }
 }

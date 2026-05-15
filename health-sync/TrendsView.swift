@@ -6,13 +6,20 @@ struct TrendsView: View {
     @State private var days: Int = 30
     @State private var loadError: String?
     @State private var isLoading = false
+    /// Section catalogue from `/api/sections` (health_dashboard PR #90).
+    /// nil = not loaded yet; empty = server returned no sections (treat
+    /// like a transient failure and hide the list rather than rendering
+    /// an empty card).
+    @State private var sections: [SectionCatalogueEntry]?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: .dsSpacingLg) {
                     readinessCard
-                    sectionList
+                    if let s = sections, !s.isEmpty {
+                        sectionList(s)
+                    }
                 }
                 .padding(.dsSpacing)
             }
@@ -75,25 +82,14 @@ struct TrendsView: View {
         .dsCard()
     }
 
-    private var sectionList: some View {
+    private func sectionList(_ entries: [SectionCatalogueEntry]) -> some View {
         VStack(spacing: 0) {
-            navigationRow(title: "Cardio",
-                          systemImage: "heart.fill",
-                          tint: .dsHeart,
-                          subtitle: "RHR · HRV · VO2 · respiratory",
-                          sectionKey: "cardio")
-            Divider().padding(.leading, 56)
-            navigationRow(title: "Activity",
-                          systemImage: "figure.run",
-                          tint: .dsActivity,
-                          subtitle: "Steps · energy · exercise · distance",
-                          sectionKey: "activity")
-            Divider().padding(.leading, 56)
-            navigationRow(title: "Recovery",
-                          systemImage: "leaf.fill",
-                          tint: .dsSleep,
-                          subtitle: "Sleep summary · HRV CV · wrist temp",
-                          sectionKey: "recovery")
+            ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
+                if idx > 0 {
+                    Divider().padding(.leading, 56)
+                }
+                navigationRow(entry)
+            }
         }
         .dsCard()
     }
@@ -101,19 +97,15 @@ struct TrendsView: View {
     /// Push to SectionDetailView — same view used from Today's Health
     /// overview, so both entry points show the rich (summary + KPIs +
     /// charts + "How it works") page.
-    private func navigationRow(title: String,
-                               systemImage: String,
-                               tint: Color,
-                               subtitle: String,
-                               sectionKey: String) -> some View {
-        NavigationLink(destination: SectionDetailView(sectionKey: sectionKey)) {
+    private func navigationRow(_ entry: SectionCatalogueEntry) -> some View {
+        NavigationLink(destination: SectionDetailView(sectionKey: entry.key)) {
             HStack(spacing: .dsSpacing) {
-                Image(systemName: systemImage)
+                Image(systemName: sfSymbol(for: entry.icon))
                     .frame(width: 24)
-                    .foregroundStyle(tint)
+                    .foregroundStyle(tint(for: entry.key))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(LocalizedStringKey(title)).font(.dsSubhead).foregroundStyle(Color.dsText)
-                    Text(LocalizedStringKey(subtitle)).font(.dsCaption).foregroundStyle(Color.dsTextTertiary)
+                    Text(entry.title).font(.dsSubhead).foregroundStyle(Color.dsText)
+                    Text(entry.subtitle).font(.dsCaption).foregroundStyle(Color.dsTextTertiary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
@@ -126,13 +118,50 @@ struct TrendsView: View {
         .buttonStyle(.plain)
     }
 
+    /// Maps the server's abstract icon token (`heart` / `activity` /
+    /// `leaf` / future values) to an SF Symbol. Stays iOS-side because
+    /// the choice of glyph is design, not translation — server should
+    /// not need to know iOS' icon vocabulary. Unknown tokens fall back
+    /// to a generic chart glyph so a server-added section still
+    /// renders something recognisable in the row.
+    private func sfSymbol(for icon: String) -> String {
+        switch icon {
+        case "heart":    return "heart.fill"
+        case "activity": return "figure.run"
+        case "leaf":     return "leaf.fill"
+        case "moon":     return "moon.zzz"
+        default:         return "chart.bar.fill"
+        }
+    }
+
+    /// Tint colour per section key. Same iOS-side rationale as
+    /// `sfSymbol(for:)` — design semantics rather than translation.
+    /// The web dashboard maintains its own colour palette; iOS aligns
+    /// where the DS tokens map naturally. Unknown keys → neutral accent.
+    private func tint(for key: String) -> Color {
+        switch key {
+        case "cardio":   return .dsHeart
+        case "activity": return .dsActivity
+        case "recovery": return .dsSleep
+        default:         return .dsAccent
+        }
+    }
+
     private func load() async {
         isLoading = true
         loadError = nil
+        // Readiness history is the primary data — its failure shows
+        // the empty-state in the readiness card. The sections catalogue
+        // is best-effort: a server too old to know `/api/sections`
+        // 404s, and we just hide the list rather than blocking the
+        // whole tab.
         do {
             history = try await ServerClient.shared.readinessHistory(days: days)
         } catch {
             loadError = error.localizedDescription
+        }
+        if let s = try? await ServerClient.shared.sections() {
+            sections = s.sections
         }
         isLoading = false
     }
