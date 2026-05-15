@@ -143,7 +143,7 @@ struct TodayView: View {
                         .font(.system(size: 56, weight: .bold, design: .rounded))
                         .foregroundStyle(readinessColor(band: b.readinessTodayBand ?? b.readinessBand,
                                                         score: score))
-                    Text(readinessDisplay(b, score: score))
+                    readinessDisplay(b, score: score)
                         .font(.dsBodySm)
                         .foregroundStyle(Color.dsTextSecondary)
                 }
@@ -198,7 +198,7 @@ struct TodayView: View {
                 // Title is server-localized via `verdict_label` (PR #84);
                 // fall back to the raw key only for older servers. Colour
                 // stays keyed by the stable `action_verdict` enum.
-                Text(verdictDisplay(e))
+                verdictDisplay(e)
                     .font(.dsBodySm.weight(.semibold))
                     .foregroundStyle(verdictColor(e.actionVerdict))
                 Spacer()
@@ -294,6 +294,11 @@ struct TodayView: View {
             }
             .accessibilityLabel(detail.label)
             .accessibilityHint(detail.description)
+            // VoiceOver: `.onTapGesture` alone doesn't announce the
+            // element as actionable; without the button trait users
+            // hear only the label and have no idea a double-tap will
+            // do anything. CodeRabbit review on PR #12.
+            .accessibilityAddTraits(.isButton)
     }
 
     private struct StressFlagStyle {
@@ -562,7 +567,7 @@ struct TodayView: View {
                 Text(s.title)
                     .font(.dsSubhead)
                     .foregroundStyle(Color.dsText)
-                DSStatusBadge(text: sectionStatusDisplay(s), status: badgeStatus(s.status))
+                sectionStatusBadge(s)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
                     .foregroundStyle(Color.dsTextTertiary)
@@ -673,26 +678,30 @@ struct TodayView: View {
         }
     }
 
-    /// Readiness text label. Reads the server-localized
-    /// `readiness_(today_)?label` (PR #85). The local fallback uses
-    /// the band when present, then the legacy threshold strings — both
-    /// kick in only on very old servers without the new fields.
-    private func readinessDisplay(_ b: BriefingResponse, score: Int) -> LocalizedStringKey {
+    /// Readiness text label as a `Text` view. Returns `Text(verbatim:)`
+    /// for the primary path so the server-localized string renders
+    /// as-is — wrapping in `LocalizedStringKey` would look the value up
+    /// in xcstrings again and re-translate to the iOS UI locale,
+    /// violating the content-vs-chrome split (Codex review on PR #12).
+    /// The fallbacks for older servers use literal English keys that
+    /// `LocalizedStringKey` can still look up in xcstrings to honour
+    /// the iOS UI locale when no server label is available.
+    private func readinessDisplay(_ b: BriefingResponse, score: Int) -> Text {
         if let label = b.readinessTodayLabel ?? b.readinessLabel, !label.isEmpty {
-            return LocalizedStringKey(label)
+            return Text(verbatim: label)
         }
         switch b.readinessTodayBand ?? b.readinessBand {
-        case "optimal":   return "Optimal"
-        case "good":      return "Good"
-        case "fair":      return "Fair"
-        case "low":       return "Low"
+        case "optimal":   return Text("Optimal")
+        case "good":      return Text("Good")
+        case "fair":      return Text("Fair")
+        case "low":       return Text("Low")
         case nil, .some(_):
             // Final fallback only — pre-PR-#85 servers without band
             // fields. Same thresholds as the legacy iOS switch.
-            if score >= 70 { return "Good" }
-            if score >= 40 { return "Fair" }
-            if score >  0  { return "Low" }
-            return ""
+            if score >= 70 { return Text("Good") }
+            if score >= 40 { return Text("Fair") }
+            if score >  0  { return Text("Low") }
+            return Text("")
         }
     }
 
@@ -713,14 +722,21 @@ struct TodayView: View {
         }
     }
 
-    /// Section status badge text. Server PR #84 ships
-    /// `status_label` already localized; we use it directly and fall
-    /// back to the raw status key (capitalised) only for older servers.
-    private func sectionStatusDisplay(_ s: BriefingSection) -> LocalizedStringKey {
+    /// Section status badge. Uses `DSStatusBadge`'s `verbatim` init
+    /// when the server provides a localized `status_label` (PR #84) so
+    /// the string renders as-is. Falls back to the iOS xcstrings path
+    /// (looks up the raw `status` key in chrome locale) only for older
+    /// servers that don't populate `status_label`. The two-init split on
+    /// `DSStatusBadge` is what makes this clean — see Codex review on
+    /// PR #12.
+    @ViewBuilder
+    private func sectionStatusBadge(_ s: BriefingSection) -> some View {
         if let label = s.statusLabel, !label.isEmpty {
-            return LocalizedStringKey(label)
+            DSStatusBadge(verbatim: label, status: badgeStatus(s.status))
+        } else {
+            DSStatusBadge(text: LocalizedStringKey(s.status.capitalized),
+                          status: badgeStatus(s.status))
         }
-        return LocalizedStringKey(s.status.capitalized)
     }
 
     private func badgeStatus(_ s: String) -> DSStatusBadge.Status {
@@ -742,16 +758,19 @@ struct TodayView: View {
         }
     }
 
-    /// Verdict display string. Server PR #84 ships `verdict_label`
-    /// already localized; the iOS switch is only the fallback for
-    /// older servers that don't populate it.
-    private func verdictDisplay(_ e: EnergyBank) -> LocalizedStringKey {
+    /// Verdict display as a `Text` view. Server PR #84 ships
+    /// `verdict_label` already localized; `Text(verbatim:)` renders it
+    /// as-is so the iOS UI locale doesn't re-translate it (Codex
+    /// review on PR #12). The fallback for older servers uses a
+    /// capitalised raw key through `LocalizedStringKey` so iOS
+    /// chrome locale still applies when no server label is available.
+    private func verdictDisplay(_ e: EnergyBank) -> Text {
         if let label = e.verdictLabel, !label.isEmpty {
-            return LocalizedStringKey(label)
+            return Text(verbatim: label)
         }
-        return LocalizedStringKey(e.actionVerdict
+        return Text(LocalizedStringKey(e.actionVerdict
             .replacingOccurrences(of: "_", with: " ")
-            .capitalized)
+            .capitalized))
     }
 }
 
