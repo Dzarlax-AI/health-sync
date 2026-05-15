@@ -13,10 +13,18 @@ struct BriefingResponse: Decodable, Sendable {
 
     let readinessScore: Int?
     let readinessLabel: String?
+    /// Stable band key from the server (`health_dashboard` PR #85):
+    /// `optimal` / `fair` / `low`. iOS maps it to a DS colour token;
+    /// fallback to local thresholds (70/40) when an older server omits
+    /// the field — note those legacy thresholds are stale (server uses
+    /// 80/50), so once the server PR is live the bands here are the
+    /// authoritative ones.
+    let readinessBand: String?
     let readinessTip: String?
     let recoveryPct: Int?
     let readinessToday: Int?
     let readinessTodayLabel: String?
+    let readinessTodayBand: String?
 
     let correlation: [CorrelationPoint]?
     let insights: [Insight]?
@@ -32,12 +40,14 @@ struct BriefingResponse: Decodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case date, greeting, overall, headline, sections, highlights
-        case readinessScore = "readiness_score"
-        case readinessLabel = "readiness_label"
-        case readinessTip = "readiness_tip"
-        case recoveryPct = "recovery_pct"
-        case readinessToday = "readiness_today"
+        case readinessScore      = "readiness_score"
+        case readinessLabel      = "readiness_label"
+        case readinessBand       = "readiness_band"
+        case readinessTip        = "readiness_tip"
+        case recoveryPct         = "recovery_pct"
+        case readinessToday      = "readiness_today"
         case readinessTodayLabel = "readiness_today_label"
+        case readinessTodayBand  = "readiness_today_band"
         case correlation, insights, alerts, sleep
         case metricCards = "metric_cards"
         case energyBank = "energy_bank"
@@ -76,16 +86,47 @@ struct EnergyBank: Decodable, Sendable {
     let drainSoFar: Int
     let strain: Int
     let stress: Int
+    /// Stable verdict key — used for the chip colour mapping only.
+    /// `push_hard` / `moderate` / `active_recovery` / `rest` today,
+    /// open enum so the server can introduce new values without
+    /// breaking decode.
     let actionVerdict: String
+    /// Localized rendering of `actionVerdict` from the server's i18n
+    /// (`health_dashboard` PR #84). Falls back to `actionVerdict`
+    /// when an older server omits the field.
+    let verdictLabel: String?
     let verdictReason: String
     let components: [EnergyBankComponent]?
+    /// Multi-channel stress signals from the server's v2.2 methodology.
+    /// `flag_details` carries server-localized chip text (`label` +
+    /// `description`) per `health_dashboard` PR #84. The companion raw
+    /// `flags` array is kept for backward compatibility but iOS reads
+    /// chip content exclusively from `flagDetails`. `imputed_*` flags
+    /// surface via the Today card's imputed banner instead — chip
+    /// renderer filters them out.
+    let flagDetails: [FlagDetail]?
 
     enum CodingKeys: String, CodingKey {
         case capacity, current, strain, stress, components
-        case drainSoFar = "drain_so_far"
+        case drainSoFar    = "drain_so_far"
         case actionVerdict = "action_verdict"
+        case verdictLabel  = "verdict_label"
         case verdictReason = "verdict_reason"
+        case flagDetails   = "flag_details"
     }
+}
+
+/// One server-localized stress-flag chip. `key` is the stable
+/// identifier; `label` and `description` are pre-translated. New flag
+/// keys appearing in a future server release render with correct text
+/// without an iOS update; the chip's *visual style* (colour, dashed
+/// border) is still keyed off `key` by `stressFlagStyle(_:)` and
+/// gracefully degrades to the neutral default for unknown keys.
+struct FlagDetail: Decodable, Sendable, Hashable, Identifiable {
+    var id: String { key }
+    let key: String
+    let label: String
+    let description: String
 }
 
 struct EnergyBankComponent: Decodable, Sendable {
@@ -99,9 +140,19 @@ struct BriefingSection: Decodable, Sendable, Identifiable {
     let key: String
     let title: String
     let icon: String?
+    /// Stable status enum (`good` / `fair` / `low`) — used for badge colour.
     let status: String
+    /// Localized rendering of `status` from the server (`health_dashboard`
+    /// PR #84). Falls back to `status` capitalised when an older server
+    /// omits the field.
+    let statusLabel: String?
     let summary: String
     let details: [BriefingDetail]?
+
+    enum CodingKeys: String, CodingKey {
+        case key, title, icon, status, summary, details
+        case statusLabel = "status_label"
+    }
 }
 
 struct BriefingDetail: Decodable, Sendable, Hashable {
@@ -199,10 +250,25 @@ struct AIBriefingResponse: Decodable, Sendable {
     let date: String
     let lang: String
     /// Joined SLEEP / YESTERDAY / RECOVERY / RECOMMENDATION text.
-    /// Empty when cache is cold or AI is disabled.
+    /// Empty when cache is cold or AI is disabled. Kept for backward
+    /// compat and used as the renderer fallback when the structured
+    /// fields below are all empty (very old server, or an LLM run that
+    /// produced no recognised headers).
     let insight: String
-    /// Per-block dict, e.g. `["SLEEP": "...", "RECOVERY": "..."]`.
-    /// Always present; empty when no blocks are cached yet.
+    /// Per-block server-pre-chunked text (`health_dashboard` PR #86).
+    /// Each is independently optional: a typical morning ships all four
+    /// non-empty; a cold cache or partial generation ships some empty.
+    /// iOS renders exactly the blocks that are non-empty, in this
+    /// fixed order; new server-side blocks would need an iOS update —
+    /// open follow-up if the LLM prompt grows a 5th section.
+    let sleep: String?
+    let yesterday: String?
+    let recovery: String?
+    let recommendation: String?
+    /// Per-block dict keyed by uppercase block name. Pre-PR-#86 callers
+    /// (web dashboard template) still use this; iOS reads the lowercase
+    /// top-level fields above and ignores `blocks`. Kept for backward
+    /// compat.
     let blocks: [String: String]
     /// True when the server is currently regenerating the briefing in a
     /// background goroutine. Clients should keep polling until this flips

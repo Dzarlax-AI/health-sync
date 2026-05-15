@@ -168,11 +168,31 @@ extension View {
 struct DSStatusBadge: View {
     enum Status { case good, warn, danger, neutral }
 
-    let text: LocalizedStringKey
+    /// Pre-built `Text` so callers can choose between iOS chrome
+    /// localization (`Text("Some Key")` — looks up in xcstrings) and
+    /// server-provided verbatim text (`Text(verbatim: serverLabel)` —
+    /// rendered as-is). The two `init`s below cover both call sites
+    /// without forcing callers to construct `Text` explicitly.
+    private let text: Text
     let status: Status
 
+    /// Localized via xcstrings. Use for iOS-side chrome strings.
+    init(text: LocalizedStringKey, status: Status) {
+        self.text = Text(text)
+        self.status = status
+    }
+
+    /// Verbatim — server already localized the string per `report_lang`,
+    /// so a second xcstrings lookup would re-translate it into the iOS
+    /// UI locale and violate the content/chrome split (Codex review on
+    /// PR #12).
+    init(verbatim: String, status: Status) {
+        self.text = Text(verbatim: verbatim)
+        self.status = status
+    }
+
     var body: some View {
-        Text(text)
+        text
             .font(.dsCaption)
             .fontWeight(.medium)
             .padding(.horizontal, 8)
