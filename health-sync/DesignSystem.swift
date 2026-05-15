@@ -109,6 +109,11 @@ extension Color {
     static let dsActivity = dsDynamic(lightHex: "#059669", darkHex: "#34d399")
     static let dsSleep    = dsDynamic(lightHex: "#7c3aed", darkHex: "#a78bfa")
     static let dsCardio   = dsDynamic(lightHex: "#0284c7", darkHex: "#38bdf8")
+    // Chart band for `sleep_unspecified` — coarse asleep time from sources
+    // without stage tracking. Neutral grey-blue, deliberately muted so it
+    // reads as "not classified" next to the saturated stage colours.
+    // Mirrors `#9ba3b0` from health_dashboard PR #74.
+    static let dsSleepUnspecified = dsDynamic(lightHex: "#9ba3b0", darkHex: "#5b6378")
 }
 
 // MARK: - Typography

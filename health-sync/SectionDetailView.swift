@@ -145,10 +145,11 @@ struct SectionDetailView: View {
                     .foregroundStyle(by: .value("Stage", p.stage))
             }
             .chartForegroundStyleScale([
-                "Deep":  Color.dsSleep,
-                "Core":  Color.dsAccent,
-                "REM":   Color.dsCardio,
-                "Awake": Color.dsTextTertiary,
+                "Deep":   Color.dsSleep,
+                "Core":   Color.dsAccent,
+                "REM":    Color.dsCardio,
+                "Asleep": Color.dsSleepUnspecified,
+                "Awake":  Color.dsTextTertiary,
             ])
             .chartLegend(position: .bottom, alignment: .leading)
             .frame(height: 180)
@@ -191,10 +192,14 @@ struct SectionDetailView: View {
     private var stagePoints: [(id: String, date: String, stage: String, hours: Double)] {
         var out: [(id: String, date: String, stage: String, hours: Double)] = []
         for n in sleepNights {
-            out.append((id: "\(n.date)-deep",  date: n.date, stage: "Deep",  hours: n.deep))
-            out.append((id: "\(n.date)-core",  date: n.date, stage: "Core",  hours: n.core))
-            out.append((id: "\(n.date)-rem",   date: n.date, stage: "REM",   hours: n.rem))
-            out.append((id: "\(n.date)-awake", date: n.date, stage: "Awake", hours: n.awake))
+            out.append((id: "\(n.date)-deep",        date: n.date, stage: "Deep",   hours: n.deep))
+            out.append((id: "\(n.date)-core",        date: n.date, stage: "Core",   hours: n.core))
+            out.append((id: "\(n.date)-rem",         date: n.date, stage: "REM",    hours: n.rem))
+            // 5th band — mirrors SleepView. Server-driven sleep section
+            // chart was silently dropping coarse-only nights' hours
+            // before this row was added (Codex review on PR #11).
+            out.append((id: "\(n.date)-unspecified", date: n.date, stage: "Asleep", hours: n.unspecified))
+            out.append((id: "\(n.date)-awake",       date: n.date, stage: "Awake",  hours: n.awake))
         }
         return out
     }
@@ -303,12 +308,16 @@ struct SectionDetailView: View {
     }
 
     private static func loadSleepStages(from: String, to: String) async throws -> [SleepNight] {
-        async let totalT = ServerClient.shared.metricData(name: "sleep_total", from: from, to: to, bucket: "day")
-        async let deepT  = ServerClient.shared.metricData(name: "sleep_deep",  from: from, to: to, bucket: "day")
-        async let remT   = ServerClient.shared.metricData(name: "sleep_rem",   from: from, to: to, bucket: "day")
-        async let coreT  = ServerClient.shared.metricData(name: "sleep_core",  from: from, to: to, bucket: "day")
-        async let awakeT = ServerClient.shared.metricData(name: "sleep_awake", from: from, to: to, bucket: "day")
+        async let totalT        = ServerClient.shared.metricData(name: "sleep_total",        from: from, to: to, bucket: "day")
+        async let deepT         = ServerClient.shared.metricData(name: "sleep_deep",         from: from, to: to, bucket: "day")
+        async let remT          = ServerClient.shared.metricData(name: "sleep_rem",          from: from, to: to, bucket: "day")
+        async let coreT         = ServerClient.shared.metricData(name: "sleep_core",         from: from, to: to, bucket: "day")
+        async let unspecifiedT  = ServerClient.shared.metricData(name: "sleep_unspecified",  from: from, to: to, bucket: "day")
+        async let awakeT        = ServerClient.shared.metricData(name: "sleep_awake",        from: from, to: to, bucket: "day")
+        // sleep_unspecified is non-fatal on pre-v2.3 servers; `try?`
+        // swallows the 404 so older deployments still render the chart.
         let (totalR, deepR, remR, coreR, awakeR) = try await (totalT, deepT, remT, coreT, awakeT)
+        let unspecifiedR = try? await unspecifiedT
 
         func index(_ pts: [DataPoint]?) -> [String: Double] {
             var d: [String: Double] = [:]
@@ -319,16 +328,18 @@ struct SectionDetailView: View {
         let dp = index(deepR.points)
         let rm = index(remR.points)
         let co = index(coreR.points)
+        let un = index(unspecifiedR?.points)
         let aw = index(awakeR.points)
-        let dates = Set(t.keys).union(dp.keys).union(rm.keys).union(co.keys).union(aw.keys)
+        let dates = Set(t.keys).union(dp.keys).union(rm.keys).union(co.keys).union(un.keys).union(aw.keys)
         return dates.sorted().map { date in
             SleepNight(
                 date: date,
-                total: t[date] ?? 0,
-                deep:  dp[date] ?? 0,
-                rem:   rm[date] ?? 0,
-                core:  co[date] ?? 0,
-                awake: aw[date] ?? 0
+                total:       t[date]  ?? 0,
+                deep:        dp[date] ?? 0,
+                rem:         rm[date] ?? 0,
+                core:        co[date] ?? 0,
+                unspecified: un[date] ?? 0,
+                awake:       aw[date] ?? 0
             )
         }
     }
