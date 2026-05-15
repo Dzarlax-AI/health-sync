@@ -774,10 +774,11 @@ actor HealthKitManager {
         // win where they exist, the nightly aggregate is kept as fallback for
         // tools that don't dedup.
         var perSegmentByPhase: [String: [(dk: DayKey, sample: HKCategorySample)]] = [
-            "sleep_deep":  [],
-            "sleep_rem":   [],
-            "sleep_core":  [],
-            "sleep_awake": [],
+            "sleep_deep":        [],
+            "sleep_rem":         [],
+            "sleep_core":        [],
+            "sleep_unspecified": [],
+            "sleep_awake":       [],
         ]
 
         for (dk, dailySessions) in sessionsByDay {
@@ -826,10 +827,14 @@ actor HealthKitManager {
                     case .asleepCore:               p.core += hrs; p.total += hrs
                     case .asleepUnspecified, .asleep:
                         if !hasSpecificStages {
-                            // Fallback: source has no per-stage data,
-                            // attribute coarse asleep time to core so
-                            // bank/score still gets a sleep_total.
-                            p.core += hrs
+                            // Source has no per-stage data — the hours
+                            // contribute to `total` (so bank/score still
+                            // sees a sleep_total) but NOT to any
+                            // phase field. The dedicated per-segment
+                            // sleep_unspecified emission below carries
+                            // the duration to the server, which on v2.3+
+                            // stores it as its own metric (NOT folded
+                            // into sleep_core). See `sleepPhaseName`.
                             p.total += hrs
                         }
                     case .awake:                    p.awake += hrs
@@ -903,10 +908,11 @@ actor HealthKitManager {
                     )
                 }
         }
-        let deepSeg  = buildSegmentData("sleep_deep")
-        let remSeg   = buildSegmentData("sleep_rem")
-        let coreSeg  = buildSegmentData("sleep_core")
-        let awakeSeg = buildSegmentData("sleep_awake")
+        let deepSeg        = buildSegmentData("sleep_deep")
+        let remSeg         = buildSegmentData("sleep_rem")
+        let coreSeg        = buildSegmentData("sleep_core")
+        let unspecifiedSeg = buildSegmentData("sleep_unspecified")
+        let awakeSeg       = buildSegmentData("sleep_awake")
 
         // Use names WITHOUT the `sleep_` prefix so the server-side guards on
         // `sleep_%` (zero-overwrite, ≥1.3× inflation, ≥50% deflation) don't
@@ -927,10 +933,15 @@ actor HealthKitManager {
             MetricData(name: "sleep_analysis",   units: "hr", data: sleepAnalysisData),
             MetricData(name: "night_sleep_total", units: "hr", data: mainData),
             MetricData(name: "nap_total",        units: "hr", data: napData),
-            MetricData(name: "sleep_deep",       units: "hr", data: deepSeg),
-            MetricData(name: "sleep_rem",        units: "hr", data: remSeg),
-            MetricData(name: "sleep_core",       units: "hr", data: coreSeg),
-            MetricData(name: "sleep_awake",      units: "hr", data: awakeSeg),
+            MetricData(name: "sleep_deep",        units: "hr", data: deepSeg),
+            MetricData(name: "sleep_rem",         units: "hr", data: remSeg),
+            MetricData(name: "sleep_core",        units: "hr", data: coreSeg),
+            // v2.3: coarse asleep time from sources without stage
+            // tracking. Top-level metric per the server contract — not
+            // part of the `sleep_analysis` payload expansion (which
+            // stays at 5 fields: deep/rem/core/awake/total).
+            MetricData(name: "sleep_unspecified", units: "hr", data: unspecifiedSeg),
+            MetricData(name: "sleep_awake",       units: "hr", data: awakeSeg),
         ]
     }
 
@@ -945,7 +956,16 @@ actor HealthKitManager {
         switch HKCategoryValueSleepAnalysis(rawValue: rawValue) {
         case .asleepDeep:                                           return "sleep_deep"
         case .asleepREM:                                            return "sleep_rem"
-        case .asleepCore, .asleepUnspecified, .asleep:              return "sleep_core"
+        case .asleepCore:                                           return "sleep_core"
+        // Coarse "just asleep" markers from sources without stage
+        // tracking (RingConn, iPhone Sleep Schedule, older Apple
+        // Watch). Pre-v2.3 these were folded into sleep_core, which
+        // corrupted the server's stages-stacked chart by mixing real
+        // core with coarse totals. The v2.3 server (`health_dashboard`
+        // PR #73) accepts `sleep_unspecified` as its own metric and
+        // renders it as a 5th band; we route the coarse markers there
+        // so sleep_core only carries real Core Sleep stage time.
+        case .asleepUnspecified, .asleep:                           return "sleep_unspecified"
         case .awake:                                                return "sleep_awake"
         case .inBed, .none, .some(_):                               return nil
         }

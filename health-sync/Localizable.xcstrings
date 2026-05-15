@@ -597,6 +597,52 @@
         }
       }
     },
+    "· stages not measured" : {
+      "comment" : "Inline hint on the Sleep page's source row when the last night's data came from a source without per-stage tracking (RingConn, iPhone Sleep Schedule, older Apple Watch). Leading middle-dot is part of the visual separator from the source name.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· stages not measured"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· фазы не записаны"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· faze nisu zabeležene"
+          }
+        }
+      }
+    },
+    "Asleep" : {
+      "comment" : "Sleep chart band / Last-night cell label for coarse asleep time from sources without per-stage tracking (RingConn, iPhone Sleep Schedule, older Apple Watch). Server v2.3+ surfaces this as sleep_unspecified.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Asleep"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сон"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "San"
+          }
+        }
+      }
+    },
     "Awake" : {
       "localizations" : {
         "en" : {

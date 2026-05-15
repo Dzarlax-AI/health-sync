@@ -37,15 +37,19 @@ struct SleepPhaseNameTests {
         #expect(HealthKitManager.sleepPhaseName(for: 3) == "sleep_core")
     }
 
-    @Test func unspecifiedMapsToSleepCore() {
-        // Apple Watch sometimes reports `.asleepUnspecified` (raw=1) when
-        // staging is unavailable. The aggregate path bins it as core; per-
-        // segment must mirror that, otherwise sum(deep+rem+core) won't
-        // reconcile against the aggregate row.
+    @Test func unspecifiedMapsToSleepUnspecified() {
+        // Coarse "just asleep" marker from sources without stage tracking
+        // (RingConn, iPhone Sleep Schedule, older Apple Watch). Pre-v2.3
+        // this was folded into sleep_core; the v2.3 rollout (server PR #73)
+        // gives it its own metric so sleep_core only carries real Core
+        // Sleep stage time. The aggregate path drops the coarse marker
+        // entirely when stage markers exist in the same session (overlap
+        // dedup, PR #10) and routes its hours into `total` only — never
+        // a phase field. This test pins the per-segment mapping.
         //
         // Note: `.asleep` (deprecated pre-iOS-16 case) is an alias for the
         // same raw value 1, so this test covers both.
-        #expect(HealthKitManager.sleepPhaseName(for: 1) == "sleep_core")
+        #expect(HealthKitManager.sleepPhaseName(for: 1) == "sleep_unspecified")
     }
 
     @Test func awakeMapsToSleepAwake() {

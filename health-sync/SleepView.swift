@@ -9,6 +9,11 @@ struct SleepNight: Identifiable, Hashable {
     let deep: Double
     let rem: Double
     let core: Double
+    /// Coarse asleep time from sources without per-stage tracking
+    /// (RingConn, iPhone Sleep Schedule, older Apple Watch). Server v2.3+
+    /// surfaces this as a dedicated metric (not folded into core). Zero
+    /// on Apple-Watch-with-stages nights; non-zero on stage-less sources.
+    let unspecified: Double
     let awake: Double
 
     var id: String { date }
@@ -51,7 +56,7 @@ struct SleepView: View {
                             lastNightCard(last)
                         }
                         if let source = lastNightSource {
-                            sourceCard(source)
+                            sourceCard(source, night: nights.last)
                         }
                         chartCard
                     }
@@ -102,6 +107,14 @@ struct SleepView: View {
                 stageCell(label: "REM",   value: n.rem,   color: .dsCardio)
                 Divider()
                 stageCell(label: "Core",  value: n.core,  color: .dsAccent)
+                // 5th cell only renders for coarse-only nights (RingConn,
+                // iPhone Sleep Schedule, older Apple Watch). Apple-Watch-
+                // with-stages nights have unspecified=0 and stay 4-cell,
+                // so the typical layout is unchanged.
+                if n.unspecified > 0 {
+                    Divider()
+                    stageCell(label: "Asleep", value: n.unspecified, color: .dsSleepUnspecified)
+                }
                 Divider()
                 stageCell(label: "Awake", value: n.awake, color: .dsTextTertiary)
             }
@@ -152,20 +165,26 @@ struct SleepView: View {
                 .foregroundStyle(by: .value("Stage", p.stage))
             }
             .chartForegroundStyleScale([
-                "Deep":  Color.dsSleep,
-                "Core":  Color.dsAccent,
-                "REM":   Color.dsCardio,
-                "Awake": Color.dsTextTertiary,
+                "Deep":   Color.dsSleep,
+                "Core":   Color.dsAccent,
+                "REM":    Color.dsCardio,
+                "Asleep": Color.dsSleepUnspecified,
+                "Awake":  Color.dsTextTertiary,
             ])
             .chartLegend(.hidden)
             .frame(height: 220)
             .padding(.horizontal, .dsSpacing)
 
             HStack(spacing: 12) {
-                legendDot("Deep",  color: .dsSleep)
-                legendDot("Core",  color: .dsAccent)
-                legendDot("REM",   color: .dsCardio)
-                legendDot("Awake", color: .dsTextTertiary)
+                legendDot("Deep",   color: .dsSleep)
+                legendDot("Core",   color: .dsAccent)
+                legendDot("REM",    color: .dsCardio)
+                // Only legend the 5th band when any visible night has it —
+                // keeps the row tight for typical Apple Watch users.
+                if nights.contains(where: { $0.unspecified > 0 }) {
+                    legendDot("Asleep", color: .dsSleepUnspecified)
+                }
+                legendDot("Awake",  color: .dsTextTertiary)
                 Spacer()
             }
             .padding(.horizontal, .dsSpacing)
@@ -183,12 +202,17 @@ struct SleepView: View {
 
     private var stagePoints: [SleepStagePoint] {
         var out: [SleepStagePoint] = []
-        out.reserveCapacity(nights.count * 4)
+        out.reserveCapacity(nights.count * 5)
         for n in nights {
-            out.append(.init(date: n.date, stage: "Deep",  hours: n.deep))
-            out.append(.init(date: n.date, stage: "Core",  hours: n.core))
-            out.append(.init(date: n.date, stage: "REM",   hours: n.rem))
-            out.append(.init(date: n.date, stage: "Awake", hours: n.awake))
+            out.append(.init(date: n.date, stage: "Deep",   hours: n.deep))
+            out.append(.init(date: n.date, stage: "Core",   hours: n.core))
+            out.append(.init(date: n.date, stage: "REM",    hours: n.rem))
+            // Stack order: Deep → Core → REM → Asleep (unspecified) → Awake.
+            // The new band sits next to Awake so it visually reads as
+            // "still real sleep, just not classified" rather than mixed in
+            // with the stage stack.
+            out.append(.init(date: n.date, stage: "Asleep", hours: n.unspecified))
+            out.append(.init(date: n.date, stage: "Awake",  hours: n.awake))
         }
         return out
     }
@@ -199,8 +223,18 @@ struct SleepView: View {
     /// when you wear both an Apple Watch and a smart ring — at a glance you
     /// see which one the server cross-validated to. Chosen as the source
     /// with the largest sleep_total contribution on the most recent night.
-    private func sourceCard(_ source: String) -> some View {
-        HStack(spacing: 8) {
+    private func sourceCard(_ source: String, night: SleepNight?) -> some View {
+        // "Stages not measured" hint surfaces when the picked source for the
+        // last night reported coarse asleep time but no per-stage breakdown
+        // — RingConn, iPhone Sleep Schedule, older Apple Watch. Makes it
+        // obvious to a two-device user *why* the night's chart row looks
+        // different from their staged Watch nights. Stays hidden for
+        // normal Apple-Watch-with-stages nights.
+        let noStages = (night?.unspecified ?? 0) > 0
+            && (night?.deep ?? 0) == 0
+            && (night?.rem ?? 0) == 0
+            && (night?.core ?? 0) == 0
+        return HStack(spacing: 8) {
             Image(systemName: sourceIcon(for: source))
                 .foregroundStyle(Color.dsTextSecondary)
                 .frame(width: 18)
@@ -210,6 +244,11 @@ struct SleepView: View {
             Text(source)
                 .font(.dsCaption.weight(.medium))
                 .foregroundStyle(Color.dsTextSecondary)
+            if noStages {
+                Text("· stages not measured")
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsTextTertiary)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, .dsSpacing)
@@ -252,11 +291,12 @@ struct SleepView: View {
         let lastFrom = isoDate(cal.date(byAdding: .day, value: -2, to: Date()) ?? Date())
 
         do {
-            async let totalT  = ServerClient.shared.metricData(name: "sleep_total", from: from, to: to, bucket: "day")
-            async let deepT   = ServerClient.shared.metricData(name: "sleep_deep",  from: from, to: to, bucket: "day")
-            async let remT    = ServerClient.shared.metricData(name: "sleep_rem",   from: from, to: to, bucket: "day")
-            async let coreT   = ServerClient.shared.metricData(name: "sleep_core",  from: from, to: to, bucket: "day")
-            async let awakeT  = ServerClient.shared.metricData(name: "sleep_awake", from: from, to: to, bucket: "day")
+            async let totalT        = ServerClient.shared.metricData(name: "sleep_total",        from: from, to: to, bucket: "day")
+            async let deepT         = ServerClient.shared.metricData(name: "sleep_deep",         from: from, to: to, bucket: "day")
+            async let remT          = ServerClient.shared.metricData(name: "sleep_rem",          from: from, to: to, bucket: "day")
+            async let coreT         = ServerClient.shared.metricData(name: "sleep_core",         from: from, to: to, bucket: "day")
+            async let unspecifiedT  = ServerClient.shared.metricData(name: "sleep_unspecified",  from: from, to: to, bucket: "day")
+            async let awakeT        = ServerClient.shared.metricData(name: "sleep_awake",        from: from, to: to, bucket: "day")
             // Last-night-only by-source query — covers two days to handle
             // sleep that crosses midnight. Pick the source with the largest
             // contribution; failure is non-fatal (source row hides itself).
@@ -264,12 +304,17 @@ struct SleepView: View {
                 name: "sleep_total", from: lastFrom, to: to, bucket: "day", bySource: true
             )
 
+            // sleep_unspecified is non-fatal: pre-v2.3 servers don't know
+            // the metric and 404 the request. `try?` swallows that so the
+            // rest of the chart still renders on older deployments.
             let (totalR, deepR, remR, coreR, awakeR) = try await (totalT, deepT, remT, coreT, awakeT)
+            let unspecifiedR = try? await unspecifiedT
 
             nights = mergeNights(total: totalR.points,
                                  deep: deepR.points,
                                  rem: remR.points,
                                  core: coreR.points,
+                                 unspecified: unspecifiedR?.points,
                                  awake: awakeR.points)
 
             if let sourceR = try? await sourceT {
@@ -303,6 +348,7 @@ struct SleepView: View {
                              deep: [DataPoint]?,
                              rem: [DataPoint]?,
                              core: [DataPoint]?,
+                             unspecified: [DataPoint]?,
                              awake: [DataPoint]?) -> [SleepNight] {
         func index(_ pts: [DataPoint]?) -> [String: Double] {
             var d: [String: Double] = [:]
@@ -313,16 +359,18 @@ struct SleepView: View {
         let dp = index(deep)
         let rm = index(rem)
         let co = index(core)
+        let un = index(unspecified)
         let aw = index(awake)
-        let dates = Set(t.keys).union(dp.keys).union(rm.keys).union(co.keys).union(aw.keys)
+        let dates = Set(t.keys).union(dp.keys).union(rm.keys).union(co.keys).union(un.keys).union(aw.keys)
         return dates.sorted().map { date in
             SleepNight(
                 date: date,
-                total: t[date] ?? 0,
-                deep:  dp[date] ?? 0,
-                rem:   rm[date] ?? 0,
-                core:  co[date] ?? 0,
-                awake: aw[date] ?? 0
+                total:       t[date]  ?? 0,
+                deep:        dp[date] ?? 0,
+                rem:         rm[date] ?? 0,
+                core:        co[date] ?? 0,
+                unspecified: un[date] ?? 0,
+                awake:       aw[date] ?? 0
             )
         }
     }

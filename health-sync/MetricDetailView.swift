@@ -8,7 +8,7 @@ private let sumMetrics: Set<String> = [
     "step_count", "active_energy", "basal_energy_burned",
     "apple_exercise_time", "apple_stand_time", "flights_climbed",
     "walking_running_distance", "time_in_daylight", "apple_stand_hour",
-    "sleep_total", "sleep_deep", "sleep_rem", "sleep_core", "sleep_awake",
+    "sleep_total", "sleep_deep", "sleep_rem", "sleep_core", "sleep_unspecified", "sleep_awake",
 ]
 
 struct MetricDetailView: View {
