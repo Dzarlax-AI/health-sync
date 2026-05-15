@@ -145,10 +145,11 @@ struct SectionDetailView: View {
                     .foregroundStyle(by: .value("Stage", p.stage))
             }
             .chartForegroundStyleScale([
-                "Deep":  Color.dsSleep,
-                "Core":  Color.dsAccent,
-                "REM":   Color.dsCardio,
-                "Awake": Color.dsTextTertiary,
+                "Deep":   Color.dsSleep,
+                "Core":   Color.dsAccent,
+                "REM":    Color.dsCardio,
+                "Asleep": Color.dsSleepUnspecified,
+                "Awake":  Color.dsTextTertiary,
             ])
             .chartLegend(position: .bottom, alignment: .leading)
             .frame(height: 180)
@@ -191,10 +192,14 @@ struct SectionDetailView: View {
     private var stagePoints: [(id: String, date: String, stage: String, hours: Double)] {
         var out: [(id: String, date: String, stage: String, hours: Double)] = []
         for n in sleepNights {
-            out.append((id: "\(n.date)-deep",  date: n.date, stage: "Deep",  hours: n.deep))
-            out.append((id: "\(n.date)-core",  date: n.date, stage: "Core",  hours: n.core))
-            out.append((id: "\(n.date)-rem",   date: n.date, stage: "REM",   hours: n.rem))
-            out.append((id: "\(n.date)-awake", date: n.date, stage: "Awake", hours: n.awake))
+            out.append((id: "\(n.date)-deep",        date: n.date, stage: "Deep",   hours: n.deep))
+            out.append((id: "\(n.date)-core",        date: n.date, stage: "Core",   hours: n.core))
+            out.append((id: "\(n.date)-rem",         date: n.date, stage: "REM",    hours: n.rem))
+            // 5th band — mirrors SleepView. Server-driven sleep section
+            // chart was silently dropping coarse-only nights' hours
+            // before this row was added (Codex review on PR #11).
+            out.append((id: "\(n.date)-unspecified", date: n.date, stage: "Asleep", hours: n.unspecified))
+            out.append((id: "\(n.date)-awake",       date: n.date, stage: "Awake",  hours: n.awake))
         }
         return out
     }
