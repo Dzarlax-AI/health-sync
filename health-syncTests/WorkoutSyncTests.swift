@@ -164,10 +164,17 @@ struct WorkoutSyncTests {
             stepCount: []
         )
         let bytes = try JSONEncoder().encode(WorkoutsPayload(items: [item]))
-        let json = String(decoding: bytes, as: UTF8.self)
-        #expect(json.contains(#""humidity":{"qty":65,"units":"%"}"#))
+        let object = try JSONSerialization.jsonObject(with: bytes)
+        let root = try #require(object as? [String: Any])
+        let data = try #require(root["data"] as? [String: Any])
+        let workouts = try #require(data["workouts"] as? [[String: Any]])
+        let workout = try #require(workouts.first)
+        let humidity = try #require(workout["humidity"] as? [String: Any])
+        #expect((humidity["qty"] as? NSNumber)?.doubleValue == 65)
+        #expect(humidity["units"] as? String == "%")
         // Negative pin: a regression that drops the *100 multiplier would
         // produce qty:0.65 here.
+        let json = String(decoding: bytes, as: UTF8.self)
         #expect(!json.contains(#""qty":0.65"#))
     }
 
