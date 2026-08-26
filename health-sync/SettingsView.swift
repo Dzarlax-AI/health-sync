@@ -435,7 +435,7 @@ private struct DSPickerRow: View {
 private struct DSToggleRow: View {
     let label: LocalizedStringKey
     var subtitle: LocalizedStringKey? = nil
-    var color: Color = .dsAccent
+    var color: Color? = nil
     @Binding var isOn: Bool
 
     var body: some View {
@@ -451,9 +451,42 @@ private struct DSToggleRow: View {
                 }
             }
         }
-        .tint(color)
+        .toggleStyle(DSSwitchStyle(
+            onColor: color ?? .dsAccent,
+            thumbOnColor: color == nil ? Color.dsAccentForeground : .white
+        ))
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, 12)
+    }
+}
+
+private struct DSSwitchStyle: ToggleStyle {
+    var onColor: Color
+    var thumbOnColor: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 12) {
+            configuration.label
+            Spacer()
+            ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                Capsule()
+                    .fill(configuration.isOn ? onColor : Color.dsSurface3)
+                    .overlay(
+                        Capsule().strokeBorder(configuration.isOn ? Color.clear : Color.dsBorder, lineWidth: 1)
+                    )
+                Circle()
+                    .fill(configuration.isOn ? thumbOnColor : Color.white)
+                    .shadow(color: Color.black.opacity(0.15), radius: 2, y: 1)
+                    .padding(2)
+            }
+            .frame(width: 51, height: 31)
+            .contentShape(Capsule())
+            .onTapGesture {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    configuration.isOn.toggle()
+                }
+            }
+        }
     }
 }
 
