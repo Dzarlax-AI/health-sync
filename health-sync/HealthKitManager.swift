@@ -16,11 +16,60 @@ struct MetricDef: Sendable {
 
 // MARK: - HealthKitManager
 
-actor HealthKitManager {
+actor HealthKitManager: HealthDataFetching {
     static let shared = HealthKitManager()
     // Accessible from same-module extensions in other files (e.g. WorkoutSync.swift)
     // that issue HKSampleQueries against this actor's store.
     let store = HKHealthStore()
+    private var activeQueries: [UUID: () -> Void] = [:]
+
+    /// Ensures cancellation and a delayed HealthKit callback can resume a
+    /// continuation only once.
+    private final class QueryGate<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Value, Error>?
+        private var result: Result<Value, Error>?
+
+        func install(_ continuation: CheckedContinuation<Value, Error>) {
+            lock.lock(); defer { lock.unlock() }
+            if let result { continuation.resume(with: result) }
+            else { self.continuation = continuation }
+        }
+
+        func resolve(_ result: Result<Value, Error>) {
+            lock.lock(); defer { lock.unlock() }
+            guard self.result == nil else { return }
+            self.result = result
+            continuation?.resume(with: result)
+            continuation = nil
+        }
+    }
+
+    func runQuery<Value>(
+        _ build: (@escaping (Result<Value, Error>) -> Void) -> HKQuery
+    ) async throws -> Value {
+        let id = UUID()
+        let gate = QueryGate<Value>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                gate.install(continuation)
+                let query = build { result in
+                    gate.resolve(result)
+                    Task { await self.removeActiveQuery(id) }
+                }
+                activeQueries[id] = {
+                    self.store.stop(query)
+                    gate.resolve(.failure(CancellationError()))
+                }
+                store.execute(query)
+            }
+        }, onCancel: {
+            Task { await self.cancelActiveQuery(id) }
+        })
+    }
+
+    private func removeActiveQuery(_ id: UUID) { activeQueries[id] = nil }
+    private func cancelActiveQuery(_ id: UUID) { activeQueries.removeValue(forKey: id)?() }
 
     // MARK: - Metric catalogue
 
@@ -433,6 +482,52 @@ actor HealthKitManager {
         )
     }
 
+    /// Group-aware entry point for the durable sync engine. Return the payload
+    /// rather than bare samples: sleep coverage is an attestation for the
+    /// accompanying `night_sleep_total` records and must never be dropped on
+    /// its way to the uploader.
+    func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?) async throws -> HealthPayload {
+        var metrics: [MetricData] = []
+        var nightSleepCoverage: [NightSleepCoverage] = []
+
+        if groups.contains(.vitals) {
+            metrics += try await fetchAVGMetrics(definitions: Self.vitalsMetrics, since: since, until: until)
+        }
+        if groups.contains(.activity) {
+            metrics += try await fetchAVGMetrics(
+                definitions: Self.gaitMetrics + Self.runningMetrics + Self.cyclingMetrics,
+                since: since, until: until
+            )
+            metrics += try await fetchSUMMetrics(definitions: Self.sumMetrics, since: since, until: until)
+        }
+        if groups.contains(.sleep) {
+            let sleep = try await fetchSleep(since: since, until: until)
+            metrics += sleep.metrics
+            nightSleepCoverage = sleep.nightSleepCoverage
+        }
+        if groups.contains(.other) {
+            metrics += try await fetchAVGMetrics(
+                definitions: Self.bodyMetrics + Self.cardioMetrics + Self.environmentMetrics + Self.dietaryMetrics,
+                since: since, until: until
+            )
+            metrics += try await fetchCategoryEvents(since: since, until: until)
+        }
+        return HealthPayload(
+            metrics: metrics.filter { !$0.data.isEmpty },
+            nightSleepCoverage: nightSleepCoverage
+        )
+    }
+
+    /// HealthKit queries are non-throwing to stop, so the first incremental
+    /// migration keeps this explicit protocol hook while individual query
+    /// wrappers are upgraded below. Cancellation still prevents an old engine
+    /// run from publishing after its owning background task expires.
+    func cancelActiveQueries() async {
+        let cancellations = activeQueries.values
+        activeQueries.removeAll()
+        cancellations.forEach { $0() }
+    }
+
     // Public entry point for the chunked re-sync: sleep is fetched ONCE for the
     // whole re-sync window instead of per day-chunk. Per-day chunking caused
     // earlier chunks to overwrite later chunks' sleep aggregates because each
@@ -466,8 +561,12 @@ actor HealthKitManager {
     // MARK: - AVG metrics
 
     private func fetchAVGMetrics(since: Date, until: Date? = nil) async throws -> [MetricData] {
+        try await fetchAVGMetrics(definitions: Self.avgMetrics, since: since, until: until)
+    }
+
+    private func fetchAVGMetrics(definitions: [MetricDef], since: Date, until: Date? = nil) async throws -> [MetricData] {
         return try await withThrowingTaskGroup(of: MetricData?.self) { group in
-            for def in Self.avgMetrics {
+            for def in definitions {
                 group.addTask { try await self.fetchAVGMetric(def, since: since, until: until) }
             }
             var out: [MetricData] = []
@@ -487,15 +586,14 @@ actor HealthKitManager {
         let pred = HKQuery.predicateForSamples(withStart: since, end: until)
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
 
-        let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation { cont in
-            let q = HKSampleQuery(
+        let samples: [HKQuantitySample] = try await runQuery { completion in
+            HKSampleQuery(
                 sampleType: HKQuantityType(def.identifier),
                 predicate: pred, limit: HKObjectQueryNoLimit, sortDescriptors: [sort]
             ) { _, raw, err in
-                if let err { cont.resume(throwing: err); return }
-                cont.resume(returning: (raw as? [HKQuantitySample]) ?? [])
+                if let err { completion(.failure(err)); return }
+                completion(.success((raw as? [HKQuantitySample]) ?? []))
             }
-            store.execute(q)
         }
 
         guard !samples.isEmpty else { return nil }
@@ -514,8 +612,12 @@ actor HealthKitManager {
     // MARK: - SUM metrics (hourly)
 
     private func fetchSUMMetrics(since: Date, until: Date? = nil) async throws -> [MetricData] {
+        try await fetchSUMMetrics(definitions: Self.sumMetrics, since: since, until: until)
+    }
+
+    private func fetchSUMMetrics(definitions: [MetricDef], since: Date, until: Date? = nil) async throws -> [MetricData] {
         return try await withThrowingTaskGroup(of: MetricData?.self) { group in
-            for def in Self.sumMetrics {
+            for def in definitions {
                 group.addTask { try await self.fetchSUMMetric(def, since: since, until: until) }
             }
             var out: [MetricData] = []
@@ -535,10 +637,11 @@ actor HealthKitManager {
         let anchor = cal.date(
             from: cal.dateComponents([.year, .month, .day, .hour], from: since)
         ) ?? since
-        let pred = HKQuery.predicateForSamples(withStart: since, end: until)
+        // Retain the complete first bucket when a retry begins mid-hour.
+        let pred = HKQuery.predicateForSamples(withStart: anchor, end: until)
         let endDate = until ?? Date()
 
-        let rawPoints: [SumPoint]? = try await withCheckedThrowingContinuation { cont in
+        let rawPoints: [SumPoint]? = try await runQuery { completion in
             let q = HKStatisticsCollectionQuery(
                 quantityType: HKQuantityType(def.identifier),
                 quantitySamplePredicate: pred,
@@ -547,11 +650,11 @@ actor HealthKitManager {
                 intervalComponents: DateComponents(hour: 1)
             )
             q.initialResultsHandler = { _, collection, err in
-                if let err { cont.resume(throwing: err); return }
-                guard let collection else { cont.resume(returning: nil); return }
+                if let err { completion(.failure(err)); return }
+                guard let collection else { completion(.success(nil)); return }
 
                 var points: [SumPoint] = []
-                collection.enumerateStatistics(from: since, to: endDate) { stats, _ in
+                collection.enumerateStatistics(from: anchor, to: endDate) { stats, _ in
                     let sources = stats.sources ?? []
                     let best = sources.first(where: {
                         $0.name.localizedCaseInsensitiveContains("Ultra") ||
@@ -567,9 +670,9 @@ actor HealthKitManager {
                     guard val > 0 else { return }
                     points.append(SumPoint(date: stats.startDate, value: val, source: best?.name ?? "iPhone"))
                 }
-                cont.resume(returning: points.isEmpty ? nil : points)
+                completion(.success(points.isEmpty ? nil : points))
             }
-            store.execute(q)
+            return q
         }
 
         guard let rawPoints else { return nil }
@@ -600,15 +703,14 @@ actor HealthKitManager {
         let pred = HKQuery.predicateForSamples(withStart: since, end: until)
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
 
-        let samples: [HKCategorySample] = try await withCheckedThrowingContinuation { cont in
-            let q = HKSampleQuery(
+        let samples: [HKCategorySample] = try await runQuery { completion in
+            HKSampleQuery(
                 sampleType: sampleType,
                 predicate: pred, limit: HKObjectQueryNoLimit, sortDescriptors: [sort]
             ) { _, raw, err in
-                if let err { cont.resume(throwing: err); return }
-                cont.resume(returning: (raw as? [HKCategorySample]) ?? [])
+                if let err { completion(.failure(err)); return }
+                completion(.success((raw as? [HKCategorySample]) ?? []))
             }
-            store.execute(q)
         }
 
         guard !samples.isEmpty else { return nil }
@@ -665,15 +767,14 @@ actor HealthKitManager {
         let pred = HKQuery.predicateForSamples(withStart: sleepWindowStart, end: queryEnd)
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
 
-        let samples: [HKCategorySample] = try await withCheckedThrowingContinuation { cont in
-            let q = HKSampleQuery(
+        let samples: [HKCategorySample] = try await runQuery { completion in
+            HKSampleQuery(
                 sampleType: sleepType,
                 predicate: pred, limit: HKObjectQueryNoLimit, sortDescriptors: [sort]
             ) { _, raw, err in
-                if let err { cont.resume(throwing: err); return }
-                cont.resume(returning: (raw as? [HKCategorySample]) ?? [])
+                if let err { completion(.failure(err)); return }
+                completion(.success((raw as? [HKCategorySample]) ?? []))
             }
-            store.execute(q)
         }
         guard !samples.isEmpty else { return SleepFetch(metrics: [], nightSleepCoverage: []) }
 
