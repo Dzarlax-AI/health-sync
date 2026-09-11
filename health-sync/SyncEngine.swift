@@ -82,9 +82,8 @@ final class SyncEngine {
         do {
             try await HealthKitManager.shared.requestAuthorization()
             let since = await resolvedSyncSince()
-            let metrics = try await HealthKitManager.shared.fetchAll(since: since)
-            let count = metrics.reduce(0) { $0 + $1.data.count }
-            let payload = HealthPayload(metrics: metrics)
+            let payload = try await HealthKitManager.shared.fetchAll(since: since)
+            let count = payload.pointCount
             try await upload(payload)
 
             // Workouts ship in a separate POST to /health/workouts (the
@@ -177,11 +176,11 @@ final class SyncEngine {
         // afternoon nap whose wake-up landed on the same date — server's
         // UPSERT then dropped the 8h record to 1h).
         do {
-            let sleepMetrics = try await HealthKitManager.shared.fetchSleepOnly(
+            let sleepPayload = try await HealthKitManager.shared.fetchSleepOnly(
                 since: startOfFirstDay, until: endOfToday
             )
-            let sleepCount = sleepMetrics.reduce(0) { $0 + $1.data.count }
-            try await upload(HealthPayload(metrics: sleepMetrics), session: session)
+            let sleepCount = sleepPayload.pointCount
+            try await upload(sleepPayload, session: session)
             totalPoints += sleepCount
         } catch let hkErr as HKError where hkErr.code == .errorDatabaseInaccessible {
             firstError = "device locked"
@@ -198,11 +197,10 @@ final class SyncEngine {
         for (idx, chunk) in chunks.enumerated() {
             resyncProgress = (current: idx + 2, total: total + 1)
             do {
-                let metrics = try await HealthKitManager.shared.fetchAll(
+                let payload = try await HealthKitManager.shared.fetchAll(
                     since: chunk.start, until: chunk.end, includeSleep: false
                 )
-                let count = metrics.reduce(0) { $0 + $1.data.count }
-                let payload = HealthPayload(metrics: metrics)
+                let count = payload.pointCount
                 // Always send — even empty payloads count toward the session's
                 // chunk total so the server flushes once at the end.
                 try await upload(payload, session: session)
