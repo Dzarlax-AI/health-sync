@@ -161,17 +161,16 @@ extension HealthKitManager {
         let pred = HKQuery.predicateForSamples(withStart: since, end: until)
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
 
-        let workouts: [HKWorkout] = try await withCheckedThrowingContinuation { cont in
-            let q = HKSampleQuery(
+        let workouts: [HKWorkout] = try await runQuery { completion in
+            HKSampleQuery(
                 sampleType: HKObjectType.workoutType(),
                 predicate: pred,
                 limit: HKObjectQueryNoLimit,
                 sortDescriptors: [sort]
             ) { _, raw, err in
-                if let err { cont.resume(throwing: err); return }
-                cont.resume(returning: (raw as? [HKWorkout]) ?? [])
+                if let err { completion(.failure(err)); return }
+                completion(.success((raw as? [HKWorkout]) ?? []))
             }
-            store.execute(q)
         }
         guard !workouts.isEmpty else { return [] }
 
@@ -387,13 +386,12 @@ extension HealthKitManager {
         // Explicit continuation type: Swift 6 won't propagate the `HKStatistics?`
         // return type into the closure, so `cont.resume(returning: s)` (where
         // `s` is `HKStatistics?`) wouldn't compile without it.
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<HKStatistics?, Error>) in
-            let q = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: predicate,
+        try await runQuery { completion in
+            HKStatisticsQuery(quantityType: type, quantitySamplePredicate: predicate,
                                       options: options) { _, s, err in
-                if let err { cont.resume(throwing: err); return }
-                cont.resume(returning: s)
+                if let err { completion(.failure(err)); return }
+                completion(.success(s))
             }
-            store.execute(q)
         }
     }
 
@@ -485,18 +483,16 @@ extension HealthKitManager {
         )
         let sourcePred = HKQuery.predicateForObjects(from: [w.sourceRevision.source])
         let pred = NSCompoundPredicate(andPredicateWithSubpredicates: [timePred, sourcePred])
-        let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation {
-            (cont: CheckedContinuation<[HKQuantitySample], Error>) in
-            let q = HKSampleQuery(
+        let samples: [HKQuantitySample] = try await runQuery { completion in
+            HKSampleQuery(
                 sampleType: type,
                 predicate: pred,
                 limit: HKObjectQueryNoLimit,
                 sortDescriptors: nil
             ) { _, raw, err in
-                if let err { cont.resume(throwing: err); return }
-                cont.resume(returning: (raw as? [HKQuantitySample]) ?? [])
+                if let err { completion(.failure(err)); return }
+                completion(.success((raw as? [HKQuantitySample]) ?? []))
             }
-            store.execute(q)
         }
         let total = samples.reduce(0.0) { sum, s in
             let overlapStart = max(s.startDate, w.startDate)
@@ -637,17 +633,16 @@ extension HealthKitManager {
         let workoutPred = HKQuery.predicateForObjects(from: w)
         let pred = NSCompoundPredicate(andPredicateWithSubpredicates: [workoutPred, timePred])
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
-        let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation { cont in
-            let q = HKSampleQuery(
+        let samples: [HKQuantitySample] = try await runQuery { completion in
+            HKSampleQuery(
                 sampleType: hrType,
                 predicate: pred,
                 limit: HKObjectQueryNoLimit,
                 sortDescriptors: [sort]
             ) { _, raw, err in
-                if let err { cont.resume(throwing: err); return }
-                cont.resume(returning: (raw as? [HKQuantitySample]) ?? [])
+                if let err { completion(.failure(err)); return }
+                completion(.success((raw as? [HKQuantitySample]) ?? []))
             }
-            store.execute(q)
         }
         let bpm = HKUnit.count().unitDivided(by: .minute())
         return samples.compactMap { s in

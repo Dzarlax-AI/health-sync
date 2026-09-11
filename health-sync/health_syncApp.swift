@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 @main
 struct HealthSyncApp: App {
@@ -9,12 +10,14 @@ struct HealthSyncApp: App {
         WindowGroup {
             ContentView()
         }
+        .modelContainer(for: SyncHistoryRecord.self)
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                SyncEngine.shared.startForegroundTimer()
+                SyncEngine.shared.handleAppBecameActive()
             case .background, .inactive:
                 SyncEngine.shared.stopForegroundTimer()
+                if phase == .background { BackgroundSyncManager.shared.scheduleNextSync() }
             @unknown default:
                 break
             }

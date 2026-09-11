@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // (gated behind the Settings toggle in SyncEngine.sendSyncNotification).
         UNUserNotificationCenter.current().delegate = self
 
+        guard !SyncRuntime.isTestMode else { return true }
+
         // Must register before app finishes launching
         BackgroundSyncManager.shared.registerBGTask()
 
@@ -18,9 +20,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
         // Register observers SYNCHRONOUSLY — HealthKit may fire callbacks on this
         // same launch, so they must be running before we return.
-        BackgroundSyncManager.shared.setupObserverQueriesIfNeeded()
-        BackgroundSyncManager.shared.scheduleNextSync()
-        BackgroundSyncManager.shared.scheduleDailyResync()
+        if (try? UserDefaultsSyncConfiguration.shared.snapshot())?.backgroundEnabled == true {
+            BackgroundSyncManager.shared.setupObserverQueriesIfNeeded()
+            BackgroundSyncManager.shared.scheduleNextSync()
+            BackgroundSyncManager.shared.scheduleDailyResync()
+        }
 
         return true
     }
