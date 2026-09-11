@@ -8,22 +8,17 @@ struct MetricsView: View {
     @State private var lastLoadedAt: Date?
 
     private var filtered: [MetricSummary] {
-        let q = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
         if q.isEmpty { return metrics }
         return metrics.filter {
-            $0.name.lowercased().contains(q)
-                || ($0.displayName?.lowercased().contains(q) ?? false)
+            $0.name.localizedStandardContains(q)
+                || ($0.displayName?.localizedStandardContains(q) ?? false)
         }
     }
 
-    private var groupedMetrics: [DisplayMetricGroup] {
-        let grouped = Dictionary(grouping: filtered) { MetricDomain.classify($0.name) }
-        return MetricDomain.allCases.compactMap { domain in
-            guard let items = grouped[domain], !items.isEmpty else { return nil }
-            let sorted = items.sorted {
-                ($0.displayName ?? $0.name).localizedCaseInsensitiveCompare($1.displayName ?? $1.name) == .orderedAscending
-            }
-            return DisplayMetricGroup(domain: domain, metrics: sorted)
+    private var orderedMetrics: [MetricSummary] {
+        filtered.sorted {
+            ($0.displayName ?? $0.name).localizedCaseInsensitiveCompare($1.displayName ?? $1.name) == .orderedAscending
         }
     }
 
@@ -48,27 +43,22 @@ struct MetricsView: View {
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: .dsSpacingLg) {
-                            Text("Browse your health data by domain")
+                            Text("Browse all available health data")
                                 .font(.dsBodySm)
                                 .foregroundStyle(Color.dsTextSecondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                        if let loadError {
-                            SyncRefreshBanner(message: loadError, lastLoadedAt: lastLoadedAt) {
-                                Task { await load() }
-                            }
-                        }
-                        ForEach(groupedMetrics) { group in
-                            VStack(alignment: .leading, spacing: .dsSpacingSm) {
-                                MetricGroupHeader(domain: group.domain, count: group.metrics.count)
-                                VStack(spacing: 0) {
-                                    ForEach(Array(group.metrics.enumerated()), id: \.element.id) { index, metric in
-                                        if index > 0 { Divider().padding(.leading, 70) }
-                                    metricRow(metric, domain: group.domain)
-                                    }
+                            if let loadError {
+                                SyncRefreshBanner(message: loadError, lastLoadedAt: lastLoadedAt) {
+                                    Task { await load() }
                                 }
-                                .dsDetailCard()
                             }
-                        }
+                            VStack(spacing: 0) {
+                                ForEach(Array(orderedMetrics.enumerated()), id: \.element.id) { index, metric in
+                                    if index > 0 { Divider().padding(.leading, 70) }
+                                    metricRow(metric)
+                                }
+                            }
+                            .dsDetailCard()
                         }
                         .padding(.horizontal, .dsSpacing)
                         .padding(.top, .dsSpacingSm)
@@ -97,18 +87,18 @@ struct MetricsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func metricRow(_ metric: MetricSummary, domain: MetricDomain) -> some View {
+    private func metricRow(_ metric: MetricSummary) -> some View {
         NavigationLink(destination: MetricDetailView(
             metric: metric.name,
             displayName: metric.displayName,
             unit: metric.units
         )) {
             HStack(spacing: .dsSpacing) {
-                Image(systemName: domain.symbol)
+                Image(systemName: "waveform.path.ecg")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(domain.tint)
+                    .foregroundStyle(Color.dsAccent)
                     .frame(width: 38, height: 38)
-                    .background(domain.tint.opacity(0.10), in: Circle())
+                    .background(Color.dsAccent.opacity(0.10), in: Circle())
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(metric.displayName ?? metric.name)
@@ -170,109 +160,6 @@ struct MetricsView: View {
             loadError = error.localizedDescription
         }
         isLoading = false
-    }
-}
-
-private struct DisplayMetricGroup: Identifiable {
-    var id: MetricDomain { domain }
-    let domain: MetricDomain
-    let metrics: [MetricSummary]
-}
-
-private enum MetricDomain: String, CaseIterable, Identifiable {
-    case readiness
-    case sleep
-    case heart
-    case activity
-    case body
-    case workouts
-    case other
-
-    var id: String { rawValue }
-
-    var title: LocalizedStringKey {
-        switch self {
-        case .readiness: return "Readiness"
-        case .sleep: return "Sleep"
-        case .heart: return "Heart"
-        case .activity: return "Activity"
-        case .body: return "Body"
-        case .workouts: return "Workouts"
-        case .other: return "Other"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .readiness: return "gauge.with.dots.needle.67percent"
-        case .sleep: return "moon.zzz.fill"
-        case .heart: return "heart.fill"
-        case .activity: return "figure.run"
-        case .body: return "person.fill"
-        case .workouts: return "figure.strengthtraining.traditional"
-        case .other: return "chart.bar.fill"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .readiness: return .dsAccent
-        case .sleep: return .dsSleep
-        case .heart: return .dsHeart
-        case .activity: return .dsActivity
-        case .body: return .dsCardio
-        case .workouts: return .dsWarn
-        case .other: return .dsTextSecondary
-        }
-    }
-
-    static func classify(_ metric: String) -> MetricDomain {
-        let key = metric.lowercased()
-        if key.contains("readiness") || key.contains("energy_bank") || key.contains("recovery") {
-            return .readiness
-        }
-        if key.contains("sleep") || key.contains("awake") || key.contains("rem") {
-            return .sleep
-        }
-        if key.contains("heart") || key.contains("hrv") || key.contains("spo2")
-            || key.contains("oxygen") || key.contains("respiratory") || key.contains("vo2") {
-            return .heart
-        }
-        if key.contains("step") || key.contains("distance") || key.contains("calorie")
-            || key.contains("active_energy") || key.contains("exercise") || key.contains("stand")
-            || key.contains("basal") {
-            return .activity
-        }
-        if key.contains("workout") || key.contains("route") {
-            return .workouts
-        }
-        if key.contains("weight") || key.contains("body") || key.contains("mass")
-            || key.contains("temperature") || key.contains("glucose") {
-            return .body
-        }
-        return .other
-    }
-}
-
-private struct MetricGroupHeader: View {
-    let domain: MetricDomain
-    let count: Int
-
-    var body: some View {
-        HStack {
-            Label {
-                Text(domain.title)
-                    .font(.dsBodySm.weight(.semibold))
-            } icon: {
-                Image(systemName: domain.symbol)
-            }
-            .foregroundStyle(domain.tint)
-            Spacer()
-            Text("\(count)")
-                .font(.dsCaption)
-                .foregroundStyle(Color.dsTextTertiary)
-        }
-        .textCase(nil)
     }
 }
 

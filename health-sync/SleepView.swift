@@ -3,7 +3,7 @@ import Charts
 
 /// One night's sleep breakdown. Values are hours (server's SleepAnalysis
 /// convention — see internal/ui/handler.go::fmtMinutes calls with `* 60`).
-struct SleepNight: Identifiable, Hashable {
+struct SleepNight: Identifiable, Hashable, Sendable {
     let date: String
     let total: Double
     let deep: Double

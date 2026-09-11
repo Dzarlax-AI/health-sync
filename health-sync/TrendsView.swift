@@ -6,6 +6,8 @@ struct TrendsView: View {
     @State private var days: Int = 30
     @State private var loadError: String?
     @State private var isLoading = false
+    @State private var currentBriefing: BriefingResponse?
+    @State private var loadGeneration = UUID()
     /// Section catalogue from `/api/sections` (health_dashboard PR #90).
     /// nil = not loaded yet; empty = server returned no sections (treat
     /// like a transient failure and hide the list rather than rendering
@@ -135,7 +137,9 @@ struct TrendsView: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
-            DSStatusBadge(text: readinessBandLabel, status: readinessBandStatus)
+            if let readinessBadge {
+                DSStatusBadge(verbatim: readinessBadge.label, status: readinessBadge.status)
+            }
         }
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, 12)
@@ -202,20 +206,23 @@ struct TrendsView: View {
         history.last?.score ?? 0
     }
 
-    private var readinessBandLabel: LocalizedStringKey {
-        switch latestReadinessScore {
-        case 80...100: return "Strong"
-        case 50..<80: return "Fair"
-        default: return "Low"
+    /// The label and band stay server-owned. It is hidden rather than
+    /// re-derived locally when this range ends before today's briefing.
+    private var readinessBadge: (label: String, status: DSStatusBadge.Status)? {
+        guard let briefing = currentBriefing,
+              briefing.date == history.last?.date,
+              let label = briefing.readinessTodayLabel ?? briefing.readinessLabel,
+              !label.isEmpty else {
+            return nil
         }
-    }
-
-    private var readinessBandStatus: DSStatusBadge.Status {
-        switch latestReadinessScore {
-        case 80...100: return .good
-        case 50..<80: return .warn
-        default: return .danger
+        let band = briefing.readinessTodayBand ?? briefing.readinessBand
+        let status: DSStatusBadge.Status = switch band?.lowercased() {
+        case "optimal", "strong", "good": .good
+        case "fair", "moderate", "medium": .warn
+        case "low", "poor": .danger
+        default: .neutral
         }
+        return (label, status)
     }
 
     private func sectionList(_ entries: [SectionCatalogueEntry]) -> some View {
@@ -292,6 +299,8 @@ struct TrendsView: View {
     }
 
     private func load() async {
+        let requestGeneration = UUID()
+        loadGeneration = requestGeneration
         isLoading = true
         loadError = nil
         // Readiness history is the primary data — its failure shows
@@ -300,14 +309,23 @@ struct TrendsView: View {
         // 404s, and we just hide the list rather than blocking the
         // whole tab.
         do {
-            history = try await ServerClient.shared.readinessHistory(days: days)
+            async let historyTask = ServerClient.shared.readinessHistory(days: days)
+            async let briefingTask: BriefingResponse? = try? ServerClient.shared.healthBriefing()
+            let (history, briefing) = try await (historyTask, briefingTask)
+            guard !Task.isCancelled, requestGeneration == loadGeneration else { return }
+            self.history = history
+            currentBriefing = briefing
         } catch {
+            guard requestGeneration == loadGeneration else { return }
             loadError = error.localizedDescription
         }
         if let s = try? await ServerClient.shared.sections() {
+            guard !Task.isCancelled, requestGeneration == loadGeneration else { return }
             sections = s.sections
         }
-        isLoading = false
+        if requestGeneration == loadGeneration {
+            isLoading = false
+        }
     }
 }
 

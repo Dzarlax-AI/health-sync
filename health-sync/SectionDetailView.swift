@@ -16,6 +16,7 @@ struct SectionDetailView: View {
     @State private var days: Int = 30
     @State private var isLoading = false
     @State private var loadError: String?
+    @State private var chartLoadGeneration = UUID()
 
     var body: some View {
         ScrollView {
@@ -309,23 +310,33 @@ struct SectionDetailView: View {
     // MARK: - Load
 
     private func load() async {
+        let requestGeneration = UUID()
+        chartLoadGeneration = requestGeneration
         isLoading = true
         loadError = nil
         do {
             let s = try await ServerClient.shared.section(sectionKey)
+            guard !Task.isCancelled, requestGeneration == chartLoadGeneration else { return }
             self.section = s
-            await loadChartsForSelectedRange()
+            await loadCharts(for: s, days: days, generation: requestGeneration)
         } catch {
+            guard requestGeneration == chartLoadGeneration else { return }
             loadError = error.localizedDescription
         }
-        isLoading = false
+        if requestGeneration == chartLoadGeneration {
+            isLoading = false
+        }
     }
 
     private func loadChartsForSelectedRange() async {
         guard let section else { return }
+        let requestGeneration = UUID()
+        chartLoadGeneration = requestGeneration
         isLoading = true
-        await loadCharts(for: section, days: days)
-        isLoading = false
+        await loadCharts(for: section, days: days, generation: requestGeneration)
+        if requestGeneration == chartLoadGeneration {
+            isLoading = false
+        }
     }
 
     /// Sum type for the chart-data fetcher results. Sendable so it travels
@@ -334,6 +345,12 @@ struct SectionDetailView: View {
         case readiness([ReadinessPoint])
         case sleepStages([SleepNight])
         case metric(String, [DataPoint])
+    }
+
+    private struct ChartPayload: Sendable {
+        var readinessHistory: [ReadinessPoint] = []
+        var sleepNights: [SleepNight] = []
+        var pointsByMetric: [String: [DataPoint]] = [:]
     }
 
     private struct SleepStageChartPoint: Identifiable {
@@ -347,11 +364,23 @@ struct SectionDetailView: View {
     /// sleep stages have their own dedicated endpoints; everything else maps
     /// to /api/metrics/data. Per-chart failures are swallowed so one bad
     /// fetch doesn't blank the whole page.
-    private func loadCharts(for s: SectionResponse, days: Int) async {
-        let cal = Calendar(identifier: .gregorian)
-        let to = isoDate(Date())
-        let from = isoDate(cal.date(byAdding: .day, value: -(days - 1), to: Date()) ?? Date())
+    private func loadCharts(for s: SectionResponse, days: Int, generation: UUID) async {
+        let payload = await fetchChartPayload(for: s, days: days)
+        guard !Task.isCancelled, generation == chartLoadGeneration else { return }
+        readinessHistory = payload.readinessHistory
+        sleepNights = payload.sleepNights
+        pointsByMetric = payload.pointsByMetric
+    }
 
+    /// Collect all range data before applying it. A generation guard at the
+    /// call site prevents an older picker request from repainting a newer one.
+    private func fetchChartPayload(for s: SectionResponse, days: Int) async -> ChartPayload {
+        let cal = Calendar(identifier: .gregorian)
+        let now = Date.now
+        let to = isoDate(now)
+        let from = isoDate(cal.date(byAdding: .day, value: -(days - 1), to: now) ?? now)
+
+        var payload = ChartPayload()
         await withTaskGroup(of: ChartChunk?.self) { group in
             for chart in s.charts {
                 if chart.virtual == true {
@@ -377,13 +406,14 @@ struct SectionDetailView: View {
             }
             for await chunk in group {
                 switch chunk {
-                case .readiness(let pts):           readinessHistory = pts
-                case .sleepStages(let nights):      sleepNights = nights
-                case .metric(let m, let pts):       pointsByMetric[m] = pts
+                case .readiness(let pts):           payload.readinessHistory = pts
+                case .sleepStages(let nights):      payload.sleepNights = nights
+                case .metric(let m, let pts):       payload.pointsByMetric[m] = pts
                 case .none:                         break
                 }
             }
         }
+        return payload
     }
 
     private static func loadSleepStages(from: String, to: String) async throws -> [SleepNight] {
