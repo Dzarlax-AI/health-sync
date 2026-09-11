@@ -5,11 +5,47 @@
 struct HealthPayload: Encodable, Sendable {
     struct DataWrapper: Encodable, Sendable {
         let metrics: [MetricData]
+        let nightSleepCoverage: [NightSleepCoverage]?
+
+        enum CodingKeys: String, CodingKey {
+            case metrics
+            case nightSleepCoverage = "night_sleep_coverage"
+        }
     }
     let data: DataWrapper
 
-    init(metrics: [MetricData]) {
-        self.data = DataWrapper(metrics: metrics)
+    init(metrics: [MetricData], nightSleepCoverage: [NightSleepCoverage] = []) {
+        self.data = DataWrapper(
+            metrics: metrics,
+            nightSleepCoverage: nightSleepCoverage.isEmpty ? nil : nightSleepCoverage
+        )
+    }
+
+    var pointCount: Int { data.metrics.reduce(0) { $0 + $1.data.count } }
+}
+
+/// A controlled-adapter coverage commitment for one emitted
+/// `night_sleep_total` point. It says which fixed overnight window was read;
+/// it does not claim that HealthKit will never revise the night later.
+struct NightSleepCoverage: Encodable, Sendable {
+    let wakeDate: String
+    let metricDate: String
+    let source: String
+    let sourceEpoch: String
+    let captureCompleteness: String
+    let syncGeneration: String
+    let coveredIntervalStart: String
+    let coveredIntervalEnd: String
+
+    enum CodingKeys: String, CodingKey {
+        case wakeDate = "wake_date"
+        case metricDate = "metric_date"
+        case source
+        case sourceEpoch = "source_epoch"
+        case captureCompleteness = "capture_completeness"
+        case syncGeneration = "sync_generation"
+        case coveredIntervalStart = "covered_interval_start"
+        case coveredIntervalEnd = "covered_interval_end"
     }
 }
 
