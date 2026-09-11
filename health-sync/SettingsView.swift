@@ -3,6 +3,7 @@ import UserNotifications
 
 struct SettingsView: View {
     @AppStorage("serverURL") private var serverURL = ""
+    @AppStorage("health-sync.config-revision") private var configRevision = 0
     @AppStorage("backgroundSync") private var backgroundSync = true
     @AppStorage("syncOnLaunch") private var syncOnLaunch = true
     @AppStorage("notifyOnSync") private var notifyOnSync = false
@@ -10,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("syncVitals") private var syncVitals = true
     @AppStorage("syncActivity") private var syncActivity = true
     @AppStorage("syncSleep") private var syncSleep = true
+    @AppStorage("syncOther") private var syncOther = true
     @AppStorage("syncWorkouts") private var syncWorkouts = true
     @AppStorage("workoutHRTimeline") private var workoutHRTimeline = true
     @AppStorage("workoutGPS") private var workoutGPS = false
@@ -17,8 +19,14 @@ struct SettingsView: View {
     @State private var apiKey = KeychainStore.apiKey ?? ""
     @State private var connectionState: ConnectionState = .idle
     @State private var account: UserSettings?
+    @State private var showServerDetails = false
+    @State private var connectionProbeID = UUID()
 
     private let engine = SyncEngine.shared
+
+    private var visibleSyncState: SyncUIState {
+        SyncUIFixtures.state ?? engine.uiState
+    }
 
     enum ConnectionState {
         case idle, testing, ok, failed(String)
@@ -28,20 +36,36 @@ struct SettingsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: .dsSpacingLg) {
+                    serverSection
                     syncStatusSection
                     accountSection
-                    serverSection
                     syncSection
                     metricsSection
                     workoutsSection
                 }
                 .padding(.dsSpacing)
+                .padding(.bottom, .dsTabBarClearance)
             }
             .scrollDismissesKeyboard(.immediately)
             .background(Color.dsBackground)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
-            .task { await loadAccount() }
+            .task {
+                applyBackgroundSyncSetting()
+                await loadAccount()
+            }
+            .onChange(of: serverURL) {
+                invalidateConnection()
+            }
+            .onChange(of: backgroundSync) { applyBackgroundSyncSetting() }
+            .onChange(of: syncOnLaunch) { engine.refreshConfiguration() }
+            .onChange(of: syncIntervalMinutes) { applyBackgroundSyncSetting() }
+            .onChange(of: syncVitals) { engine.refreshConfiguration() }
+            .onChange(of: syncActivity) { engine.refreshConfiguration() }
+            .onChange(of: syncSleep) { engine.refreshConfiguration() }
+            .onChange(of: syncOther) { engine.refreshConfiguration() }
+            .onChange(of: syncWorkouts) { engine.refreshConfiguration() }
+            .onChange(of: workoutHRTimeline) { engine.refreshConfiguration() }
         }
     }
 
@@ -52,15 +76,26 @@ struct SettingsView: View {
     /// to someone else's data. Read-only; everything is managed on the web.
     @ViewBuilder
     private var accountSection: some View {
-        if let username = account?.username, !username.isEmpty {
+        if let account {
             VStack(alignment: .leading, spacing: 0) {
                 SectionHeader(title: "Account")
                 VStack(alignment: .leading, spacing: 0) {
-                    accountRow(label: "Logged in as", value: username,
-                               trailing: account?.isAdmin == true ? "admin" : nil)
-                    if let tenant = account?.tenant, !tenant.isEmpty, tenant != username {
+                    if let username = account.username, !username.isEmpty {
+                        accountRow(label: "Logged in as", value: username,
+                                   trailing: account.isAdmin == true ? "admin" : nil)
+                    }
+                    if let tenant = account.tenant, !tenant.isEmpty,
+                       tenant != account.username {
                         Divider().padding(.leading, .dsSpacing)
                         accountRow(label: "Tenant", value: tenant, trailing: nil)
+                    }
+                    if let timezone = account.timezone, !timezone.isEmpty {
+                        Divider().padding(.leading, .dsSpacing)
+                        accountRow(label: "Time zone", value: timezone, trailing: nil)
+                    }
+                    if let reportLang = account.reportLang, !reportLang.isEmpty {
+                        Divider().padding(.leading, .dsSpacing)
+                        accountRow(label: "Report language", value: reportLang, trailing: nil)
                     }
                 }
             }
@@ -69,7 +104,8 @@ struct SettingsView: View {
     }
 
     private func accountRow(label: LocalizedStringKey, value: String, trailing: String?) -> some View {
-        HStack(spacing: .dsSpacing) {
+        let visibleTrailing = trailing == value ? nil : trailing
+        return HStack(spacing: .dsSpacing) {
             Text(label)
                 .font(.dsBody)
                 .foregroundStyle(Color.dsText)
@@ -77,7 +113,7 @@ struct SettingsView: View {
             Text(value)
                 .font(.dsMono)
                 .foregroundStyle(Color.dsTextSecondary)
-            if let trailing {
+            if let trailing = visibleTrailing {
                 Text(trailing)
                     .font(.dsCaption.weight(.medium))
                     .padding(.horizontal, 6)
@@ -91,51 +127,36 @@ struct SettingsView: View {
         .padding(.vertical, 12)
     }
 
-    private func loadAccount() async {
-        // Best-effort: silent failure leaves the section hidden, which is
-        // already its empty state.
-        account = try? await ServerClient.shared.userSettings()
+    private func loadAccount(expectedProbeID: UUID? = nil) async {
+        let requestURL = serverURL
+        let requestKey = apiKey
+        let loaded = try? await ServerClient.shared.userSettings()
+        // Do not apply an answer for a previous endpoint/key to the current
+        // settings screen after the user switches accounts.
+        guard requestURL == serverURL, requestKey == apiKey,
+              expectedProbeID == nil || expectedProbeID == connectionProbeID else { return }
+        account = loaded
     }
 
-    // MARK: - Sync status (was StatusView, now merged into Settings)
+    // MARK: - Sync status
 
     private var syncStatusSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SectionHeader(title: "Sync")
+            SectionHeader(title: "HealthKit upload")
 
             VStack(alignment: .leading, spacing: .dsSpacing) {
-                // Header row: last-sync timestamp + status badge.
                 HStack(alignment: .top, spacing: .dsSpacing) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Last sync")
-                            .font(.dsCaption)
-                            .foregroundStyle(Color.dsTextTertiary)
-                        if let lastSync = engine.lastSync {
-                            Text(lastSync, style: .relative)
-                                .font(.dsHeading)
-                                .foregroundStyle(Color.dsText)
-                            Text("\(engine.lastPointCount) points")
-                                .font(.dsBodySm)
-                                .foregroundStyle(Color.dsTextSecondary)
-                        } else {
-                            Text("Never")
-                                .font(.dsHeading)
-                                .foregroundStyle(Color.dsTextSecondary)
-                        }
-                    }
+                    Text("Upload status")
+                        .font(.dsCaption)
+                        .foregroundStyle(Color.dsTextTertiary)
                     Spacer(minLength: 0)
                     syncStatusBadge
                 }
 
-                Button(action: { Task { await engine.syncNow() } }) {
-                    HStack {
-                        Image(systemName: "arrow.trianglehead.2.clockwise")
-                        Text(engine.isSyncing ? "Syncing…" : "Sync Now")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(DSPrimaryButtonStyle())
-                .disabled(engine.isSyncing)
+                channelReceiptRow(title: "Metrics", channel: visibleSyncState.metrics, isWorkout: false)
+                channelReceiptRow(title: "Workouts", channel: visibleSyncState.workouts, isWorkout: true)
+
+                syncAction
 
                 if let error = engine.lastError {
                     HStack(alignment: .top, spacing: .dsSpacingSm) {
@@ -155,7 +176,7 @@ struct SettingsView: View {
             // Recent activity row: full-width tappable list-style row with
             // a divider above so it reads as an action, not floating text.
             Divider()
-            NavigationLink(destination: StatusView()) {
+            NavigationLink(destination: SyncStatusView(onConfigure: openServerDetailsFromStatus)) {
                 HStack(spacing: .dsSpacing) {
                     Image(systemName: "clock.arrow.circlepath")
                         .foregroundStyle(Color.dsTextSecondary)
@@ -173,64 +194,170 @@ struct SettingsView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("sync-status-details")
         }
         .dsCard()
     }
 
     @ViewBuilder
     private var syncStatusBadge: some View {
-        if engine.isSyncing {
-            DSStatusBadge(text: "Syncing", status: .warn)
-        } else if let lastSync = engine.lastSync, Date().timeIntervalSince(lastSync) < 3600 {
-            DSStatusBadge(text: "Up to date", status: .good)
-        } else if engine.lastSync != nil {
-            DSStatusBadge(text: "Stale", status: .warn)
-        } else {
-            DSStatusBadge(text: "Never synced", status: .neutral)
+        DSStatusBadge(text: settingsStatusBadge(visibleSyncState.status),
+                      status: settingsBadgeStatus(visibleSyncState.status))
+    }
+
+    private func channelReceiptRow(title: LocalizedStringKey,
+                                   channel: SyncChannelSnapshot,
+                                   isWorkout: Bool) -> some View {
+        HStack(alignment: .top, spacing: .dsSpacingSm) {
+            VStack(alignment: .leading, spacing: .dsSpacingXs) {
+                Text(title)
+                    .font(.dsBodySm.weight(.medium))
+                    .foregroundStyle(Color.dsText)
+                if let acceptedAt = channel.lastAcceptedAt {
+                    Text("Last accepted")
+                        .font(.dsCaption)
+                        .foregroundStyle(Color.dsTextTertiary)
+                    Text(acceptedAt, style: .relative)
+                        .font(.dsBodySm)
+                        .foregroundStyle(Color.dsTextSecondary)
+                } else {
+                    Text("Never accepted")
+                        .font(.dsBodySm)
+                        .foregroundStyle(Color.dsTextTertiary)
+                }
+            }
+            Spacer(minLength: 0)
+            if channel.acceptedCount > 0 {
+                Text(uploadCount(channel.acceptedCount, isWorkout: isWorkout))
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsTextSecondary)
+            }
+        }
+        .padding(.vertical, .dsSpacingXs)
+    }
+
+    private func uploadCount(_ count: Int, isWorkout: Bool) -> String {
+        let key = isWorkout ? "%lld workouts" : "%lld samples"
+        return String.localizedStringWithFormat(NSLocalizedString(key, comment: "Accepted upload volume by channel"), count)
+    }
+
+    @ViewBuilder
+    private var syncAction: some View {
+        Group {
+            switch visibleSyncState.primaryAction {
+            case .configure:
+                Button("Connect server", systemImage: "server.rack") {
+                    showServerDetails = true
+                }
+            case .sync:
+                Button(engine.isSyncing ? "Syncing…" : "Sync now",
+                       systemImage: "arrow.trianglehead.2.clockwise") {
+                    Task { _ = await engine.syncNow() }
+                }
+                .disabled(engine.isSyncing || !visibleSyncState.canSync)
+            case .retry:
+                Button(engine.isSyncing ? "Retrying…" : "Retry",
+                       systemImage: "arrow.clockwise") {
+                    Task { _ = await engine.retryNow() }
+                }
+                .disabled(engine.isSyncing || !visibleSyncState.canSync)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .buttonStyle(DSPrimaryButtonStyle())
+    }
+
+    private func settingsStatusBadge(_ status: SyncStatus) -> LocalizedStringKey {
+        switch status {
+        case .notConfigured: return "Not configured"
+        case .noData: return "No data"
+        case .sending: return "Sending"
+        case .accepted: return "Accepted"
+        case .partial: return "Partial"
+        case .retryPending: return "Retry pending"
+        case .error: return "Error"
+        case .disabled: return "Disabled"
+        }
+    }
+
+    private func settingsBadgeStatus(_ status: SyncStatus) -> DSStatusBadge.Status {
+        switch status {
+        case .accepted: return .good
+        case .sending, .partial, .retryPending: return .warn
+        case .error: return .danger
+        case .notConfigured, .noData, .disabled: return .neutral
         }
     }
 
     // MARK: - Sections
 
     private var serverSection: some View {
-        VStack(alignment: .leading, spacing: .dsSpacing) {
-            SectionHeader(title: "Server")
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeader(title: "Server connection")
 
-            VStack(spacing: .dsSpacingSm) {
-                DSTextField(label: "URL", placeholder: "https://health.example.com", text: $serverURL)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-
-                DSSecureField(label: "API Key", placeholder: "your-secret-key", text: $apiKey)
-                    .onChange(of: apiKey) { _, new in KeychainStore.apiKey = new }
-
-                HStack {
-                    Button(action: testConnection) {
-                        Label("Test Connection", systemImage: "network")
+            VStack(alignment: .leading, spacing: .dsSpacing) {
+                HStack(alignment: .top, spacing: .dsSpacing) {
+                    Image(systemName: "server.rack")
+                        .foregroundStyle(Color.dsAccent)
+                        .frame(width: 22)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(serverSummaryTitle)
+                            .font(.dsBody)
+                            .foregroundStyle(Color.dsText)
+                        Text(serverSummarySubtitle)
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsTextTertiary)
+                            .lineLimit(2)
                     }
-                    .buttonStyle(DSSecondaryButtonStyle())
-
-                    Spacer()
-
+                    Spacer(minLength: 0)
                     connectionBadge
                 }
-                .padding(.top, .dsSpacingXs)
+
+                DisclosureGroup(isExpanded: $showServerDetails) {
+                    VStack(spacing: .dsSpacingSm) {
+                        DSTextField(label: "URL", placeholder: "https://health.example.com", text: $serverURL)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
+                            .autocorrectionDisabled()
+
+                        DSSecureField(label: "API Key", placeholder: "your-secret-key", text: $apiKey)
+                            .onChange(of: apiKey) { _, new in
+                                KeychainStore.apiKey = new
+                                invalidateConnection()
+                            }
+
+                        HStack {
+                            Button(action: testConnection) {
+                                Label("Test connection", systemImage: "network")
+                            }
+                            .buttonStyle(DSSecondaryButtonStyle())
+
+                            Spacer()
+                        }
+                        .padding(.horizontal, .dsSpacing)
+                        .padding(.top, .dsSpacingXs)
+                    }
+                    .padding(.top, .dsSpacingSm)
+                } label: {
+                    Text("Connection details")
+                        .font(.dsBodySm.weight(.medium))
+                        .foregroundStyle(Color.dsText)
+                }
+                .tint(Color.dsTextSecondary)
             }
+            .padding(.horizontal, .dsSpacing)
+            .padding(.top, .dsSpacingSm)
+            .padding(.bottom, .dsSpacing)
         }
         .dsCard()
-        .padding(.horizontal, 0)
     }
 
     private var syncSection: some View {
         VStack(alignment: .leading, spacing: .dsSpacing) {
-            SectionHeader(title: "Sync")
+            SectionHeader(title: "Background sync")
 
             VStack(spacing: 0) {
                 DSToggleRow(label: "Background sync", isOn: $backgroundSync)
-                    .onChange(of: backgroundSync) { _, _ in
-                        BackgroundSyncManager.shared.applyConfiguration()
-                    }
                 Divider().padding(.leading, .dsSpacing)
                 DSToggleRow(label: "Sync on launch", isOn: $syncOnLaunch)
                 Divider().padding(.leading, .dsSpacing)
@@ -246,6 +373,13 @@ struct SettingsView: View {
                         (360, "Every 6 hours"),
                     ]
                 )
+                Text("Foreground checks follow this interval when the app is open; iOS may delay background work.")
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsTextTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, .dsSpacing)
+                    .padding(.vertical, .dsSpacingSm)
                 Divider().padding(.leading, .dsSpacing)
                 DSToggleRow(
                     label: "Notify on sync",
@@ -274,24 +408,31 @@ struct SettingsView: View {
 
             VStack(spacing: 0) {
                 DSToggleRow(
-                    label: "Heart rate, HRV, SpO₂…",
-                    subtitle: "Vitals — minutely samples",
+                    label: "Vital signs",
+                    subtitle: "Heart rate, HRV, SpO₂ and body signals",
                     color: .dsHeart,
                     isOn: $syncVitals
                 )
                 Divider().padding(.leading, .dsSpacing)
                 DSToggleRow(
-                    label: "Steps, calories, distance…",
-                    subtitle: "Activity — hourly aggregates",
+                    label: "Activity",
+                    subtitle: "Steps, calories, distance and movement",
                     color: .dsActivity,
                     isOn: $syncActivity
                 )
                 Divider().padding(.leading, .dsSpacing)
                 DSToggleRow(
                     label: "Sleep",
-                    subtitle: "All phases",
+                    subtitle: "Sleep duration and stages",
                     color: .dsSleep,
                     isOn: $syncSleep
+                )
+                Divider().padding(.leading, .dsSpacing)
+                DSToggleRow(
+                    label: "Other metrics",
+                    subtitle: "Cardio, body, environment and dietary data",
+                    color: .dsCardio,
+                    isOn: $syncOther
                 )
             }
         }
@@ -330,26 +471,84 @@ struct SettingsView: View {
     private var connectionBadge: some View {
         switch connectionState {
         case .idle:
-            EmptyView()
+            if isServerConfigured {
+                DSStatusBadge(text: "Configured", status: .neutral)
+            } else {
+                DSStatusBadge(text: "Missing", status: .warn)
+            }
         case .testing:
             ProgressView().scaleEffect(0.8)
         case .ok:
             DSStatusBadge(text: "Connected", status: .good)
         case .failed(let msg):
-            DSStatusBadge(text: LocalizedStringKey(msg), status: .danger)
+            DSStatusBadge(verbatim: msg, status: .danger)
+        }
+    }
+
+    private var normalizedServerURL: URL? {
+        UserDefaultsSyncConfiguration.normalizedEndpoint(serverURL)
+    }
+
+    private var isServerConfigured: Bool {
+        normalizedServerURL != nil
+            && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var serverSummaryTitle: LocalizedStringKey {
+        isServerConfigured ? "Dashboard API configured" : "Dashboard API not configured"
+    }
+
+    private var serverSummarySubtitle: String {
+        guard !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return String(localized: "Add the server URL and API key to read dashboard data.")
+        }
+        guard let endpoint = normalizedServerURL else {
+            return String(localized: "Invalid server URL")
+        }
+        let host = endpoint.host ?? endpoint.absoluteString
+        let keyState = apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? String(localized: "API key missing")
+            : String(localized: "API key saved")
+        return "\(host) · \(keyState)"
+    }
+
+    private func openServerDetailsFromStatus() {
+        Task { @MainActor in
+            await Task.yield()
+            showServerDetails = true
         }
     }
 
     private func testConnection() {
+        let requestURL = serverURL
+        let requestKey = apiKey
+        let requestProbeID = connectionProbeID
         connectionState = .testing
         Task {
-            switch await engine.testConnection() {
+            let result = await engine.testConnection()
+            guard requestURL == serverURL, requestKey == apiKey,
+                  requestProbeID == connectionProbeID else { return }
+            switch result {
             case .accepted:
                 connectionState = .ok
+                await loadAccount(expectedProbeID: requestProbeID)
             case .failed(let failure):
                 connectionState = .failed(failure.message)
             }
         }
+    }
+
+    private func invalidateConnection() {
+        connectionState = .idle
+        account = nil
+        connectionProbeID = UUID()
+        configRevision &+= 1
+        engine.refreshConfiguration()
+    }
+
+    private func applyBackgroundSyncSetting() {
+        engine.refreshConfiguration()
+        BackgroundSyncManager.shared.applyConfiguration()
     }
 }
 
@@ -379,6 +578,7 @@ private struct DSTextField: View {
             TextField(placeholder, text: $text)
                 .font(.dsBody)
                 .foregroundStyle(Color.dsText)
+                .accessibilityIdentifier("server-url-field")
         }
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, .dsSpacingSm)
@@ -398,6 +598,7 @@ private struct DSSecureField: View {
             SecureField(placeholder, text: $text)
                 .font(.dsBody)
                 .foregroundStyle(Color.dsText)
+                .accessibilityIdentifier("server-api-key-field")
         }
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, .dsSpacingSm)
@@ -430,7 +631,9 @@ private struct DSPickerRow: View {
 private struct DSToggleRow: View {
     let label: LocalizedStringKey
     var subtitle: LocalizedStringKey? = nil
-    var color: Color = .dsAccent
+    /// Metric rows supply their semantic colour. Rows without one use the
+    /// neutral accent treatment, including its inverted on-state thumb.
+    var color: Color? = nil
     @Binding var isOn: Bool
 
     var body: some View {
@@ -446,9 +649,53 @@ private struct DSToggleRow: View {
                 }
             }
         }
-        .tint(color)
+        .toggleStyle(DSSwitchStyle(
+            onColor: color ?? .dsAccent,
+            thumbOnColor: color == nil ? .dsAccentForeground : .dsControlThumb
+        ))
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, 12)
+    }
+}
+
+/// Custom track colours are needed because iOS applies `.tint` to a native
+/// switch's off-track. Keep the interaction a Button rather than a bare tap
+/// gesture: it preserves an actionable accessibility element and announces
+/// both the label and current state.
+private struct DSSwitchStyle: ToggleStyle {
+    let onColor: Color
+    let thumbOnColor: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                configuration.isOn.toggle()
+            }
+        } label: {
+            HStack(spacing: 12) {
+                configuration.label
+                Spacer()
+                ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                    Capsule()
+                        .fill(configuration.isOn ? onColor : Color.dsSurface3)
+                        .overlay(
+                            Capsule().strokeBorder(
+                                configuration.isOn ? Color.clear : Color.dsBorder,
+                                lineWidth: 1
+                            )
+                        )
+                    Circle()
+                        .fill(configuration.isOn ? thumbOnColor : Color.dsControlThumb)
+                        .shadow(color: Color.dsControlThumbShadow, radius: 2, y: 1)
+                        .padding(2)
+                }
+                .frame(width: 51, height: 31)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(configuration.isOn ? Text("On") : Text("Off"))
+        .accessibilityAddTraits(configuration.isOn ? .isSelected : [])
     }
 }
 

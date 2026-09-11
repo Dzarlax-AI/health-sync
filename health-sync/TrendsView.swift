@@ -14,18 +14,29 @@ struct TrendsView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: .dsSpacingLg) {
-                    readinessCard
-                    if let s = sections, !s.isEmpty {
-                        sectionList(s)
+            GeometryReader { viewport in
+                let contentWidth = max(0, viewport.size.width - (2 * .dsSpacing))
+                ZStack(alignment: .top) {
+                    TrendsBackdrop()
+                        .frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
+                        .ignoresSafeArea(edges: .top)
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: .dsSpacingLg) {
+                            TrendsPageHeader()
+                            readinessCard
+                            if let s = sections, !s.isEmpty {
+                                sectionList(s)
+                            }
+                        }
+                        .frame(width: contentWidth, alignment: .leading)
+                        .padding(.top, .dsSpacingXl)
+                        .padding(.bottom, .dsTabBarClearance)
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.dsSpacing)
             }
-            .background(Color.dsBackground)
-            .navigationTitle("Trends")
-            .navigationBarTitleDisplayMode(.large)
+            .toolbar(.hidden, for: .navigationBar)
             .refreshable { await load() }
             .task { await load() }
         }
@@ -33,21 +44,6 @@ struct TrendsView: View {
 
     private var readinessCard: some View {
         VStack(alignment: .leading, spacing: .dsSpacing) {
-            HStack {
-                SectionHeader(title: "Readiness")
-                Spacer()
-                Picker("", selection: $days) {
-                    Text("7d").tag(7)
-                    Text("30d").tag(30)
-                    Text("90d").tag(90)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-                .onChange(of: days) { _, _ in
-                    Task { await load() }
-                }
-            }
-
             if isLoading && history.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 160)
             } else if let err = loadError {
@@ -61,37 +57,185 @@ struct TrendsView: View {
                     .foregroundStyle(Color.dsTextTertiary)
                     .frame(maxWidth: .infinity, minHeight: 160)
             } else {
-                Chart(history) { p in
+                readinessSummary
+
+                HStack {
+                    VStack(alignment: .leading, spacing: .dsSpacingXs) {
+                        Text("Readiness history")
+                            .font(.dsSubhead)
+                            .foregroundStyle(Color.dsText)
+                        Text("Last \(days) days")
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsTextSecondary)
+                    }
+                    Spacer()
+                    Picker("Readiness range", selection: $days) {
+                        Text("7d").tag(7)
+                        Text("30d").tag(30)
+                        Text("90d").tag(90)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 164)
+                    .tint(Color.dsReadiness)
+                    .onChange(of: days) { _, _ in
+                        Task { await load() }
+                    }
+                }
+
+                Chart(chartPoints, id: \.id) { p in
                     LineMark(
                         x: .value("Date", p.date),
                         y: .value("Score", p.score)
                     )
-                    .foregroundStyle(Color.dsAccent)
+                    .foregroundStyle(Color.dsReadiness)
                     .interpolationMethod(.catmullRom)
                     AreaMark(
                         x: .value("Date", p.date),
                         y: .value("Score", p.score)
                     )
-                    .foregroundStyle(Color.dsAccent.opacity(0.10))
+                    .foregroundStyle(Color.dsReadiness.opacity(0.16))
                 }
                 .chartYScale(domain: 0...100)
-                .frame(height: 200)
+                .chartXAxis(.hidden)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: [0, 50, 100]) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                            .foregroundStyle(Color.dsBorderHover)
+                        AxisValueLabel()
+                            .foregroundStyle(Color.dsTextTertiary)
+                    }
+                }
+                .frame(height: 218)
+
+                HStack {
+                    Text(rangeStartLabel)
+                    Spacer()
+                    Text(rangeEndLabel)
+                }
+                .font(.dsCaption)
+                .foregroundStyle(Color.dsTextTertiary)
             }
         }
         .padding(.dsSpacing)
-        .dsCard()
+        .dsElevatedCard()
+    }
+
+    private var readinessSummary: some View {
+        HStack(alignment: .center, spacing: .dsSpacing) {
+            Text("\(latestReadinessScore)")
+                .font(.system(size: 42, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.dsReadiness)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Today’s readiness")
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsTextSecondary)
+                Text(readinessDeltaSummary)
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsTextSecondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            DSStatusBadge(text: readinessBandLabel, status: readinessBandStatus)
+        }
+        .padding(.horizontal, .dsSpacing)
+        .padding(.vertical, 12)
+        .background(
+            LinearGradient(
+                colors: [Color.dsReadiness.opacity(0.15), Color.dsReadiness.opacity(0.05)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: .dsRadiusElevatedCard, style: .continuous))
+    }
+
+    private var readinessChangeExplanation: String {
+        guard let first = history.first?.score, let last = history.last?.score else {
+            return String(localized: "No trend yet")
+        }
+        let delta = last - first
+        if delta == 0 {
+            return String(localized: "Unchanged from the start of this range")
+        }
+        let direction = delta > 0 ? String(localized: "higher") : String(localized: "lower")
+        return String(localized: "\(abs(delta)) points \(direction) than the start of this range")
+    }
+
+    private var readinessDeltaSummary: String {
+        guard let first = history.first?.score, let last = history.last?.score else {
+            return String(localized: "No trend yet")
+        }
+        let delta = last - first
+        if delta == 0 { return String(localized: "Unchanged from start") }
+        let direction = delta > 0 ? String(localized: "higher") : String(localized: "lower")
+        return String(localized: "\(abs(delta)) points \(direction)")
+    }
+
+    private var rangeStartLabel: String {
+        formattedRangeDate(history.first?.date)
+    }
+
+    private var rangeEndLabel: String {
+        formattedRangeDate(history.last?.date)
+    }
+
+    private var chartPoints: [(id: String, date: Date, score: Int)] {
+        history.compactMap { point in
+            guard let date = Self.chartDate(point.date) else { return nil }
+            return (point.id, date, point.score)
+        }
+    }
+
+    private func formattedRangeDate(_ value: String?) -> String {
+        guard let value,
+              let date = try? Date(value, strategy: .iso8601.year().month().day()) else {
+            return value ?? ""
+        }
+        return date.formatted(.dateTime.day().month(.abbreviated))
+    }
+
+    private static func chartDate(_ raw: String) -> Date? {
+        try? Date(raw, strategy: .iso8601.year().month().day())
+    }
+
+    private var latestReadinessScore: Int {
+        history.last?.score ?? 0
+    }
+
+    private var readinessBandLabel: LocalizedStringKey {
+        switch latestReadinessScore {
+        case 80...100: return "Strong"
+        case 50..<80: return "Fair"
+        default: return "Low"
+        }
+    }
+
+    private var readinessBandStatus: DSStatusBadge.Status {
+        switch latestReadinessScore {
+        case 80...100: return .good
+        case 50..<80: return .warn
+        default: return .danger
+        }
     }
 
     private func sectionList(_ entries: [SectionCatalogueEntry]) -> some View {
-        VStack(spacing: 0) {
-            ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
-                if idx > 0 {
-                    Divider().padding(.leading, 56)
+        VStack(alignment: .leading, spacing: .dsSpacingSm) {
+            Text("Explore your data")
+                .font(.dsHeading.weight(.semibold))
+                .foregroundStyle(Color.dsText)
+                .padding(.horizontal, .dsSpacing)
+                .padding(.top, .dsSpacing)
+
+            VStack(spacing: 0) {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
+                    if idx > 0 {
+                        Divider().padding(.leading, 56)
+                    }
+                    navigationRow(entry)
                 }
-                navigationRow(entry)
             }
         }
-        .dsCard()
+        .dsElevatedCard()
     }
 
     /// Push to SectionDetailView — same view used from Today's Health
@@ -164,6 +308,38 @@ struct TrendsView: View {
             sections = s.sections
         }
         isLoading = false
+    }
+}
+
+private struct TrendsBackdrop: View {
+    var body: some View {
+        ZStack {
+            Color.dsBackground
+            RadialGradient(
+                colors: [Color.dsReadiness.opacity(0.14), .clear],
+                center: .topTrailing,
+                startRadius: 20,
+                endRadius: 340
+            )
+            LinearGradient(
+                colors: [Color.dsReadiness.opacity(0.05), .clear],
+                startPoint: .top,
+                endPoint: .center
+            )
+        }
+    }
+}
+
+private struct TrendsPageHeader: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: .dsSpacingXs) {
+            Text("Trends")
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.dsText)
+            Text("Your health over time")
+                .font(.dsBody)
+                .foregroundStyle(Color.dsTextSecondary)
+        }
     }
 }
 

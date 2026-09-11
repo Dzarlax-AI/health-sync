@@ -25,6 +25,7 @@ struct BriefingResponse: Decodable, Sendable {
     let readinessToday: Int?
     let readinessTodayLabel: String?
     let readinessTodayBand: String?
+    let dailyDecision: DailyDecision?
 
     let correlation: [CorrelationPoint]?
     let insights: [Insight]?
@@ -48,10 +49,26 @@ struct BriefingResponse: Decodable, Sendable {
         case readinessToday      = "readiness_today"
         case readinessTodayLabel = "readiness_today_label"
         case readinessTodayBand  = "readiness_today_band"
+        case dailyDecision = "daily_decision"
         case correlation, insights, alerts, sleep
         case metricCards = "metric_cards"
         case energyBank = "energy_bank"
         case aiInsight = "ai_insight"
+    }
+}
+
+/// The server-owned daily mode and its deterministic fallback explanation.
+/// Every field is optional so older briefing payloads remain decodable.
+struct DailyDecision: Decodable, Sendable {
+    let id: String?
+    let mode: String?
+    let label: String?
+    let reason: String?
+    let signalKeys: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, mode, label, reason
+        case signalKeys = "signal_keys"
     }
 }
 
@@ -276,6 +293,159 @@ struct AIBriefingResponse: Decodable, Sendable {
     let generating: Bool
     /// True when the tenant has no AI configured.
     let disabled: Bool
+    let decisionId: String?
+    let freshForDecision: Bool?
+    let updatedAt: String?
+    let plan: AIBriefingPlan?
+
+    enum CodingKeys: String, CodingKey {
+        case date, lang, insight, sleep, yesterday, recovery, recommendation, blocks
+        case generating, disabled
+        case decisionId = "decision_id"
+        case freshForDecision = "fresh_for_decision"
+        case updatedAt = "updated_at"
+        case plan
+    }
+}
+
+struct AIBriefingPlan: Decodable, Sendable {
+    let title: String?
+    let body: String?
+    let evidenceKeys: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case title, body
+        case evidenceKeys = "evidence_keys"
+    }
+}
+
+// MARK: - Today insights (server-owned three-domain contract)
+
+/// Additive, today-only response. The server owns the observations,
+/// confidence, destinations, and any action text; open string enums keep an
+/// older client compatible with a newer server vocabulary.
+struct TodayInsightsResponse: Decodable, Sendable {
+    let date: String
+    let decisionID: String
+    let snapshotVersion: String
+    let updatedAt: String?
+    let generation: TodayInsightsGeneration
+    let primary: TodayInsight
+    let domains: [TodayInsightDomain]
+    let evidence: [TodayInsightEvidence]
+    let changes: [TodayInsightChange]
+    let hasMore: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case date, generation, primary, domains, evidence, changes
+        case decisionID = "decision_id"
+        case snapshotVersion = "snapshot_version"
+        case updatedAt = "updated_at"
+        case hasMore = "has_more"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        date = try container.decode(String.self, forKey: .date)
+        decisionID = try container.decode(String.self, forKey: .decisionID)
+        snapshotVersion = try container.decode(String.self, forKey: .snapshotVersion)
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+        generation = try container.decode(TodayInsightsGeneration.self, forKey: .generation)
+        primary = try container.decode(TodayInsight.self, forKey: .primary)
+        domains = try container.decodeIfPresent([TodayInsightDomain].self, forKey: .domains) ?? []
+        evidence = try container.decodeIfPresent([TodayInsightEvidence].self, forKey: .evidence) ?? []
+        changes = try container.decodeIfPresent([TodayInsightChange].self, forKey: .changes) ?? []
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore)
+    }
+}
+
+struct TodayInsightsGeneration: Decodable, Sendable {
+    let state: String
+    let freshForSnapshot: Bool
+    let retryAfterSeconds: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case freshForSnapshot = "fresh_for_snapshot"
+        case retryAfterSeconds = "retry_after_seconds"
+    }
+}
+
+struct TodayInsight: Decodable, Sendable {
+    let state: String
+    let title: String
+    let observation: String
+    let meaning: String
+    let nextStep: TodayInsightAction?
+    let evidenceIDs: [String]
+    let fallback: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case state, title, observation, meaning, fallback
+        case nextStep = "next_step"
+        case evidenceIDs = "evidence_ids"
+    }
+}
+
+struct TodayInsightAction: Decodable, Sendable {
+    let id: String
+    let text: String
+}
+
+struct TodayInsightDomain: Decodable, Sendable, Identifiable {
+    var id: String { key }
+    let key: String
+    let band: String
+    let dataState: String
+    let confidence: String?
+    let asOf: String?
+    let summary: String
+    let insight: TodayInsight
+    let destination: TodayInsightDestination
+
+    enum CodingKeys: String, CodingKey {
+        case key, band, confidence, summary, insight, destination
+        case dataState = "data_state"
+        case asOf = "as_of"
+    }
+}
+
+struct TodayInsightEvidence: Decodable, Sendable, Identifiable {
+    let id: String
+    let domain: String
+    let observedAt: String?
+    let comparisonPeriod: String?
+    let comparison: String?
+    let dataState: String
+    let confidence: String?
+    let destination: TodayInsightDestination
+
+    enum CodingKeys: String, CodingKey {
+        case id, domain, comparison, confidence, destination
+        case observedAt = "observed_at"
+        case comparisonPeriod = "comparison_period"
+        case dataState = "data_state"
+    }
+}
+
+struct TodayInsightChange: Decodable, Sendable, Identifiable {
+    let id: String
+    let domain: String
+    let severity: String
+    let title: String
+    let detail: String
+    let evidenceIDs: [String]
+    let destination: TodayInsightDestination
+
+    enum CodingKeys: String, CodingKey {
+        case id, domain, severity, title, detail, destination
+        case evidenceIDs = "evidence_ids"
+    }
+}
+
+struct TodayInsightDestination: Decodable, Sendable {
+    let kind: String
+    let id: String
 }
 
 // MARK: - Readiness history

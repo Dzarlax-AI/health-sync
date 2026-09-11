@@ -7,6 +7,7 @@ enum ServerError: LocalizedError {
     case invalidURL
     case http(Int, String?)
     case redirected(to: String)
+    case configurationChanged
     case unexpectedContentType(String, sample: String)
     case decode(String, sample: String)
 
@@ -24,6 +25,8 @@ enum ServerError: LocalizedError {
             return String(localized: "HTTP \(c)")
         case .redirected(let to):
             return String(localized: "Auth required — server redirected to \(to). Check your API key or proxy (e.g. Authentik) configuration.")
+        case .configurationChanged:
+            return String(localized: "Server configuration changed while the request was in flight")
         case .unexpectedContentType(let ct, let sample):
             return String(localized: "Expected JSON, got \(ct). Body starts with: \(sample)")
         case .decode(let m, let sample):
@@ -62,6 +65,13 @@ final class ServerClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private var cachedLang: String?
+    private var cachedLangFingerprint: String?
+
+    private struct ClientConfiguration: Sendable, Equatable {
+        let base: URL
+        let key: String
+        let fingerprint: String
+    }
 
     init() {
         let config = URLSessionConfiguration.default
@@ -74,21 +84,24 @@ final class ServerClient {
 
     // MARK: Config
 
-    private func config() throws -> (base: URL, key: String) {
-        var urlString = UserDefaults.standard.string(forKey: "serverURL") ?? ""
-        urlString = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if urlString.hasSuffix("/") { urlString.removeLast() }
-        guard !urlString.isEmpty, let base = URL(string: urlString) else {
+    private func config() throws -> ClientConfiguration {
+        let rawURL = UserDefaults.standard.string(forKey: "serverURL") ?? ""
+        guard let base = UserDefaultsSyncConfiguration.normalizedEndpoint(rawURL) else {
             throw ServerError.missingConfig
         }
-        guard let key = KeychainStore.apiKey, !key.isEmpty else {
-            throw ServerError.missingConfig
-        }
-        return (base, key)
+        let key = KeychainStore.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !key.isEmpty else { throw ServerError.missingConfig }
+        return ClientConfiguration(
+            base: base,
+            key: key,
+            fingerprint: UserDefaultsSyncConfiguration.fingerprint(endpoint: base, apiKey: key)
+        )
     }
 
-    private func makeRequest(path: String, query: [URLQueryItem] = []) throws -> URLRequest {
-        let (base, key) = try config()
+    private func makeRequest(path: String, query: [URLQueryItem] = [],
+                             configuration: ClientConfiguration) throws -> URLRequest {
+        let base = configuration.base
+        let key = configuration.key
         guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
             throw ServerError.invalidURL
         }
@@ -103,8 +116,14 @@ final class ServerClient {
     }
 
     private func get<T: Decodable>(_ type: T.Type, path: String, query: [URLQueryItem] = []) async throws -> T {
-        let req = try makeRequest(path: path, query: query)
+        if SyncRuntime.isTestMode { throw ServerError.missingConfig }
+        let requestConfiguration = try config()
+        let req = try makeRequest(path: path, query: query, configuration: requestConfiguration)
         let (data, response) = try await session.data(for: req)
+        guard let currentConfiguration = try? config(),
+              currentConfiguration.fingerprint == requestConfiguration.fingerprint else {
+            throw ServerError.configurationChanged
+        }
         guard let http = response as? HTTPURLResponse else {
             throw ServerError.http(0, "no HTTP response")
         }
@@ -173,11 +192,19 @@ final class ServerClient {
     /// `report_lang` on the server — fetched once and cached. UI chrome
     /// follows iOS locale separately via String Catalog.
     private func serverLang() async -> String {
-        if let cachedLang { return cachedLang }
+        guard let requestConfiguration = try? config() else { return "en" }
+        let fingerprint = requestConfiguration.fingerprint
+        if let cachedLang, cachedLangFingerprint == fingerprint { return cachedLang }
+        cachedLang = nil
         do {
             let settings = try await get(UserSettings.self, path: "/api/settings")
+            guard let currentConfiguration = try? config(),
+                  currentConfiguration.fingerprint == fingerprint else {
+                return "en"
+            }
             let lang = settings.reportLang ?? "en"
             cachedLang = lang
+            cachedLangFingerprint = fingerprint
             return lang
         } catch {
             return "en"
@@ -188,6 +215,7 @@ final class ServerClient {
     /// it on the server (web).
     func refreshServerLang() async {
         cachedLang = nil
+        cachedLangFingerprint = nil
         _ = await serverLang()
     }
 
@@ -208,6 +236,16 @@ final class ServerClient {
         let lang = await serverLang()
         return try await get(AIBriefingResponse.self,
                              path: "/api/ai-briefing",
+                             query: [URLQueryItem(name: "lang", value: lang)])
+    }
+
+    /// Fetches the server-owned three-domain Today snapshot. This endpoint is
+    /// independent from legacy AI blocks, so factual content remains available
+    /// when narrative generation is cold, disabled, or unavailable.
+    func todayInsights() async throws -> TodayInsightsResponse {
+        let lang = await serverLang()
+        return try await get(TodayInsightsResponse.self,
+                             path: "/api/today-insights",
                              query: [URLQueryItem(name: "lang", value: lang)])
     }
 

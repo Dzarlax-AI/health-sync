@@ -14,6 +14,13 @@ private let sumMetrics: Set<String> = [
 struct MetricDetailView: View {
     let metric: String
     let displayName: String?
+    let unit: String
+
+    init(metric: String, displayName: String?, unit: String = "") {
+        self.metric = metric
+        self.displayName = displayName
+        self.unit = unit
+    }
 
     @State private var points: [DataPoint] = []
     @State private var dateRange: MetricDateRange?
@@ -39,6 +46,7 @@ struct MetricDetailView: View {
                 }
             }
             .padding(.dsSpacing)
+            .padding(.bottom, .dsTabBarClearance)
         }
         .background(Color.dsBackground)
         .navigationTitle(LocalizedStringKey(displayName ?? metric))
@@ -64,7 +72,27 @@ struct MetricDetailView: View {
     // MARK: - Chart
 
     private var chartCard: some View {
-        Chart(points, id: \.date) { p in
+        let chartPoints = points.compactMap { point -> (id: String, date: Date, qty: Double)? in
+            guard let date = chartDate(point.date) else { return nil }
+            return (point.date, date, point.qty)
+        }
+        return VStack(alignment: .leading, spacing: .dsSpacingSm) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Daily values")
+                    .font(.dsBody.weight(.semibold))
+                    .foregroundStyle(Color.dsText)
+                Spacer()
+                if !displayUnit.isEmpty {
+                    Text(displayUnit)
+                        .font(.dsCaption)
+                        .foregroundStyle(Color.dsTextSecondary)
+                }
+            }
+            Text(selectedRangeCaption)
+                .font(.dsCaption)
+                .foregroundStyle(Color.dsTextTertiary)
+
+            Chart(chartPoints, id: \.id) { p in
             if isSum {
                 BarMark(
                     x: .value("Date", p.date),
@@ -85,10 +113,24 @@ struct MetricDetailView: View {
                 .foregroundStyle(Color.dsAccent.opacity(0.10))
                 .interpolationMethod(.catmullRom)
             }
+            }
+            .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                    .foregroundStyle(Color.dsBorderHover)
+                AxisValueLabel(format: .dateTime.day().month(.abbreviated))
+                    .foregroundStyle(Color.dsTextTertiary)
+            }
+            }
+            .dsChartYScale(domain: DashboardChartScale.domain(
+            for: metric,
+            values: chartPoints.map(\.qty),
+            isBar: isSum
+            ))
+            .frame(height: 220)
         }
-        .frame(height: 240)
         .padding(.dsSpacing)
-        .dsCard()
+        .dsDetailCard()
     }
 
     // MARK: - Stats card
@@ -108,7 +150,7 @@ struct MetricDetailView: View {
                 statsRow(label: "Recorded since", value: shortDate(range.min))
             }
         }
-        .dsCard()
+        .dsDetailCard()
     }
 
     private func statsRow(label: LocalizedStringKey, value: String) -> some View {
@@ -184,10 +226,10 @@ struct MetricDetailView: View {
         let mx = values.max() ?? 0
         let last = points.last?.qty ?? 0
         return Stats(
-            last: format(last),
-            avg:  format(avg),
-            min:  format(mn),
-            max:  format(mx)
+            last: formatWithUnit(last),
+            avg:  formatWithUnit(avg),
+            min:  formatWithUnit(mn),
+            max:  formatWithUnit(mx)
         )
     }
 
@@ -205,11 +247,35 @@ struct MetricDetailView: View {
         return String(format: "%.0f", v)
     }
 
+    private func formatWithUnit(_ value: Double) -> String {
+        let number = format(value)
+        return displayUnit.isEmpty ? number : "\(number) \(displayUnit)"
+    }
+
+    /// The metric catalogue normally supplies a unit. Sleep durations are an
+    /// established API contract in hours, including on older catalogue
+    /// responses which omit it, so never leave this chart's scale ambiguous.
+    private var displayUnit: String {
+        if !unit.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return unit }
+        return metric.hasPrefix("sleep_") ? "hrs" : ""
+    }
+
+    private var selectedRangeCaption: String {
+        let dates = points.compactMap { chartDate($0.date) }.sorted()
+        guard let first = dates.first, let last = dates.last else { return "Last \(days) days" }
+        let format = Date.FormatStyle.dateTime.day().month(.abbreviated)
+        return "\(first.formatted(format)) – \(last.formatted(format))"
+    }
+
     private func isoDate(_ date: Date) -> String {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = .current
         let c = cal.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    private func chartDate(_ raw: String) -> Date? {
+        try? Date(raw, strategy: .iso8601.year().month().day())
     }
 
     /// Take the first 10 chars (`YYYY-MM-DD`) of a server timestamp.

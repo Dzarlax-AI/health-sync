@@ -29,9 +29,138 @@ struct SleepNight: Identifiable, Hashable {
 /// Charts stacks BarMark automatically when foregroundStyle(by:) is set.
 private struct SleepStagePoint: Identifiable {
     let id = UUID()
-    let date: String
+    let date: Date
     let stage: String
     let hours: Double
+}
+
+private struct SleepNightBackdrop: View {
+    var body: some View {
+        ZStack {
+            Color.dsSleepNightBackground
+            LinearGradient(
+                colors: [.dsSleepNightTop, .dsSleepNightBackground],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            RadialGradient(
+                colors: [.dsSleep.opacity(0.22), .dsSleepNightBackground.opacity(0)],
+                center: .topTrailing,
+                startRadius: 20,
+                endRadius: 380
+            )
+        }
+    }
+}
+
+private struct SleepPageHeader: View {
+    let date: String
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text("Sleep")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(Color.dsSleepNightText)
+            Text(verbatim: formattedDate)
+                .font(.dsBodySm)
+                .foregroundStyle(Color.dsSleepNightTextSecondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var formattedDate: String {
+        guard let parsed = try? Date(date, strategy: .iso8601.year().month().day()) else { return date }
+        return parsed.formatted(.dateTime.weekday(.wide).day().month(.wide).year())
+    }
+}
+
+private struct SleepEfficiencyRing: View {
+    let efficiency: Double?
+
+    private var value: Int? { efficiency.map { Int($0.rounded()) } }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.dsSleepNightSurface.opacity(0.88))
+                .overlay(Circle().stroke(Color.dsSleepNightBorder, lineWidth: 1))
+            Circle()
+                .stroke(Color.dsSleepNightText.opacity(0.12), lineWidth: 18)
+                .padding(9)
+            Circle()
+                .trim(from: 0, to: CGFloat(value ?? 0) / 100)
+                .stroke(
+                    AngularGradient(colors: [.dsSleep, .dsCardio, .dsSleep], center: .center),
+                    style: StrokeStyle(lineWidth: 18, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+                .padding(9)
+            VStack(spacing: .dsSpacingXs) {
+                Text(value.map { "\($0)%" } ?? "--")
+                    .font(.system(size: 48, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.dsSleepNightText)
+                Text("Sleep efficiency")
+                    .font(.dsCaption.weight(.semibold))
+                    .foregroundStyle(Color.dsSleepNightTextSecondary)
+            }
+        }
+        .frame(width: 184, height: 184)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Sleep efficiency")
+        .accessibilityValue(value.map(String.init) ?? "No data")
+    }
+}
+
+private struct SleepSummaryValue: View {
+    let icon: String
+    let label: LocalizedStringKey
+    let value: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: .dsSpacingSm) {
+            HStack(spacing: .dsSpacingSm) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 32, height: 32)
+                    .background(tint.opacity(0.15), in: Circle())
+                Text(label)
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsSleepNightTextSecondary)
+                    .lineLimit(1)
+            }
+            Text(value)
+                .font(.system(size: 26, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.dsSleepNightText)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.dsSpacing)
+        .background(Color.dsSleepNightSurface.opacity(0.82), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.dsSleepNightBorder, lineWidth: 1))
+    }
+}
+
+private struct SleepSurface: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .background(Color.dsSleepNightSurface.opacity(0.82))
+            .background(.thinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Color.dsSleepNightBorder, lineWidth: 1)
+            }
+    }
+}
+
+private extension View {
+    func sleepSurface(cornerRadius: CGFloat = 22) -> some View {
+        modifier(SleepSurface(cornerRadius: cornerRadius))
+    }
 }
 
 struct SleepView: View {
@@ -40,32 +169,47 @@ struct SleepView: View {
     @State private var days: Int = 30
     @State private var isLoading = false
     @State private var loadError: String?
+    @State private var lastLoadedAt: Date?
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: .dsSpacingLg) {
-                    if isLoading && nights.isEmpty {
-                        ProgressView().padding(.top, 60)
-                    } else if let err = loadError, nights.isEmpty {
-                        emptyState(LocalizedStringKey(err), isError: true)
-                    } else if nights.isEmpty {
-                        emptyState("No sleep data yet.", isError: false)
-                    } else {
-                        if let last = nights.last {
-                            lastNightCard(last)
+            GeometryReader { viewport in
+                let contentWidth = max(0, viewport.size.width - (2 * .dsSpacing))
+                ZStack(alignment: .top) {
+                    SleepNightBackdrop()
+                        .ignoresSafeArea()
+
+                    ScrollView {
+                        VStack(spacing: .dsSpacingLg) {
+                            if let loadError, !nights.isEmpty {
+                                SyncRefreshBanner(message: loadError, lastLoadedAt: lastLoadedAt) {
+                                    Task { await load() }
+                                }
+                            }
+                            if isLoading && nights.isEmpty {
+                                ProgressView().padding(.top, 60)
+                            } else if let err = loadError, nights.isEmpty {
+                                emptyState(LocalizedStringKey(err), isError: true)
+                            } else if nights.isEmpty {
+                                emptyState("No sleep data yet.", isError: false)
+                            } else if let last = nights.last {
+                                SleepPageHeader(date: last.date)
+                                sleepHero(last)
+                                sleepStructureCard(last)
+                                if let source = lastNightSource {
+                                    sourceCard(source, night: last)
+                                }
+                                chartCard
+                            }
                         }
-                        if let source = lastNightSource {
-                            sourceCard(source, night: nights.last)
-                        }
-                        chartCard
+                        .frame(width: contentWidth, alignment: .leading)
+                        .padding(.top, .dsSpacingXl)
+                        .padding(.bottom, .dsTabBarClearance)
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.dsSpacing)
             }
-            .background(Color.dsBackground)
-            .navigationTitle("Sleep")
-            .navigationBarTitleDisplayMode(.large)
+            .toolbar(.hidden, for: .navigationBar)
             .refreshable { await load() }
             .task { await load() }
         }
@@ -74,54 +218,72 @@ struct SleepView: View {
     // MARK: - Last night
 
     @ViewBuilder
-    private func lastNightCard(_ n: SleepNight) -> some View {
-        VStack(alignment: .leading, spacing: .dsSpacing) {
-            HStack(alignment: .firstTextBaseline) {
-                SectionHeader(title: "Last night")
-                Spacer()
-                Text(n.date)
-                    .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextTertiary)
-                    .padding(.trailing, .dsSpacing)
+    private func sleepHero(_ n: SleepNight) -> some View {
+        VStack(spacing: .dsSpacing) {
+            SleepEfficiencyRing(efficiency: n.efficiency)
+            HStack(spacing: .dsSpacingSm) {
+                SleepSummaryValue(icon: "moon.stars.fill", label: "Sleep time", value: formatHours(n.total), tint: .dsSleep)
+                SleepSummaryValue(icon: "wake", label: "Awake", value: formatHours(n.awake), tint: .dsSleepNightTextSecondary)
             }
-
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(formatHours(n.total))
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.dsText)
-                if let eff = n.efficiency {
-                    // Format the percentage in code so each locale uses its
-                    // own % conventions (placement, separator). Catalog key
-                    // is "%@ efficiency" — the formatted percentage substitutes in.
-                    let pct = (eff / 100).formatted(.percent.precision(.fractionLength(0)))
-                    Text("\(pct) efficiency")
-                        .font(.dsBodySm)
-                        .foregroundStyle(Color.dsTextSecondary)
-                }
-            }
-            .padding(.horizontal, .dsSpacing)
-
-            HStack(spacing: 0) {
-                stageCell(label: "Deep",  value: n.deep,  color: .dsSleep)
-                Divider()
-                stageCell(label: "REM",   value: n.rem,   color: .dsCardio)
-                Divider()
-                stageCell(label: "Core",  value: n.core,  color: .dsAccent)
-                // 5th cell only renders for coarse-only nights (RingConn,
-                // iPhone Sleep Schedule, older Apple Watch). Apple-Watch-
-                // with-stages nights have unspecified=0 and stay 4-cell,
-                // so the typical layout is unchanged.
-                if n.unspecified > 0 {
-                    Divider()
-                    stageCell(label: "Asleep", value: n.unspecified, color: .dsSleepUnspecified)
-                }
-                Divider()
-                stageCell(label: "Awake", value: n.awake, color: .dsTextTertiary)
-            }
-            .padding(.horizontal, .dsSpacing)
-            .padding(.bottom, .dsSpacing)
         }
-        .dsCard()
+    }
+
+    private func sleepStructureCard(_ n: SleepNight) -> some View {
+        VStack(alignment: .leading, spacing: .dsSpacing) {
+            Label("Sleep structure", systemImage: "chart.bar.fill")
+                .font(.dsBody.weight(.semibold))
+                .foregroundStyle(Color.dsSleepNightText)
+
+            GeometryReader { geometry in
+                let segmentCount = n.unspecified > 0 ? 5 : 4
+                let availableWidth = max(0, geometry.size.width - CGFloat(segmentCount - 1) * 2)
+                HStack(spacing: 2) {
+                    sleepBand(n.deep, total: n.total, availableWidth: availableWidth, color: .dsSleep)
+                    sleepBand(n.rem, total: n.total, availableWidth: availableWidth, color: .dsCardio)
+                    sleepBand(n.core, total: n.total, availableWidth: availableWidth, color: .dsSleepStageCore)
+                    if n.unspecified > 0 {
+                        sleepBand(n.unspecified, total: n.total, availableWidth: availableWidth, color: .dsSleepUnspecified)
+                    }
+                    sleepBand(n.awake, total: n.total, availableWidth: availableWidth, color: .dsSleepStageAwake)
+                }
+                .frame(width: geometry.size.width, height: 12)
+                .clipShape(Capsule())
+            }
+            .frame(height: 12)
+
+            HStack(spacing: .dsSpacingSm) {
+                sleepStageLabel("Deep", value: n.deep, color: .dsSleep)
+                sleepStageLabel("REM", value: n.rem, color: .dsCardio)
+                sleepStageLabel("Core", value: n.core, color: .dsSleepStageCore)
+                if n.unspecified > 0 {
+                    sleepStageLabel("Asleep", value: n.unspecified, color: .dsSleepUnspecified)
+                }
+                sleepStageLabel("Awake", value: n.awake, color: .dsSleepStageAwake)
+            }
+        }
+        .padding(.dsSpacing)
+        .background(Color.dsSleepNightSurface.opacity(0.82), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.dsSleepNightBorder, lineWidth: 1))
+    }
+
+    private func sleepBand(_ value: Double, total: Double, availableWidth: CGFloat, color: Color) -> some View {
+        Rectangle()
+            .fill(color)
+            .frame(width: availableWidth * value / max(total, 0.01))
+    }
+
+    private func sleepStageLabel(_ label: LocalizedStringKey, value: Double, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Circle().fill(color).frame(width: 6, height: 6)
+                Text(label).font(.dsCaption).lineLimit(1)
+            }
+            Text(formatHours(value))
+                .font(.dsCaption)
+                .foregroundStyle(Color.dsSleepNightTextSecondary)
+        }
+        .foregroundStyle(Color.dsSleepNightText)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func stageCell(label: LocalizedStringKey, value: Double, color: Color) -> some View {
@@ -142,17 +304,11 @@ struct SleepView: View {
     private var chartCard: some View {
         VStack(alignment: .leading, spacing: .dsSpacing) {
             HStack {
-                SectionHeader(title: "Trend")
+                Text("Trend")
+                    .font(.dsBody.weight(.semibold))
+                    .foregroundStyle(Color.dsSleepNightText)
                 Spacer()
-                Picker("", selection: $days) {
-                    Text("7d").tag(7)
-                    Text("30d").tag(30)
-                    Text("90d").tag(90)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-                .padding(.trailing, .dsSpacing)
-                .onChange(of: days) { _, _ in
+                SleepRangePicker(days: $days) {
                     Task { await load() }
                 }
             }
@@ -166,37 +322,59 @@ struct SleepView: View {
             }
             .chartForegroundStyleScale([
                 "Deep":   Color.dsSleep,
-                "Core":   Color.dsAccent,
+                "Core":   Color.dsSleepStageCore,
                 "REM":    Color.dsCardio,
                 "Asleep": Color.dsSleepUnspecified,
-                "Awake":  Color.dsTextTertiary,
+                "Awake":  Color.dsSleepStageAwake,
             ])
             .chartLegend(.hidden)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                        .foregroundStyle(Color.dsSleepNightBorder)
+                    AxisValueLabel(format: .dateTime.day().month(.abbreviated))
+                        .foregroundStyle(Color.dsSleepNightTextSecondary)
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading, values: [0, 4, 8, 12]) { _ in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                        .foregroundStyle(Color.dsSleepNightBorder)
+                    AxisValueLabel()
+                        .foregroundStyle(Color.dsSleepNightTextSecondary)
+                }
+            }
             .frame(height: 220)
             .padding(.horizontal, .dsSpacing)
 
-            HStack(spacing: 12) {
-                legendDot("Deep",   color: .dsSleep)
-                legendDot("Core",   color: .dsAccent)
-                legendDot("REM",    color: .dsCardio)
-                // Only legend the 5th band when any visible night has it —
-                // keeps the row tight for typical Apple Watch users.
-                if nights.contains(where: { $0.unspecified > 0 }) {
-                    legendDot("Asleep", color: .dsSleepUnspecified)
+            VStack(alignment: .leading, spacing: .dsSpacingSm) {
+                Text("Last \(days) days")
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsSleepNightTextSecondary)
+
+                HStack(spacing: 12) {
+                    legendDot("Deep",   color: .dsSleep)
+                    legendDot("Core",   color: .dsSleepStageCore)
+                    legendDot("REM",    color: .dsCardio)
+                    // Only legend the 5th band when any visible night has it —
+                    // keeps the row tight for typical Apple Watch users.
+                    if nights.contains(where: { $0.unspecified > 0 }) {
+                        legendDot("Asleep", color: .dsSleepUnspecified)
+                    }
+                    legendDot("Awake",  color: .dsSleepStageAwake)
+                    Spacer()
                 }
-                legendDot("Awake",  color: .dsTextTertiary)
-                Spacer()
             }
             .padding(.horizontal, .dsSpacing)
             .padding(.bottom, .dsSpacing)
         }
-        .dsCard()
+        .sleepSurface()
     }
 
     private func legendDot(_ label: LocalizedStringKey, color: Color) -> some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 8, height: 8)
-            Text(label).font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+            Text(label).font(.dsCaption).foregroundStyle(Color.dsSleepNightTextSecondary)
         }
     }
 
@@ -204,15 +382,16 @@ struct SleepView: View {
         var out: [SleepStagePoint] = []
         out.reserveCapacity(nights.count * 5)
         for n in nights {
-            out.append(.init(date: n.date, stage: "Deep",   hours: n.deep))
-            out.append(.init(date: n.date, stage: "Core",   hours: n.core))
-            out.append(.init(date: n.date, stage: "REM",    hours: n.rem))
+            guard let date = try? Date(n.date, strategy: .iso8601.year().month().day()) else { continue }
+            out.append(.init(date: date, stage: "Deep",   hours: n.deep))
+            out.append(.init(date: date, stage: "Core",   hours: n.core))
+            out.append(.init(date: date, stage: "REM",    hours: n.rem))
             // Stack order: Deep → Core → REM → Asleep (unspecified) → Awake.
             // The new band sits next to Awake so it visually reads as
             // "still real sleep, just not classified" rather than mixed in
             // with the stage stack.
-            out.append(.init(date: n.date, stage: "Asleep", hours: n.unspecified))
-            out.append(.init(date: n.date, stage: "Awake",  hours: n.awake))
+            out.append(.init(date: date, stage: "Asleep", hours: n.unspecified))
+            out.append(.init(date: date, stage: "Awake",  hours: n.awake))
         }
         return out
     }
@@ -236,26 +415,25 @@ struct SleepView: View {
             && (night?.core ?? 0) == 0
         return HStack(spacing: 8) {
             Image(systemName: sourceIcon(for: source))
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsSleepNightTextSecondary)
                 .frame(width: 18)
             Text("Source")
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextTertiary)
+                .foregroundStyle(Color.dsSleepNightTextSecondary)
             Text(source)
                 .font(.dsCaption.weight(.medium))
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsSleepNightText)
             if noStages {
                 Text("· stages not measured")
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsSleepNightTextSecondary)
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.dsSurface2.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .sleepSurface(cornerRadius: 14)
     }
 
     private func sourceIcon(for source: String) -> String {
@@ -316,6 +494,7 @@ struct SleepView: View {
                                  core: coreR.points,
                                  unspecified: unspecifiedR?.points,
                                  awake: awakeR.points)
+            lastLoadedAt = Date()
 
             if let sourceR = try? await sourceT {
                 lastNightSource = dominantSource(from: sourceR.pointsBySource)
@@ -394,6 +573,28 @@ struct SleepView: View {
             return String(localized: "\(h)h \(m)m")
         }
         return String(localized: "\(m)m")
+    }
+}
+
+private struct SleepRangePicker: View {
+    @Binding var days: Int
+    let didChange: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach([7, 30, 90], id: \.self) { range in
+                Button("\(range)d") { days = range }
+                    .font(.dsCaption.weight(.semibold))
+                    .foregroundStyle(range == days ? Color.dsSleepNightText : Color.dsSleepNightTextSecondary)
+                    .frame(maxWidth: .infinity, minHeight: 30)
+                    .background(range == days ? Color.dsSleep : Color.dsSleepNightSurface.opacity(0.62), in: Capsule())
+            }
+        }
+        .padding(3)
+        .frame(width: 180)
+        .background(Color.dsSleepNightBackground.opacity(0.62), in: Capsule())
+        .overlay(Capsule().stroke(Color.dsSleepNightBorder, lineWidth: 1))
+        .onChange(of: days) { _, _ in didChange() }
     }
 }
 

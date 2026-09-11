@@ -34,6 +34,48 @@ final class health_syncUITests: XCTestCase {
     }
 
     @MainActor
+    func testBackgroundSyncToggleIsActionable() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-mode")
+        app.launch()
+
+        app.tabBars.buttons["Settings"].tap()
+
+        let toggle = app.switches["Background sync"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+
+        let initialValue = toggle.value as? String
+        toggle.tap()
+        XCTAssertNotEqual(toggle.value as? String, initialValue)
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Settings background sync toggle"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    func testBackgroundSyncToggleRemainsLegibleInDarkMode() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["--ui-test-mode", "--ui-test-force-dark-mode"]
+        app.launch()
+
+        app.tabBars.buttons["Settings"].tap()
+
+        let toggle = app.switches["Background sync"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        if (toggle.value as? String) == "1" {
+            toggle.tap()
+        }
+        XCTAssertEqual(toggle.value as? String, "0")
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Settings background sync toggle in dark mode"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
