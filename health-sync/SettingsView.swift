@@ -228,6 +228,9 @@ struct SettingsView: View {
 
             VStack(spacing: 0) {
                 DSToggleRow(label: "Background sync", isOn: $backgroundSync)
+                    .onChange(of: backgroundSync) { _, _ in
+                        BackgroundSyncManager.shared.applyConfiguration()
+                    }
                 Divider().padding(.leading, .dsSpacing)
                 DSToggleRow(label: "Sync on launch", isOn: $syncOnLaunch)
                 Divider().padding(.leading, .dsSpacing)
