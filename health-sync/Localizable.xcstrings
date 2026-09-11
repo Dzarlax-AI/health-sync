@@ -4,6 +4,30 @@
     "" : {
 
     },
+    "hrs" : {
+      "comment" : "Fallback unit for sleep durations when an older metric catalogue omits it.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "hrs"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ч"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "č"
+          }
+        }
+      }
+    },
     "·" : {
 
     },

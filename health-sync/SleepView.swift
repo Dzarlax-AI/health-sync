@@ -18,10 +18,11 @@ struct SleepNight: Identifiable, Hashable, Sendable {
 
     var id: String { date }
 
-    /// `(total - awake) / total` × 100, capped to 0–100; nil when total is 0.
+    /// Asleep time divided by the full in-bed window, capped to 0–100.
     var efficiency: Double? {
-        guard total > 0 else { return nil }
-        return min(100, max(0, (total - awake) / total * 100))
+        let inBed = total + awake
+        guard inBed > 0 else { return nil }
+        return min(100, max(0, total / inBed * 100))
     }
 }
 
@@ -107,7 +108,7 @@ private struct SleepEfficiencyRing: View {
         .frame(width: 184, height: 184)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Sleep efficiency")
-        .accessibilityValue(value.map(String.init) ?? "No data")
+        .accessibilityValue(value.map { "\($0) percent" } ?? "No data")
     }
 }
 
@@ -238,13 +239,13 @@ struct SleepView: View {
                 let segmentCount = n.unspecified > 0 ? 5 : 4
                 let availableWidth = max(0, geometry.size.width - CGFloat(segmentCount - 1) * 2)
                 HStack(spacing: 2) {
-                    sleepBand(n.deep, total: n.total, availableWidth: availableWidth, color: .dsSleep)
-                    sleepBand(n.rem, total: n.total, availableWidth: availableWidth, color: .dsCardio)
-                    sleepBand(n.core, total: n.total, availableWidth: availableWidth, color: .dsSleepStageCore)
+                    sleepBand(n.deep, duration: n.total + n.awake, availableWidth: availableWidth, color: .dsSleep)
+                    sleepBand(n.rem, duration: n.total + n.awake, availableWidth: availableWidth, color: .dsCardio)
+                    sleepBand(n.core, duration: n.total + n.awake, availableWidth: availableWidth, color: .dsSleepStageCore)
                     if n.unspecified > 0 {
-                        sleepBand(n.unspecified, total: n.total, availableWidth: availableWidth, color: .dsSleepUnspecified)
+                        sleepBand(n.unspecified, duration: n.total + n.awake, availableWidth: availableWidth, color: .dsSleepUnspecified)
                     }
-                    sleepBand(n.awake, total: n.total, availableWidth: availableWidth, color: .dsSleepStageAwake)
+                    sleepBand(n.awake, duration: n.total + n.awake, availableWidth: availableWidth, color: .dsSleepStageAwake)
                 }
                 .frame(width: geometry.size.width, height: 12)
                 .clipShape(Capsule())
@@ -266,10 +267,10 @@ struct SleepView: View {
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.dsSleepNightBorder, lineWidth: 1))
     }
 
-    private func sleepBand(_ value: Double, total: Double, availableWidth: CGFloat, color: Color) -> some View {
+    private func sleepBand(_ value: Double, duration: Double, availableWidth: CGFloat, color: Color) -> some View {
         Rectangle()
             .fill(color)
-            .frame(width: availableWidth * value / max(total, 0.01))
+            .frame(width: availableWidth * value / max(duration, 0.01))
     }
 
     private func sleepStageLabel(_ label: LocalizedStringKey, value: Double, color: Color) -> some View {

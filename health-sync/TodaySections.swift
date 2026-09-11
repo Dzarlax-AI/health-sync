@@ -183,12 +183,16 @@ private struct TodayInsightDomainLink: View {
     let domain: TodayInsightDomain
     @Binding var selection: TabSelection
 
+    private var isNavigable: Bool {
+        domain.destination.kind == "section" && !domain.destination.id.isEmpty
+    }
+
     @ViewBuilder
     var body: some View {
-        if domain.destination.kind == "section", domain.destination.id == "sleep" {
+        if isNavigable, domain.destination.id == "sleep" {
             Button { selection = .sleep } label: { card }
                 .buttonStyle(.plain)
-        } else if domain.destination.kind == "section", !domain.destination.id.isEmpty {
+        } else if isNavigable {
             NavigationLink(destination: SectionDetailView(sectionKey: domain.destination.id)) { card }
                 .buttonStyle(.plain)
         } else {
@@ -204,8 +208,8 @@ private struct TodayInsightDomainLink: View {
                     .foregroundStyle(Color.dsText)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
-                Image(systemName: domain.destination.kind == "section" ? "chevron.right" : "circle.fill")
-                    .font(.system(size: domain.destination.kind == "section" ? 13 : 7, weight: .semibold))
+                Image(systemName: isNavigable ? "chevron.right" : "circle.fill")
+                    .font(.system(size: isNavigable ? 13 : 7, weight: .semibold))
                     .foregroundStyle(Color.dsTextTertiary)
             }
             if !domain.insight.observation.isEmpty {
@@ -720,7 +724,7 @@ private struct TodayEnergyBankDetailView: View {
                         .fill(Color.dsTextTertiary.opacity(0.15))
                     RoundedRectangle(cornerRadius: 4)
                         .fill(todayVerdictColor(energyBank.actionVerdict))
-                        .frame(width: geo.size.width * CGFloat(max(0, min(100, energyBank.current))) / 100.0)
+                        .frame(width: geo.size.width * CGFloat(max(0, min(energyBank.capacity, energyBank.current))) / CGFloat(max(energyBank.capacity, 1)))
                 }
             }
             .frame(height: 8)
@@ -832,103 +836,6 @@ private struct TodayStressFlagChip: View {
     }
 }
 
-struct TodayAtAGlanceBlock: View {
-    let cards: [MetricCard]
-    @Binding var selection: TabSelection
-
-    private var visibleCards: [MetricCard] {
-        Array(cards.sorted(by: todayMetricCardSort).prefix(4))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: .dsSpacingSm) {
-            HStack {
-                SectionHeader(title: "Key signals")
-                Spacer()
-                Button {
-                    selection = .metrics
-                } label: {
-                    Text("View all")
-                        .font(.dsCaption.weight(.semibold))
-                        .foregroundStyle(Color.dsAccent)
-                }
-                .buttonStyle(.plain)
-            }
-            LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: .dsSpacingSm),
-                GridItem(.flexible(), spacing: .dsSpacingSm),
-            ], spacing: .dsSpacingSm) {
-                ForEach(visibleCards) { card in
-                    if card.metric.hasPrefix("sleep_") {
-                        Button {
-                            selection = .sleep
-                        } label: {
-                            TodayMetricCardView(card: card)
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        NavigationLink(destination: MetricDetailView(
-                            metric: card.metric,
-                            displayName: card.name
-                        )) {
-                            TodayMetricCardView(card: card)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct TodayMetricCardView: View {
-    let card: MetricCard
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(card.name)
-                .font(.dsCaption)
-                .foregroundStyle(Color.dsTextTertiary)
-                .lineLimit(1)
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(card.value)
-                    .font(.dsHeading)
-                    .foregroundStyle(Color.dsText)
-                Text(card.unit)
-                    .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextTertiary)
-            }
-            HStack(spacing: 6) {
-                if let label = card.trend7dLabel, !label.isEmpty {
-                    TodayTrendChip(label: label, status: card.trend7dStatus)
-                }
-                if let label = card.trend30dLabel, !label.isEmpty {
-                    TodayTrendChip(label: label, status: card.trend30dStatus, secondary: true)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.dsSpacingSm)
-        .dsElevatedCard()
-    }
-}
-
-private struct TodayTrendChip: View {
-    let label: String
-    let status: String?
-    var secondary = false
-
-    var body: some View {
-        Text(label)
-            .font(.dsCaption)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(todayTrendColor(status).opacity(secondary ? 0.10 : 0.18))
-            .foregroundStyle(todayTrendColor(status))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-}
-
 struct TodayAlertsBlock: View {
     let alerts: [Alert]
 
@@ -1001,6 +908,13 @@ struct TodayAIInsightBlock: View {
     var body: some View {
         if let response, TodayAIBriefingController.hasContent(response) {
             TodayAIInsightExpanded(response: response)
+        } else if generating {
+            Label("Recommendation is updating", systemImage: "arrow.trianglehead.2.clockwise")
+                .font(.dsCaption.weight(.medium))
+                .foregroundStyle(Color.dsWarn)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.dsSpacing)
+                .todayRecommendationSurface()
         }
     }
 }
@@ -1518,13 +1432,4 @@ private func todayVerdictColor(_ verdict: String) -> Color {
     case "rest":            return .dsDanger
     default:                return .dsTextSecondary
     }
-}
-
-private func todayVerdictDisplay(_ energyBank: EnergyBank) -> Text {
-    if let label = energyBank.verdictLabel, !label.isEmpty {
-        return Text(verbatim: label)
-    }
-    return Text(LocalizedStringKey(energyBank.actionVerdict
-        .replacingOccurrences(of: "_", with: " ")
-        .capitalized))
 }

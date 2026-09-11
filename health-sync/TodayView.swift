@@ -194,61 +194,6 @@ struct TodayView: View {
     TodayView(selection: .constant(.today))
 }
 
-private struct TodaySyncStatusRow<Destination: View>: View {
-    let status: SyncStatus
-    let destination: () -> Destination
-
-    var body: some View {
-        NavigationLink(destination: destination()) {
-            HStack(spacing: .dsSpacingSm) {
-                Image(systemName: status == .notConfigured ? "server.rack" : "arrow.trianglehead.2.clockwise")
-                    .foregroundStyle(statusColor)
-                    .frame(width: 24, height: 24)
-                VStack(alignment: .leading, spacing: .dsSpacingXs) {
-                    Text("Data sync")
-                        .font(.dsBodySm.weight(.medium))
-                        .foregroundStyle(Color.dsText)
-                    Text(statusLabel)
-                        .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextSecondary)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.dsTextTertiary)
-            }
-            .padding(.horizontal, .dsSpacing)
-            .padding(.vertical, .dsSpacingSm)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("today-sync-status")
-        .dsCard()
-    }
-
-    private var statusLabel: LocalizedStringKey {
-        switch status {
-        case .notConfigured: return "Connect server"
-        case .noData: return "No available data"
-        case .sending: return "Sending"
-        case .accepted: return "Accepted by server"
-        case .partial: return "Partially accepted"
-        case .retryPending: return "Waiting to retry"
-        case .error: return "Needs attention"
-        case .disabled: return "Sync disabled"
-        }
-    }
-
-    private var statusColor: Color {
-        switch status {
-        case .accepted: return .dsGood
-        case .sending, .partial, .retryPending: return .dsWarn
-        case .error: return .dsDanger
-        case .notConfigured, .noData, .disabled: return .dsTextSecondary
-        }
-    }
-}
-
 private struct TodayLoadingState: View {
     var body: some View {
         VStack(spacing: .dsSpacingLg) {
@@ -277,6 +222,8 @@ private struct TodayLoadingState: View {
             .dsCard()
         }
         .redacted(reason: .placeholder)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading your health data")
     }
 
     private func skeletonCard() -> some View {

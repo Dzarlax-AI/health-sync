@@ -257,7 +257,7 @@ struct MetricDetailView: View {
     /// responses which omit it, so never leave this chart's scale ambiguous.
     private var displayUnit: String {
         if !unit.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return unit }
-        return metric.hasPrefix("sleep_") ? "hrs" : ""
+        return metric.hasPrefix("sleep_") ? String(localized: "hrs") : ""
     }
 
     private var selectedRangeCaption: String {

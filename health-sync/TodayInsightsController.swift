@@ -25,8 +25,10 @@ final class TodayInsightsController {
         pollTask = Task { @MainActor in
             var current = response
             for _ in 0..<10 {
-                let retryAfter = max(30, current.generation.retryAfterSeconds ?? 30)
-                try? await Task.sleep(nanoseconds: UInt64(retryAfter) * 1_000_000_000)
+                // The response is server-controlled: bound it before creating
+                // a Duration so polling stays finite even for malformed input.
+                let retryAfter = min(max(30, current.generation.retryAfterSeconds ?? 30), 300)
+                try? await Task.sleep(for: .seconds(retryAfter))
                 if Task.isCancelled { return }
                 guard let updated = try? await ServerClient.shared.todayInsights() else { continue }
                 apply(updated)

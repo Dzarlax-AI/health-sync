@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State private var account: UserSettings?
     @State private var showServerDetails = false
     @State private var connectionProbeID = UUID()
+    @State private var appliedServerEndpoint: String?
 
     private let engine = SyncEngine.shared
 
@@ -51,11 +52,12 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
             .task {
+                appliedServerEndpoint = normalizedServerURL?.absoluteString
                 applyBackgroundSyncSetting()
                 await loadAccount()
             }
-            .onChange(of: serverURL) {
-                invalidateConnection()
+            .onChange(of: serverURL) { _, _ in
+                resetConnectionState()
             }
             .onChange(of: backgroundSync) { applyBackgroundSyncSetting() }
             .onChange(of: syncOnLaunch) { engine.refreshConfiguration() }
@@ -319,6 +321,7 @@ struct SettingsView: View {
                             .textInputAutocapitalization(.never)
                             .keyboardType(.URL)
                             .autocorrectionDisabled()
+                            .onSubmit(commitServerConfiguration)
 
                         DSSecureField(label: "API Key", placeholder: "your-secret-key", text: $apiKey)
                             .onChange(of: apiKey) { _, new in
@@ -520,6 +523,7 @@ struct SettingsView: View {
     }
 
     private func testConnection() {
+        commitServerConfiguration()
         let requestURL = serverURL
         let requestKey = apiKey
         let requestProbeID = connectionProbeID
@@ -539,11 +543,24 @@ struct SettingsView: View {
     }
 
     private func invalidateConnection() {
+        resetConnectionState()
+        configRevision &+= 1
+        engine.refreshConfiguration()
+    }
+
+    private func resetConnectionState() {
         connectionState = .idle
         account = nil
         connectionProbeID = UUID()
-        configRevision &+= 1
-        engine.refreshConfiguration()
+    }
+
+    /// Reload the app-wide client only when the effective endpoint changes.
+    /// Editing a URL is intentionally local UI state until it is committed.
+    private func commitServerConfiguration() {
+        let endpoint = normalizedServerURL?.absoluteString
+        guard endpoint != appliedServerEndpoint else { return }
+        appliedServerEndpoint = endpoint
+        invalidateConnection()
     }
 
     private func applyBackgroundSyncSetting() {
@@ -694,8 +711,8 @@ private struct DSSwitchStyle: ToggleStyle {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(configuration.isOn ? Text("On") : Text("Off"))
-        .accessibilityAddTraits(configuration.isOn ? .isSelected : [])
+        .accessibilityValue(configuration.isOn ? "On" : "Off")
+        .accessibilityAddTraits(.isToggle)
     }
 }
 

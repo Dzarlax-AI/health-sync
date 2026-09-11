@@ -342,8 +342,9 @@ enum DashboardChartScale {
 
         // Saturation is expressed as a percentage and is clinically read on
         // this conventional band; a zero baseline makes 94–98% unreadable.
+        // Retain the conventional context but never clip an observed low value.
         if metric == "blood_oxygen_saturation" {
-            return 80...100
+            return min(80, floor(minimum))...max(100, ceil(maximum))
         }
 
         let magnitude = max(abs(minimum), abs(maximum), 1)

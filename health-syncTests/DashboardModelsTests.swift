@@ -4,6 +4,38 @@ import Testing
 
 struct DashboardModelsTests {
     @Test
+    func sleepEfficiencyUsesTheFullInBedWindow() {
+        let night = SleepNight(
+            date: "2026-09-11",
+            total: 7,
+            deep: 1.5,
+            rem: 1.5,
+            core: 4,
+            unspecified: 0,
+            awake: 1
+        )
+
+        #expect(night.efficiency == 87.5)
+    }
+
+    @Test
+    func oxygenChartScalePreservesConventionalBandWithoutClippingLows() {
+        let typical = DashboardChartScale.domain(
+            for: "blood_oxygen_saturation",
+            values: [95, 97],
+            isBar: false
+        )
+        let low = DashboardChartScale.domain(
+            for: "blood_oxygen_saturation",
+            values: [77.4, 96],
+            isBar: false
+        )
+
+        #expect(typical == 80...100)
+        #expect(low == 77...100)
+    }
+
+    @Test
     func briefingDecodesServerOwnedDailyDecisionAdditively() throws {
         let payload = """
         {

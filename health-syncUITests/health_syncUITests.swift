@@ -64,15 +64,25 @@ final class health_syncUITests: XCTestCase {
 
         let toggle = app.switches["Background sync"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
-        if (toggle.value as? String) == "1" {
+        if isSwitchOn(toggle) {
             toggle.tap()
         }
-        XCTAssertEqual(toggle.value as? String, "0")
+        XCTAssertFalse(isSwitchOn(toggle))
 
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "Settings background sync toggle in dark mode"
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    /// XCUITest returns the platform switch value as either `On`/`Off` or
+    /// `1`/`0` depending on the simulator runtime. Both represent the same
+    /// accessible switch state.
+    private func isSwitchOn(_ toggle: XCUIElement) -> Bool {
+        switch toggle.value as? String {
+        case "On", "1": true
+        default: false
+        }
     }
 
     @MainActor
