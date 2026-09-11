@@ -654,10 +654,14 @@ actor HealthKitManager {
         // inflation guard before the next chunked re-sync can correct it.
         // Sleep is low-volume (~1–10 samples/day), the extra fetch is free.
         // For long re-sync windows we still honour `since`.
-        let sevenDaysAgo = Date().addingTimeInterval(-7 * 24 * 3600)
+        let now = Date()
+        let sevenDaysAgo = now.addingTimeInterval(-7 * 24 * 3600)
         let twelveBefore = since.addingTimeInterval(-12 * 3600)
         let sleepWindowStart = min(twelveBefore, sevenDaysAgo)
-        let queryEnd = until ?? Date()
+        // A full-resync may be asked for through today's nominal end-of-day.
+        // HealthKit cannot have observed the future part of that interval, so
+        // use the actual query time for both the predicate and attestation.
+        let queryEnd = Self.effectiveSleepQueryEnd(until: until, now: now)
         let pred = HKQuery.predicateForSamples(withStart: sleepWindowStart, end: queryEnd)
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
 
@@ -935,15 +939,9 @@ actor HealthKitManager {
         // coverage, not an assertion that HealthKit can never revise data.
         let iso8601 = ISO8601DateFormatter()
         func wakeDateOnly(_ date: String) -> String { String(date.prefix(10)) }
-        func coverageWindow(for wakeDay: Date) -> (start: Date, end: Date)? {
-            guard let start = cal.date(byAdding: .hour, value: -12, to: wakeDay),
-                  let end = cal.date(byAdding: .hour, value: 12, to: wakeDay) else {
-                return nil
-            }
-            return (start, end)
-        }
         let nightSleepCoverage = emittedMainTotals.compactMap { dk, _ -> NightSleepCoverage? in
-            guard let window = coverageWindow(for: dk.wakeDay), let generation = mainGenerations[dk] else { return nil }
+            guard let window = Self.nightCoverageWindow(for: dk.wakeDay, calendar: cal),
+                  let generation = mainGenerations[dk] else { return nil }
             return NightSleepCoverage(
                 wakeDate: wakeDateOnly(dk.date),
                 metricDate: dk.date,
@@ -1013,6 +1011,23 @@ actor HealthKitManager {
             MetricData(name: "sleep_unspecified", units: "hr", data: unspecifiedSeg),
             MetricData(name: "sleep_awake",       units: "hr", data: awakeSeg),
         ], nightSleepCoverage: nightSleepCoverage)
+    }
+
+    // These are static so coverage semantics remain independently testable
+    // from HealthKit queries. The end is the actual query boundary, never a
+    // caller-supplied future nominal end-of-day.
+    nonisolated static func effectiveSleepQueryEnd(until: Date?, now: Date) -> Date {
+        min(until ?? now, now)
+    }
+
+    // The coverage contract is local noon-to-noon. Calendar-day arithmetic
+    // preserves 12:00 across DST changes; elapsed-hour arithmetic does not.
+    nonisolated static func nightCoverageWindow(for wakeDay: Date, calendar: Calendar) -> (start: Date, end: Date)? {
+        guard let end = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: wakeDay),
+              let start = calendar.date(byAdding: .day, value: -1, to: end) else {
+            return nil
+        }
+        return (start, end)
     }
 
     /// Maps an `HKCategoryValueSleepAnalysis` raw value to the server-side

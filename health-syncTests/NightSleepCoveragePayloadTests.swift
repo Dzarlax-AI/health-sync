@@ -37,4 +37,23 @@ struct NightSleepCoveragePayloadTests {
         let data = raw["data"] as! [String: Any]
         #expect(data["night_sleep_coverage"] == nil)
     }
+
+    @Test func coverageUsesLocalNoonAcrossDST() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "Europe/Belgrade"))
+        let wakeDay = try #require(calendar.date(from: DateComponents(year: 2026, month: 3, day: 29, hour: 8)))
+        let window = try #require(HealthKitManager.nightCoverageWindow(for: wakeDay, calendar: calendar))
+
+        #expect(calendar.component(.hour, from: window.start) == 12)
+        #expect(calendar.component(.hour, from: window.end) == 12)
+        #expect(calendar.dateComponents([.day], from: window.start, to: window.end).day == 1)
+    }
+
+    @Test func coverageNeverExtendsPastTheActualQueryTime() {
+        let now = Date(timeIntervalSinceReferenceDate: 1234)
+        let future = now.addingTimeInterval(24 * 60 * 60)
+
+        #expect(HealthKitManager.effectiveSleepQueryEnd(until: future, now: now) == now)
+        #expect(HealthKitManager.effectiveSleepQueryEnd(until: nil, now: now) == now)
+    }
 }
