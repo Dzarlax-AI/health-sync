@@ -13,8 +13,10 @@ struct SectionDetailView: View {
     @State private var pointsByMetric: [String: [DataPoint]] = [:]
     @State private var readinessHistory: [ReadinessPoint] = []
     @State private var sleepNights: [SleepNight] = []
+    @State private var days: Int = 30
     @State private var isLoading = false
     @State private var loadError: String?
+    @State private var chartLoadGeneration = UUID()
 
     var body: some View {
         ScrollView {
@@ -26,6 +28,9 @@ struct SectionDetailView: View {
                 } else if let s = section {
                     if !s.summary.isEmpty {
                         summaryBlock(s.summary)
+                    }
+                    if !s.charts.isEmpty {
+                        sectionRangePicker
                     }
                     if !s.details.isEmpty {
                         kpiBlock(s.details)
@@ -39,6 +44,7 @@ struct SectionDetailView: View {
                 }
             }
             .padding(.dsSpacing)
+            .padding(.bottom, .dsTabBarClearance)
         }
         .background(Color.dsBackground)
         .navigationTitle(section.map { LocalizedStringKey($0.title) } ?? LocalizedStringKey(sectionKey.capitalized))
@@ -49,13 +55,33 @@ struct SectionDetailView: View {
 
     // MARK: - Blocks
 
+    private var sectionRangePicker: some View {
+        Picker("Chart range", selection: $days) {
+            Text("7d").tag(7)
+            Text("30d").tag(30)
+            Text("90d").tag(90)
+        }
+        .pickerStyle(.segmented)
+        .tint(Color.dsReadiness)
+        .onChange(of: days) { _, _ in
+            Task { await loadChartsForSelectedRange() }
+        }
+    }
+
     private func summaryBlock(_ text: String) -> some View {
-        Text(text)
-            .font(.dsBody)
-            .foregroundStyle(Color.dsTextSecondary)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: .dsSpacingSm) {
+            Text("Overview")
+                .font(.dsCaption.weight(.semibold))
+                .foregroundStyle(Color.dsTextTertiary)
+            Text(text)
+                .font(.dsBody)
+                .foregroundStyle(Color.dsTextSecondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.dsSpacing)
+        .dsDetailCard()
     }
 
     private func kpiBlock(_ details: [SectionDetail]) -> some View {
@@ -92,6 +118,8 @@ struct SectionDetailView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
         }
+        .padding(.dsSpacing)
+        .dsDetailCard()
     }
 
     @ViewBuilder
@@ -111,15 +139,19 @@ struct SectionDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.dsSpacing)
-        .dsCard()
+        .dsDetailCard()
     }
 
     @ViewBuilder
     private func readinessChartView(color: Color) -> some View {
-        if readinessHistory.isEmpty {
+        let points = readinessHistory.compactMap { point -> (id: String, date: Date, score: Int)? in
+            guard let date = Self.chartDate(point.date) else { return nil }
+            return (point.id, date, point.score)
+        }
+        if points.isEmpty {
             chartPlaceholder
         } else {
-            Chart(readinessHistory) { p in
+            Chart(points, id: \.id) { p in
                 LineMark(x: .value("Date", p.date),
                          y: .value("Score", p.score))
                     .foregroundStyle(color)
@@ -130,39 +162,59 @@ struct SectionDetailView: View {
                     .interpolationMethod(.catmullRom)
             }
             .chartYScale(domain: 0...100)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                        .foregroundStyle(Color.dsBorderHover)
+                    AxisValueLabel(format: .dateTime.day().month(.abbreviated))
+                        .foregroundStyle(Color.dsTextTertiary)
+                }
+            }
             .frame(height: 160)
         }
     }
 
     @ViewBuilder
     private func sleepStagesChartView() -> some View {
-        if sleepNights.isEmpty {
+        let points = stagePoints
+        if points.isEmpty {
             chartPlaceholder
         } else {
-            Chart(stagePoints, id: \.id) { p in
+            Chart(points) { p in
                 BarMark(x: .value("Date", p.date),
                         y: .value("Hours", p.hours))
                     .foregroundStyle(by: .value("Stage", p.stage))
             }
             .chartForegroundStyleScale([
                 "Deep":   Color.dsSleep,
-                "Core":   Color.dsAccent,
+                "Core":   Color.dsSleepStageCore,
                 "REM":    Color.dsCardio,
                 "Asleep": Color.dsSleepUnspecified,
-                "Awake":  Color.dsTextTertiary,
+                "Awake":  Color.dsSleepStageAwake,
             ])
             .chartLegend(position: .bottom, alignment: .leading)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                        .foregroundStyle(Color.dsBorderHover)
+                    AxisValueLabel(format: .dateTime.day().month(.abbreviated))
+                        .foregroundStyle(Color.dsTextTertiary)
+                }
+            }
             .frame(height: 180)
         }
     }
 
     @ViewBuilder
     private func metricChartView(metric: String, color: Color, isBar: Bool) -> some View {
-        let points = pointsByMetric[metric] ?? []
+        let points = (pointsByMetric[metric] ?? []).compactMap { point -> (id: String, date: Date, qty: Double)? in
+            guard let date = Self.chartDate(point.date) else { return nil }
+            return (point.date, date, point.qty)
+        }
         if points.isEmpty {
             chartPlaceholder
         } else {
-            Chart(points, id: \.date) { p in
+            Chart(points, id: \.id) { p in
                 if isBar {
                     BarMark(x: .value("Date", p.date),
                             y: .value("Value", p.qty))
@@ -178,6 +230,19 @@ struct SectionDetailView: View {
                         .interpolationMethod(.catmullRom)
                 }
             }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                        .foregroundStyle(Color.dsBorderHover)
+                    AxisValueLabel(format: .dateTime.day().month(.abbreviated))
+                        .foregroundStyle(Color.dsTextTertiary)
+                }
+            }
+            .dsChartYScale(domain: DashboardChartScale.domain(
+                for: metric,
+                values: points.map(\.qty),
+                isBar: isBar
+            ))
             .frame(height: 160)
         }
     }
@@ -189,17 +254,18 @@ struct SectionDetailView: View {
             .frame(maxWidth: .infinity, minHeight: 100)
     }
 
-    private var stagePoints: [(id: String, date: String, stage: String, hours: Double)] {
-        var out: [(id: String, date: String, stage: String, hours: Double)] = []
+    private var stagePoints: [SleepStageChartPoint] {
+        var out: [SleepStageChartPoint] = []
         for n in sleepNights {
-            out.append((id: "\(n.date)-deep",        date: n.date, stage: "Deep",   hours: n.deep))
-            out.append((id: "\(n.date)-core",        date: n.date, stage: "Core",   hours: n.core))
-            out.append((id: "\(n.date)-rem",         date: n.date, stage: "REM",    hours: n.rem))
+            guard let date = Self.chartDate(n.date) else { continue }
+            out.append(SleepStageChartPoint(id: "\(n.date)-deep", date: date, stage: "Deep", hours: n.deep))
+            out.append(SleepStageChartPoint(id: "\(n.date)-core", date: date, stage: "Core", hours: n.core))
+            out.append(SleepStageChartPoint(id: "\(n.date)-rem", date: date, stage: "REM", hours: n.rem))
             // 5th band — mirrors SleepView. Server-driven sleep section
             // chart was silently dropping coarse-only nights' hours
             // before this row was added (Codex review on PR #11).
-            out.append((id: "\(n.date)-unspecified", date: n.date, stage: "Asleep", hours: n.unspecified))
-            out.append((id: "\(n.date)-awake",       date: n.date, stage: "Awake",  hours: n.awake))
+            out.append(SleepStageChartPoint(id: "\(n.date)-unspecified", date: date, stage: "Asleep", hours: n.unspecified))
+            out.append(SleepStageChartPoint(id: "\(n.date)-awake", date: date, stage: "Awake", hours: n.awake))
         }
         return out
     }
@@ -244,16 +310,33 @@ struct SectionDetailView: View {
     // MARK: - Load
 
     private func load() async {
+        let requestGeneration = UUID()
+        chartLoadGeneration = requestGeneration
         isLoading = true
         loadError = nil
         do {
             let s = try await ServerClient.shared.section(sectionKey)
+            guard !Task.isCancelled, requestGeneration == chartLoadGeneration else { return }
             self.section = s
-            await loadCharts(for: s)
+            await loadCharts(for: s, days: days, generation: requestGeneration)
         } catch {
+            guard requestGeneration == chartLoadGeneration else { return }
             loadError = error.localizedDescription
         }
-        isLoading = false
+        if requestGeneration == chartLoadGeneration {
+            isLoading = false
+        }
+    }
+
+    private func loadChartsForSelectedRange() async {
+        guard let section else { return }
+        let requestGeneration = UUID()
+        chartLoadGeneration = requestGeneration
+        isLoading = true
+        await loadCharts(for: section, days: days, generation: requestGeneration)
+        if requestGeneration == chartLoadGeneration {
+            isLoading = false
+        }
     }
 
     /// Sum type for the chart-data fetcher results. Sendable so it travels
@@ -264,20 +347,45 @@ struct SectionDetailView: View {
         case metric(String, [DataPoint])
     }
 
+    private struct ChartPayload: Sendable {
+        var readinessHistory: [ReadinessPoint] = []
+        var sleepNights: [SleepNight] = []
+        var pointsByMetric: [String: [DataPoint]] = [:]
+    }
+
+    private struct SleepStageChartPoint: Identifiable {
+        let id: String
+        let date: Date
+        let stage: String
+        let hours: Double
+    }
+
     /// Fetch the time series data for each chart in parallel. Readiness and
     /// sleep stages have their own dedicated endpoints; everything else maps
     /// to /api/metrics/data. Per-chart failures are swallowed so one bad
     /// fetch doesn't blank the whole page.
-    private func loadCharts(for s: SectionResponse) async {
-        let cal = Calendar(identifier: .gregorian)
-        let to = isoDate(Date())
-        let from = isoDate(cal.date(byAdding: .day, value: -29, to: Date()) ?? Date())
+    private func loadCharts(for s: SectionResponse, days: Int, generation: UUID) async {
+        let payload = await fetchChartPayload(for: s, days: days)
+        guard !Task.isCancelled, generation == chartLoadGeneration else { return }
+        readinessHistory = payload.readinessHistory
+        sleepNights = payload.sleepNights
+        pointsByMetric = payload.pointsByMetric
+    }
 
+    /// Collect all range data before applying it. A generation guard at the
+    /// call site prevents an older picker request from repainting a newer one.
+    private func fetchChartPayload(for s: SectionResponse, days: Int) async -> ChartPayload {
+        let cal = Calendar(identifier: .gregorian)
+        let now = Date.now
+        let to = isoDate(now)
+        let from = isoDate(cal.date(byAdding: .day, value: -(days - 1), to: now) ?? now)
+
+        var payload = ChartPayload()
         await withTaskGroup(of: ChartChunk?.self) { group in
             for chart in s.charts {
                 if chart.virtual == true {
                     group.addTask {
-                        let pts = (try? await ServerClient.shared.readinessHistory(days: 30)) ?? []
+                        let pts = (try? await ServerClient.shared.readinessHistory(days: days)) ?? []
                         return .readiness(pts)
                     }
                 } else if chart.stacked == true {
@@ -298,13 +406,14 @@ struct SectionDetailView: View {
             }
             for await chunk in group {
                 switch chunk {
-                case .readiness(let pts):           readinessHistory = pts
-                case .sleepStages(let nights):      sleepNights = nights
-                case .metric(let m, let pts):       pointsByMetric[m] = pts
+                case .readiness(let pts):           payload.readinessHistory = pts
+                case .sleepStages(let nights):      payload.sleepNights = nights
+                case .metric(let m, let pts):       payload.pointsByMetric[m] = pts
                 case .none:                         break
                 }
             }
         }
+        return payload
     }
 
     private static func loadSleepStages(from: String, to: String) async throws -> [SleepNight] {
@@ -345,6 +454,13 @@ struct SectionDetailView: View {
     }
 
     // MARK: - Helpers
+
+    /// Section APIs return day buckets as ISO date strings. Feeding those
+    /// strings directly to Charts makes X categorical and produces one
+    /// overlapping label per sample. Date values preserve the real time axis.
+    private static func chartDate(_ raw: String) -> Date? {
+        try? Date(raw, strategy: .iso8601.year().month().day())
+    }
 
     private func trendColor(_ trend: String?) -> Color {
         switch trend {

@@ -34,6 +34,58 @@ final class health_syncUITests: XCTestCase {
     }
 
     @MainActor
+    func testBackgroundSyncToggleIsActionable() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-mode")
+        app.launch()
+
+        app.tabBars.buttons["Settings"].tap()
+
+        let toggle = app.switches["Background sync"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+
+        let initialValue = toggle.value as? String
+        toggle.tap()
+        XCTAssertNotEqual(toggle.value as? String, initialValue)
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Settings background sync toggle"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    func testBackgroundSyncToggleRemainsLegibleInDarkMode() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["--ui-test-mode", "--ui-test-force-dark-mode"]
+        app.launch()
+
+        app.tabBars.buttons["Settings"].tap()
+
+        let toggle = app.switches["Background sync"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        if isSwitchOn(toggle) {
+            toggle.tap()
+        }
+        XCTAssertFalse(isSwitchOn(toggle))
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Settings background sync toggle in dark mode"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    /// XCUITest returns the platform switch value as either `On`/`Off` or
+    /// `1`/`0` depending on the simulator runtime. Both represent the same
+    /// accessible switch state.
+    private func isSwitchOn(_ toggle: XCUIElement) -> Bool {
+        switch toggle.value as? String {
+        case "On", "1": true
+        default: false
+        }
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
