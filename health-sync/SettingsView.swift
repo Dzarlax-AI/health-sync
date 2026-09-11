@@ -338,21 +338,13 @@ struct SettingsView: View {
     }
 
     private func testConnection() {
-        guard let url = URL(string: serverURL.isEmpty ? "" : serverURL + "/health") else {
-            connectionState = .failed("Invalid URL")
-            return
-        }
         connectionState = .testing
         Task {
-            do {
-                var req = URLRequest(url: url, timeoutInterval: 10)
-                let key = KeychainStore.apiKey ?? ""
-                if !key.isEmpty { req.setValue(key, forHTTPHeaderField: "X-API-Key") }
-                let (_, response) = try await URLSession.shared.data(for: req)
-                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                connectionState = (200..<300).contains(code) ? .ok : .failed("HTTP \(code)")
-            } catch {
-                connectionState = .failed(error.localizedDescription)
+            switch await engine.testConnection() {
+            case .accepted:
+                connectionState = .ok
+            case .failed(let failure):
+                connectionState = .failed(failure.message)
             }
         }
     }

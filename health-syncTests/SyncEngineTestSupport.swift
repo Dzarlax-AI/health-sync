@@ -35,6 +35,7 @@ final class EmptyTestHealthData: HealthDataFetching, @unchecked Sendable {
 final class SuccessTestTransport: SyncTransport, @unchecked Sendable {
     var metricError: SyncTransportError?
     var workoutError: SyncTransportError?
+    var validationError: SyncTransportError?
     var metricUploadCount = 0
     var metricPayloads: [HealthPayload] = []
     var onMetricUpload: (() -> Void)?
@@ -42,7 +43,9 @@ final class SuccessTestTransport: SyncTransport, @unchecked Sendable {
     var sessions: [SyncUploadSession?] = []
     func uploadMetrics(_ payload: HealthPayload, configuration: SyncConfiguration, session: SyncUploadSession?) async throws -> TransportReceipt { metricUploadCount += 1; metricPayloads.append(payload); sessions.append(session); onMetricUpload?(); if let onMetricUploadAsync { await onMetricUploadAsync() }; if let metricError { throw metricError }; return .init(id: 1) }
     func uploadWorkouts(_ payload: WorkoutsPayload, configuration: SyncConfiguration) async throws -> WorkoutTransportReceipt { if let workoutError { throw workoutError }; return .init(id: 1, ingested: payload.data.workouts.count, failed: 0) }
-    func validate(configuration: SyncConfiguration) async throws {}
+    func validate(configuration: SyncConfiguration) async throws {
+        if let validationError { throw validationError }
+    }
 }
 
 final class InMemoryTestSyncState: SyncStateStoring {

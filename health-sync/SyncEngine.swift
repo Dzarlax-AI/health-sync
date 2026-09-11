@@ -94,7 +94,7 @@ final class SyncEngine {
             let loaded = try loadState(config)
             history = loadVisibleHistory(config.fingerprint)
             legacyHistory = loadLegacyHistory()
-            state = loaded; lastSync = loaded.metrics.acceptedAt
+            state = loaded; lastSync = later(loaded.metrics.acceptedAt, loaded.workouts.acceptedAt)
             lastPointCount = loaded.metrics.acceptedCount + loaded.workouts.acceptedCount
             publish(config, loaded)
             if timer != nil { startForegroundTimer() }
@@ -113,6 +113,10 @@ final class SyncEngine {
     func stopForegroundTimer() { timer?.invalidate(); timer = nil }
 
     func handleAppBecameActive() {
+        // Loading durable status is independent from whether this activation
+        // should trigger an upload. Settings must not look freshly installed
+        // just because the user disabled sync-on-launch.
+        refreshConfiguration()
         startForegroundTimer()
         guard let config = try? configuration.snapshot(), config.syncOnLaunch else { return }
         let now = clock()
@@ -418,7 +422,12 @@ final class SyncEngine {
         let oldGroups = loaded.enabledMetricGroups ?? []
         let disabledGroups = oldGroups.subtracting(config.metricGroups)
         if !disabledGroups.isEmpty {
-            let heldSince = earlier(loaded.fullResyncStart, loaded.metrics.pendingSince)
+            // A shared metrics cursor keeps moving while another group is
+            // enabled. Preserve this group's last known cursor even when no
+            // resync/failure is pending, otherwise re-enabling it would only
+            // fetch the generic three-day fallback and skip older samples.
+            let checkpoint = later(loaded.metrics.acceptedAt, loaded.metrics.scannedThrough)
+            let heldSince = earlier(earlier(loaded.fullResyncStart, loaded.metrics.pendingSince), checkpoint)
             if let heldSince {
                 var deferred = loaded.deferredMetricGroupSince ?? [:]
                 for group in disabledGroups { deferred[group.rawValue] = earlier(deferred[group.rawValue], heldSince) }
@@ -433,7 +442,7 @@ final class SyncEngine {
                 restored = earlier(restored, deferred.removeValue(forKey: group.rawValue))
             }
             if let restored {
-                loaded.fullResyncStart = earlier(loaded.fullResyncStart, restored)
+                loaded.fullResyncStart = earlier(earlier(loaded.fullResyncStart, restored), loaded.metrics.pendingSince)
                 loaded.fullResyncEnd = now
                 loaded.fullResyncRevision = (loaded.fullResyncRevision ?? 0) + 1
             } else {

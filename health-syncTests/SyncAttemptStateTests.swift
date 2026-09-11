@@ -168,6 +168,57 @@ struct SyncAttemptStateTests {
         #expect(state.value.deferredMetricGroupSince?[MetricGroup.sleep.rawValue] == nil)
     }
 
+    @Test func disablingAGroupPreservesItsCurrentCheckpointForReenable() throws {
+        let state = InMemoryTestSyncState()
+        let checkpoint = Date(timeIntervalSince1970: 400)
+        state.value.enabledMetricGroups = [.vitals, .sleep]
+        state.value.metrics.acceptedAt = checkpoint
+        state.value.metrics.scannedThrough = checkpoint
+        let provider = TestSyncConfiguration()
+        let engine = try makeTestSyncEngine(state: state, groups: [.vitals, .sleep], provider: provider)
+
+        provider.value = SyncConfiguration(endpoint: URL(string: "https://example.test")!, apiKey: "test-key", fingerprint: "test-account", metricGroups: [.vitals], workoutsEnabled: false, backgroundEnabled: true, syncOnLaunch: false, interval: 60, workoutHRTimeline: false)
+        engine.refreshConfiguration()
+        #expect(state.value.deferredMetricGroupSince?[MetricGroup.sleep.rawValue] == checkpoint)
+
+        provider.value = SyncConfiguration(endpoint: URL(string: "https://example.test")!, apiKey: "test-key", fingerprint: "test-account", metricGroups: [.vitals, .sleep], workoutsEnabled: false, backgroundEnabled: true, syncOnLaunch: false, interval: 60, workoutHRTimeline: false)
+        engine.refreshConfiguration()
+        #expect(state.value.fullResyncStart == checkpoint)
+    }
+
+    @Test func appActivationHydratesStatusWhenSyncOnLaunchIsDisabled() throws {
+        let state = InMemoryTestSyncState()
+        let acceptedAt = Date(timeIntervalSince1970: 400)
+        state.value.metrics.acceptedAt = acceptedAt
+        let engine = try makeTestSyncEngine(state: state)
+
+        engine.handleAppBecameActive()
+
+        #expect(engine.lastSync == acceptedAt)
+        #expect(engine.metricsSnapshot.lastAcceptedAt == acceptedAt)
+    }
+
+    @Test func refreshUsesMostRecentAcceptedChannelForLastSync() throws {
+        let state = InMemoryTestSyncState()
+        let metricsAt = Date(timeIntervalSince1970: 300)
+        let workoutsAt = Date(timeIntervalSince1970: 400)
+        state.value.metrics.acceptedAt = metricsAt
+        state.value.workouts.acceptedAt = workoutsAt
+        let engine = try makeTestSyncEngine(state: state, workoutsEnabled: true)
+
+        engine.refreshConfiguration()
+
+        #expect(engine.lastSync == workoutsAt)
+    }
+
+    @Test func strictConnectionTestSurfacesTransportFailure() async throws {
+        let transport = SuccessTestTransport()
+        transport.validationError = .invalidAcknowledgement
+        let engine = try makeTestSyncEngine(transport: transport)
+
+        #expect(await engine.testConnection() == .failed(.init(code: .rejectedAck, message: "Server did not confirm the upload")))
+    }
+
     @Test func syncStateStoreRoundTripsPendingFullAndDeferredRanges() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let store = SyncStateStore(directory: directory)
