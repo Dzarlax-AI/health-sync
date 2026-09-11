@@ -76,6 +76,14 @@ extension Color {
     // Foreground that reads on dsAccent (i.e. inverse of accent)
     static let dsAccentForeground = dsDynamic(lightHex: "#FFFFFF", darkHex: "#1A1A1E")
 
+    // Controls — intentionally separate from accent foreground: metric toggles
+    // stay legible on saturated colors, while neutral toggles invert on accent.
+    static let dsControlThumb = dsDynamic(lightHex: "#FFFFFF", darkHex: "#F5F5F5")
+    static let dsControlThumbShadow = dsDynamic(
+        light: UIColor.black.withAlphaComponent(0.15),
+        dark: UIColor.black.withAlphaComponent(0.28)
+    )
+
     // Borders
     static let dsBorder = dsDynamic(
         light: UIColor.black.withAlphaComponent(0.08),

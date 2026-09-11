@@ -40,4 +40,19 @@ final class health_syncUITests: XCTestCase {
             XCUIApplication().launch()
         }
     }
+
+    @MainActor
+    func testSettingsToggleIsActionableAndAnnouncesState() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        app.tabBars.buttons["Settings"].tap()
+
+        let toggle = app.switches["Background sync"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+
+        let initialValue = toggle.value as? String
+        toggle.tap()
+        XCTAssertNotEqual(toggle.value as? String, initialValue)
+    }
 }

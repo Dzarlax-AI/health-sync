@@ -435,7 +435,9 @@ private struct DSPickerRow: View {
 private struct DSToggleRow: View {
     let label: LocalizedStringKey
     var subtitle: LocalizedStringKey? = nil
-    var color: Color = .dsAccent
+    /// Metric rows supply their semantic colour. Rows without one use the
+    /// neutral accent treatment, including its inverted on-state thumb.
+    var color: Color? = nil
     @Binding var isOn: Bool
 
     var body: some View {
@@ -451,9 +453,53 @@ private struct DSToggleRow: View {
                 }
             }
         }
-        .tint(color)
+        .toggleStyle(DSSwitchStyle(
+            onColor: color ?? .dsAccent,
+            thumbOnColor: color == nil ? .dsAccentForeground : .dsControlThumb
+        ))
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, 12)
+    }
+}
+
+/// Custom track colours are needed because iOS applies `.tint` to a native
+/// switch's off-track. Keep the interaction a Button rather than a bare tap
+/// gesture: it preserves an actionable accessibility element and announces
+/// both the label and current state.
+private struct DSSwitchStyle: ToggleStyle {
+    let onColor: Color
+    let thumbOnColor: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                configuration.isOn.toggle()
+            }
+        } label: {
+            HStack(spacing: 12) {
+                configuration.label
+                Spacer()
+                ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                    Capsule()
+                        .fill(configuration.isOn ? onColor : Color.dsSurface3)
+                        .overlay(
+                            Capsule().strokeBorder(
+                                configuration.isOn ? Color.clear : Color.dsBorder,
+                                lineWidth: 1
+                            )
+                        )
+                    Circle()
+                        .fill(configuration.isOn ? thumbOnColor : Color.dsControlThumb)
+                        .shadow(color: Color.dsControlThumbShadow, radius: 2, y: 1)
+                        .padding(2)
+                }
+                .frame(width: 51, height: 31)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(configuration.isOn ? Text("On") : Text("Off"))
+        .accessibilityAddTraits(configuration.isOn ? .isSelected : [])
     }
 }
 
