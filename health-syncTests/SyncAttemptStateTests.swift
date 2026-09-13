@@ -33,6 +33,21 @@ struct SyncAttemptStateTests {
         #expect(engine.workoutsSnapshot.status == .disabled)
     }
 
+    @Test func completeEmptySleepPeriodIsUploadedWithoutMetricSamples() async throws {
+        let health = EmptyTestHealthData(), transport = SuccessTestTransport()
+        health.sleepPeriodCoverage = [.init(
+            wakeDate: "2026-01-01", sourceEpoch: "health-sync-ios-v1",
+            captureCompleteness: "complete", syncGeneration: "period-1",
+            coveredIntervalStart: "2025-12-31T12:00:00Z", coveredIntervalEnd: "2026-01-01T12:00:00Z"
+        )]
+        let engine = try makeTestSyncEngine(health: health, transport: transport, groups: [.sleep])
+
+        #expect(await engine.syncNow() == .accepted(points: 0, workouts: 0))
+        #expect(transport.metricUploadCount == 2) // initial history plus the current sleep sync
+        let allPayloadsAreMeaningful = transport.metricPayloads.allSatisfy { $0.hasUploadableContent }
+        #expect(allPayloadsAreMeaningful)
+    }
+
     @Test func metrics503RetainsReceiptAndSchedulesRetry() async throws {
         let state = InMemoryTestSyncState()
         state.value.metrics.acceptedAt = Date(timeIntervalSince1970: 10)
@@ -98,6 +113,80 @@ struct SyncAttemptStateTests {
         #expect(transport.metricUploadCount > 0)
         #expect(engine.metricsSnapshot.lastAcceptedAt != nil)
         #expect(engine.metricsSnapshot.status == .accepted)
+    }
+
+    @Test func newAccountSeedsNinetyDaysOfSleepBeforeRegularSync() async throws {
+        let state = InMemoryTestSyncState()
+        let health = EmptyTestHealthData()
+        health.sleepPeriodCoverage = [.init(
+            wakeDate: "2026-01-01", sourceEpoch: "health-sync-ios-v1",
+            captureCompleteness: "complete", syncGeneration: "initial-period",
+            coveredIntervalStart: "2025-12-31T12:00:00Z", coveredIntervalEnd: "2026-01-01T12:00:00Z"
+        )]
+        let transport = SuccessTestTransport()
+        let engine = try makeTestSyncEngine(state: state, health: health, transport: transport, groups: [.sleep])
+
+        _ = await engine.syncNow(reason: .appActivation)
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_000))
+        let expectedStart = try #require(calendar.date(byAdding: .day, value: -89, to: today))
+        let sleepFetches = health.fetches.filter { $0.groups == [.sleep] }
+        #expect(sleepFetches.count == 2)
+        #expect(sleepFetches[0].since == expectedStart)
+        #expect(state.value.initialSleepHistoryState == .completed)
+    }
+
+    @Test func emptyInitialSleepQueryStaysPendingUntilThereIsAServerReceipt() async throws {
+        let state = InMemoryTestSyncState()
+        let health = EmptyTestHealthData(), transport = SuccessTestTransport()
+        let engine = try makeTestSyncEngine(state: state, health: health, transport: transport, groups: [.sleep])
+
+        _ = await engine.syncNow(reason: .appActivation)
+
+        #expect(state.value.initialSleepHistoryState == .pending)
+        #expect(transport.metricUploadCount == 0)
+    }
+
+    @Test func legacyAccountDoesNotReceiveUnexpectedHistoricalBackfill() async throws {
+        let state = InMemoryTestSyncState()
+        state.value.initialSleepHistoryState = nil
+        state.value.metrics.scannedThrough = Date(timeIntervalSince1970: 900)
+        let health = EmptyTestHealthData()
+        let engine = try makeTestSyncEngine(state: state, health: health, groups: [.sleep])
+
+        _ = await engine.syncNow(reason: .appActivation)
+
+        let sleepFetch = try #require(health.fetches.first(where: { $0.groups == [.sleep] }))
+        #expect(sleepFetch.since > Date(timeIntervalSince1970: 900 - 7_000_000))
+        #expect(state.value.initialSleepHistoryState == .notRequired)
+    }
+
+    @Test func failedInitialSleepHistoryRemainsPendingForANextForegroundSync() async throws {
+        let state = InMemoryTestSyncState()
+        let health = EmptyTestHealthData()
+        health.metrics = [.init(name: "night_sleep_total", units: "hr", data: [.qty(date: "2026-01-01 07:00:00 +0000", value: 7, source: "Watch")])]
+        let transport = SuccessTestTransport()
+        transport.metricError = .http(status: 503, retryAfter: nil)
+        let engine = try makeTestSyncEngine(state: state, health: health, transport: transport, groups: [.sleep])
+
+        _ = await engine.syncNow(reason: .appActivation)
+        #expect(state.value.initialSleepHistoryState == .pending)
+
+        transport.metricError = nil
+        _ = await engine.syncNow(reason: .appActivation)
+        #expect(state.value.initialSleepHistoryState == .completed)
+    }
+
+    @Test func manualNinetyDaySleepResyncCompletesTheInitialHistoryJob() async throws {
+        let state = InMemoryTestSyncState()
+        let health = EmptyTestHealthData()
+        let engine = try makeTestSyncEngine(state: state, health: health, groups: [.sleep])
+
+        _ = await engine.syncFullDays(daysBack: 90)
+
+        #expect(state.value.initialSleepHistoryState == .completed)
+        #expect(health.fetches.filter { $0.groups == [.sleep] }.count == 1)
     }
 
     @Test func deterministic400BlocksAutomaticRetryButManualRetries() async throws {
@@ -196,6 +285,20 @@ struct SyncAttemptStateTests {
 
         #expect(engine.lastSync == acceptedAt)
         #expect(engine.metricsSnapshot.lastAcceptedAt == acceptedAt)
+    }
+
+    @Test func appActivationDoesNotStartInitialSleepHistoryWhenSyncOnLaunchIsDisabled() throws {
+        let state = InMemoryTestSyncState()
+        let health = EmptyTestHealthData()
+        let provider = TestSyncConfiguration()
+        let engine = try makeTestSyncEngine(
+            state: state, health: health, groups: [.sleep], provider: provider
+        )
+
+        engine.handleAppBecameActive()
+
+        #expect(state.value.initialSleepHistoryState == .pending)
+        #expect(health.fetches.isEmpty)
     }
 
     @Test func refreshUsesMostRecentAcceptedChannelForLastSync() throws {

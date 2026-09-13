@@ -15,6 +15,8 @@ final class EmptyTestHealthData: HealthDataFetching, @unchecked Sendable {
     var onFetch: (() async -> Void)?
     var metrics: [MetricData] = []
     var nightSleepCoverage: [NightSleepCoverage] = []
+    var sleepPeriodCoverage: [SleepPeriodCoverage] = []
+    var completedSleepEpisodes: [CompletedSleepEpisode] = []
     var workouts: [WorkoutItem] = []
     var workoutFetches: [(Date, Date?)] = []
     var onWorkoutFetch: ((Int) async -> Void)?
@@ -22,7 +24,12 @@ final class EmptyTestHealthData: HealthDataFetching, @unchecked Sendable {
     func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?) async throws -> HealthPayload {
         fetches.append(.init(groups: groups, since: since, until: until))
         if let onFetch { await onFetch() }
-        return HealthPayload(metrics: metrics, nightSleepCoverage: nightSleepCoverage)
+        return HealthPayload(
+            metrics: metrics,
+            nightSleepCoverage: nightSleepCoverage,
+            sleepPeriodCoverage: sleepPeriodCoverage,
+            completedSleepEpisodes: completedSleepEpisodes
+        )
     }
     func fetchWorkouts(since: Date, until: Date?, includeHRTimeline: Bool) async throws -> [WorkoutItem] {
         workoutFetches.append((since, until))

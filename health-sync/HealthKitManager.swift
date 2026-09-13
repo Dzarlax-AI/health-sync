@@ -55,7 +55,7 @@ actor HealthKitManager: HealthDataFetching {
                 gate.install(continuation)
                 let query = build { result in
                     gate.resolve(result)
-                    Task { await self.removeActiveQuery(id) }
+                    Task { self.removeActiveQuery(id) }
                 }
                 activeQueries[id] = {
                     self.store.stop(query)
@@ -79,7 +79,7 @@ actor HealthKitManager: HealthDataFetching {
 
     static let sumMetrics: [MetricDef] = activitySumMetrics + distanceSumMetrics
 
-    static let categoryEvents: [CategoryEventDef] = [
+    nonisolated static let categoryEvents: [CategoryEventDef] = [
         .init(identifierRaw: HKCategoryTypeIdentifier.mindfulSession.rawValue,
               name: "mindful_minutes", kind: .durationMinutes),
         .init(identifierRaw: HKCategoryTypeIdentifier.highHeartRateEvent.rawValue,
@@ -471,14 +471,20 @@ actor HealthKitManager: HealthDataFetching {
         async let events = fetchCategoryEvents(since: since, until: until)
         var metrics = try await avg + sum + events
         var nightSleepCoverage: [NightSleepCoverage] = []
+        var sleepPeriodCoverage: [SleepPeriodCoverage] = []
+        var completedSleepEpisodes: [CompletedSleepEpisode] = []
         if includeSleep {
             let sleep = try await fetchSleep(since: since, until: until)
             metrics += sleep.metrics
             nightSleepCoverage = sleep.nightSleepCoverage
+            sleepPeriodCoverage = sleep.sleepPeriodCoverage
+            completedSleepEpisodes = sleep.completedSleepEpisodes
         }
-        return await HealthPayload(
+        return HealthPayload(
             metrics: metrics.filter { !$0.data.isEmpty },
-            nightSleepCoverage: nightSleepCoverage
+            nightSleepCoverage: nightSleepCoverage,
+            sleepPeriodCoverage: sleepPeriodCoverage,
+            completedSleepEpisodes: completedSleepEpisodes
         )
     }
 
@@ -489,6 +495,8 @@ actor HealthKitManager: HealthDataFetching {
     func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?) async throws -> HealthPayload {
         var metrics: [MetricData] = []
         var nightSleepCoverage: [NightSleepCoverage] = []
+        var sleepPeriodCoverage: [SleepPeriodCoverage] = []
+        var completedSleepEpisodes: [CompletedSleepEpisode] = []
 
         if groups.contains(.vitals) {
             metrics += try await fetchAVGMetrics(definitions: Self.vitalsMetrics, since: since, until: until)
@@ -504,6 +512,8 @@ actor HealthKitManager: HealthDataFetching {
             let sleep = try await fetchSleep(since: since, until: until)
             metrics += sleep.metrics
             nightSleepCoverage = sleep.nightSleepCoverage
+            sleepPeriodCoverage = sleep.sleepPeriodCoverage
+            completedSleepEpisodes = sleep.completedSleepEpisodes
         }
         if groups.contains(.other) {
             metrics += try await fetchAVGMetrics(
@@ -514,7 +524,9 @@ actor HealthKitManager: HealthDataFetching {
         }
         return HealthPayload(
             metrics: metrics.filter { !$0.data.isEmpty },
-            nightSleepCoverage: nightSleepCoverage
+            nightSleepCoverage: nightSleepCoverage,
+            sleepPeriodCoverage: sleepPeriodCoverage,
+            completedSleepEpisodes: completedSleepEpisodes
         )
     }
 
@@ -537,7 +549,12 @@ actor HealthKitManager: HealthDataFetching {
     // wake-up date exactly once and the server upserts a complete value.
     func fetchSleepOnly(since: Date, until: Date? = nil) async throws -> HealthPayload {
         let sleep = try await fetchSleep(since: since, until: until)
-        return await HealthPayload(metrics: sleep.metrics, nightSleepCoverage: sleep.nightSleepCoverage)
+        return HealthPayload(
+            metrics: sleep.metrics,
+            nightSleepCoverage: sleep.nightSleepCoverage,
+            sleepPeriodCoverage: sleep.sleepPeriodCoverage,
+            completedSleepEpisodes: sleep.completedSleepEpisodes
+        )
     }
 
     // MARK: - Date formatting (actor-isolated — avoids calling @MainActor formatForServer)
@@ -576,10 +593,9 @@ actor HealthKitManager: HealthDataFetching {
     }
 
     // HKUnit.percent() returns a fraction (0.0–1.0). Server expects 0–100.
-    private static let percentUnit = HKUnit.percent()
     private func scaledValue(_ q: HKQuantity, def: MetricDef) -> Double {
         let v = q.doubleValue(for: def.unit)
-        return def.unit == Self.percentUnit ? v * 100.0 : v
+        return def.unit == HKUnit.percent() ? v * 100.0 : v
     }
 
     private func fetchAVGMetric(_ def: MetricDef, since: Date, until: Date? = nil) async throws -> MetricData? {
@@ -686,8 +702,9 @@ actor HealthKitManager: HealthDataFetching {
     // MARK: - Category events
 
     private func fetchCategoryEvents(since: Date, until: Date? = nil) async throws -> [MetricData] {
+        let definitions = Self.categoryEvents
         return try await withThrowingTaskGroup(of: MetricData?.self) { group in
-            for def in Self.categoryEvents {
+            for def in definitions {
                 group.addTask { try await self.fetchCategoryEvent(def, since: since, until: until) }
             }
             var out: [MetricData] = []
@@ -743,6 +760,8 @@ actor HealthKitManager: HealthDataFetching {
     private struct SleepFetch: Sendable {
         let metrics: [MetricData]
         let nightSleepCoverage: [NightSleepCoverage]
+        let sleepPeriodCoverage: [SleepPeriodCoverage]
+        let completedSleepEpisodes: [CompletedSleepEpisode]
     }
 
     private func fetchSleep(since: Date, until: Date? = nil) async throws -> SleepFetch {
@@ -776,14 +795,70 @@ actor HealthKitManager: HealthDataFetching {
                 completion(.success((raw as? [HKCategorySample]) ?? []))
             }
         }
-        guard !samples.isEmpty else { return SleepFetch(metrics: [], nightSleepCoverage: []) }
-
         struct NightKey: Hashable, Sendable { let source: String; let date: String }
+        struct SleepInterval: Sendable {
+            var start: Date
+            var end: Date
+        }
+        struct PeriodWindow: Sendable {
+            let wakeDate: String
+            let start: Date
+            let end: Date
+        }
+        struct PeriodSourceKey: Hashable, Sendable {
+            let wakeDate: String
+            let source: String
+        }
         // Plain tuple — avoids @MainActor contamination that affects SleepPhases when used in this file
         typealias Accum = (deep: Double, rem: Double, core: Double, awake: Double, total: Double)
 
         var grouped: [NightKey: Accum] = [:]
         let cal = Calendar.current
+        let iso8601 = ISO8601DateFormatter()
+        let periodWindows = Self.completeSleepPeriodWindows(
+            queryStart: sleepWindowStart,
+            queryEnd: queryEnd,
+            calendar: cal
+        ).map { window in
+            PeriodWindow(
+                wakeDate: String(serverDate(window.wakeDay).prefix(10)),
+                start: window.start,
+                end: window.end
+            )
+        }
+
+        func generation(for period: PeriodWindow, source: String?, intervals: [SleepInterval]) -> String {
+            let material = ([
+                "sleep-period-v1", period.wakeDate,
+                iso8601.string(from: period.start), iso8601.string(from: period.end),
+                source ?? "no-asleep-episode",
+            ] + intervals.map { "\(iso8601.string(from: $0.start))|\(iso8601.string(from: $0.end))" })
+                .joined(separator: "\u{1f}")
+            let digest = SHA256.hash(data: Data(material.utf8))
+                .map { String(format: "%02x", $0) }
+                .joined()
+            return "healthkit-sleep-period-v1:\(digest)"
+        }
+
+        // A complete empty period is first-class evidence: it means the
+        // adapter actually read that noon-to-noon window and found no asleep
+        // samples. It must be uploaded even though it creates no MetricData.
+        guard !samples.isEmpty else {
+            let coverage = periodWindows.map { period in
+                SleepPeriodCoverage(
+                    wakeDate: period.wakeDate,
+                    sourceEpoch: "health-sync-ios-v1",
+                    captureCompleteness: "complete",
+                    syncGeneration: generation(for: period, source: nil, intervals: []),
+                    coveredIntervalStart: iso8601.string(from: period.start),
+                    coveredIntervalEnd: iso8601.string(from: period.end)
+                )
+            }
+            return SleepFetch(
+                metrics: [], nightSleepCoverage: [],
+                sleepPeriodCoverage: coverage, completedSleepEpisodes: []
+            )
+        }
 
         // Group samples into "sessions" first, then assign a NightKey to each
         // session based on the LAST asleep-* fragment's wake-up date — that's
@@ -828,14 +903,98 @@ actor HealthKitManager: HealthDataFetching {
             }
         }
 
+        // The balance model needs one source-selected set of asleep intervals
+        // per complete noon-to-noon period. Build candidates from the same
+        // sessions as the legacy aggregates, applying the identical
+        // coarse-vs-fine overlap rule first, then clip fragments at each
+        // period boundary. This makes episodes safe to replace atomically on
+        // the server and prevents a nap crossing noon from leaking out of its
+        // accounting period.
+        var periodIntervals: [PeriodSourceKey: [SleepInterval]] = [:]
+        for session in sessions {
+            let hasSpecificStages = session.samples.contains { sample in
+                switch HKCategoryValueSleepAnalysis(rawValue: sample.value) {
+                case .asleepDeep, .asleepREM, .asleepCore: return true
+                default:                                   return false
+                }
+            }
+            for sample in session.samples {
+                let raw = HKCategoryValueSleepAnalysis(rawValue: sample.value)
+                guard isAsleepValue(sample.value),
+                      !(hasSpecificStages && raw == .asleepUnspecified) else {
+                    continue
+                }
+                for period in periodWindows {
+                    let start = max(sample.startDate, period.start)
+                    let end = min(sample.endDate, period.end)
+                    guard end > start else { continue }
+                    periodIntervals[PeriodSourceKey(wakeDate: period.wakeDate, source: session.source), default: []]
+                        .append(SleepInterval(start: start, end: end))
+                }
+            }
+        }
+
+        func mergedIntervals(_ raw: [SleepInterval]) -> [SleepInterval] {
+            let sorted = raw.sorted { $0.start < $1.start }
+            var merged: [SleepInterval] = []
+            for interval in sorted {
+                guard var last = merged.last else {
+                    merged.append(interval)
+                    continue
+                }
+                if interval.start <= last.end {
+                    last.end = max(last.end, interval.end)
+                    merged[merged.count - 1] = last
+                } else {
+                    merged.append(interval)
+                }
+            }
+            return merged
+        }
+
+        func sourceRank(_ source: String) -> Int {
+            if isAppleWatch(source) { return 3 }
+            if source.localizedCaseInsensitiveContains("iPhone") { return 2 }
+            if Self.isKnownDuplicateName(source) { return 1 }
+            return 0
+        }
+
+        struct SelectedPeriodSleep {
+            let source: String
+            let intervals: [SleepInterval]
+            let duration: TimeInterval
+        }
+
+        let selectedPeriodSleep: [String: SelectedPeriodSleep] = Dictionary(
+            uniqueKeysWithValues: periodWindows.compactMap { period in
+                let candidates = periodIntervals.compactMap { key, raw -> SelectedPeriodSleep? in
+                    guard key.wakeDate == period.wakeDate else { return nil }
+                    let intervals = mergedIntervals(raw)
+                    let duration = intervals.reduce(0) { $0 + $1.end.timeIntervalSince($1.start) }
+                    guard duration > 0 else { return nil }
+                    return SelectedPeriodSleep(source: key.source, intervals: intervals, duration: duration)
+                }
+                guard let selected = candidates.max(by: { lhs, rhs in
+                    if lhs.duration != rhs.duration { return lhs.duration < rhs.duration }
+                    if sourceRank(lhs.source) != sourceRank(rhs.source) {
+                        return sourceRank(lhs.source) < sourceRank(rhs.source)
+                    }
+                    return lhs.source > rhs.source
+                }) else {
+                    return nil
+                }
+                return (period.wakeDate, selected)
+            }
+        )
+
         // Per-session asleep duration (sum of asleep* fragments, no
         // awake/inBed) so we can classify and split into main vs
         // nap below.
         //
         // Same coarse-vs-fine guard as the aggregate loop: when the
         // session has per-stage markers (.asleepDeep/.asleepREM/
-        // .asleepCore), skip the coarse `.asleepUnspecified` /
-        // `.asleep` rows that overlay the same wall-clock window
+        // .asleepCore), skip the coarse `.asleepUnspecified` rows that
+        // overlay the same wall-clock window
         // — otherwise an 8h night with full stage breakdown reports
         // ~16h asleep, inflating main_total / nap_total.
         func asleepHours(_ session: Session) -> Double {
@@ -848,7 +1007,7 @@ actor HealthKitManager: HealthDataFetching {
             return session.samples.reduce(into: 0.0) { acc, s in
                 guard isAsleepValue(s.value) else { return }
                 let raw = HKCategoryValueSleepAnalysis(rawValue: s.value)
-                if hasSpecificStages && (raw == .asleepUnspecified || raw == .asleep) {
+                if hasSpecificStages && raw == .asleepUnspecified {
                     return
                 }
                 acc += s.endDate.timeIntervalSince(s.startDate) / 3600.0
@@ -939,7 +1098,7 @@ actor HealthKitManager: HealthDataFetching {
                 // concurrent layers for the same wall-clock time:
                 //
                 //   1. A coarse `.asleepUnspecified` (or legacy
-                //      `.asleep`) covering the whole sleep block —
+                //      `.asleepUnspecified`) covering the whole sleep block —
                 //      what older apps relied on.
                 //   2. Fine-grained `.asleepCore` / `.asleepREM` /
                 //      `.asleepDeep` segments breaking that block
@@ -965,7 +1124,7 @@ actor HealthKitManager: HealthDataFetching {
                     case .asleepDeep:               p.deep += hrs; p.total += hrs
                     case .asleepREM:                p.rem  += hrs; p.total += hrs
                     case .asleepCore:               p.core += hrs; p.total += hrs
-                    case .asleepUnspecified, .asleep:
+                    case .asleepUnspecified:
                         if !hasSpecificStages {
                             // Source has no per-stage data — the hours
                             // contribute to `total` (so bank/score still
@@ -986,7 +1145,7 @@ actor HealthKitManager: HealthDataFetching {
                     // double-count either.
                     let raw = HKCategoryValueSleepAnalysis(rawValue: s.value)
                     let skipCoarseOverlap = hasSpecificStages &&
-                        (raw == .asleepUnspecified || raw == .asleep)
+                        raw == .asleepUnspecified
                     if !skipCoarseOverlap, let phase = Self.sleepPhaseName(for: s.value) {
                         perSegmentByPhase[phase]?.append((dk: dk, sample: s))
                     }
@@ -1038,7 +1197,6 @@ actor HealthKitManager: HealthDataFetching {
         // has already produced a sleep total. Finality is still server-owned
         // and happens later; this is only a truthful statement about query
         // coverage, not an assertion that HealthKit can never revise data.
-        let iso8601 = ISO8601DateFormatter()
         func wakeDateOnly(_ date: String) -> String { String(date.prefix(10)) }
         let nightSleepCoverage = emittedMainTotals.compactMap { dk, _ -> NightSleepCoverage? in
             guard let window = Self.nightCoverageWindow(for: dk.wakeDay, calendar: cal),
@@ -1053,6 +1211,38 @@ actor HealthKitManager: HealthDataFetching {
                 coveredIntervalStart: iso8601.string(from: window.start),
                 coveredIntervalEnd: iso8601.string(from: window.end)
             )
+        }
+
+        let sleepPeriodCoverage = periodWindows.map { period in
+            let selected = selectedPeriodSleep[period.wakeDate]
+            return SleepPeriodCoverage(
+                wakeDate: period.wakeDate,
+                sourceEpoch: "health-sync-ios-v1",
+                captureCompleteness: "complete",
+                syncGeneration: generation(
+                    for: period,
+                    source: selected?.source,
+                    intervals: selected?.intervals ?? []
+                ),
+                coveredIntervalStart: iso8601.string(from: period.start),
+                coveredIntervalEnd: iso8601.string(from: period.end)
+            )
+        }
+        let completedSleepEpisodes = periodWindows.flatMap { period -> [CompletedSleepEpisode] in
+            guard let selected = selectedPeriodSleep[period.wakeDate] else { return [] }
+            let periodGeneration = generation(
+                for: period, source: selected.source, intervals: selected.intervals
+            )
+            return selected.intervals.map { interval in
+                CompletedSleepEpisode(
+                    wakeDate: period.wakeDate,
+                    start: iso8601.string(from: interval.start),
+                    end: iso8601.string(from: interval.end),
+                    source: selected.source,
+                    sourceEpoch: "health-sync-ios-v1",
+                    syncGeneration: periodGeneration
+                )
+            }
         }
         let napData = napTotals
             .filter { !dropKnownDup($0.key.source, $0.key.date) }
@@ -1111,7 +1301,10 @@ actor HealthKitManager: HealthDataFetching {
             // stays at 5 fields: deep/rem/core/awake/total).
             MetricData(name: "sleep_unspecified", units: "hr", data: unspecifiedSeg),
             MetricData(name: "sleep_awake",       units: "hr", data: awakeSeg),
-        ], nightSleepCoverage: nightSleepCoverage)
+        ],
+        nightSleepCoverage: nightSleepCoverage,
+        sleepPeriodCoverage: sleepPeriodCoverage,
+        completedSleepEpisodes: completedSleepEpisodes)
     }
 
     // These are static so coverage semantics remain independently testable
@@ -1131,6 +1324,31 @@ actor HealthKitManager: HealthDataFetching {
         return (start, end)
     }
 
+    /// Lists only local noon-to-noon periods that are entirely inside the
+    /// actual HealthKit query. This is deliberately independent of the
+    /// returned samples: complete empty periods are evidence, while a partial
+    /// period remains absent/unknown rather than being fabricated as zero.
+    nonisolated static func completeSleepPeriodWindows(
+        queryStart: Date,
+        queryEnd: Date,
+        calendar: Calendar
+    ) -> [(wakeDay: Date, start: Date, end: Date)] {
+        guard queryEnd > queryStart else { return [] }
+        var day = calendar.startOfDay(for: queryStart)
+        let lastDay = calendar.startOfDay(for: queryEnd)
+        var result: [(wakeDay: Date, start: Date, end: Date)] = []
+        while day <= lastDay {
+            if let window = nightCoverageWindow(for: day, calendar: calendar),
+               window.start >= queryStart,
+               window.end <= queryEnd {
+                result.append((wakeDay: day, start: window.start, end: window.end))
+            }
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+        }
+        return result
+    }
+
     /// Maps an `HKCategoryValueSleepAnalysis` raw value to the server-side
     /// per-segment metric name. Returns nil for `.inBed` and unknown values —
     /// those are dropped from per-segment emission entirely. Pure, no
@@ -1138,7 +1356,7 @@ actor HealthKitManager: HealthDataFetching {
     /// unit-testable via the `HKCategoryValueSleepAnalysis.<case>.rawValue`
     /// integer constants. Mirrors the classification in `fetchSleep`'s
     /// inner switch — the two MUST stay in lockstep.
-    static func sleepPhaseName(for rawValue: Int) -> String? {
+    nonisolated static func sleepPhaseName(for rawValue: Int) -> String? {
         switch HKCategoryValueSleepAnalysis(rawValue: rawValue) {
         case .asleepDeep:                                           return "sleep_deep"
         case .asleepREM:                                            return "sleep_rem"
@@ -1151,7 +1369,7 @@ actor HealthKitManager: HealthDataFetching {
         // PR #73) accepts `sleep_unspecified` as its own metric and
         // renders it as a 5th band; we route the coarse markers there
         // so sleep_core only carries real Core Sleep stage time.
-        case .asleepUnspecified, .asleep:                           return "sleep_unspecified"
+        case .asleepUnspecified:                                    return "sleep_unspecified"
         case .awake:                                                return "sleep_awake"
         case .inBed, .none, .some(_):                               return nil
         }
@@ -1172,7 +1390,7 @@ actor HealthKitManager: HealthDataFetching {
     /// Static counterpart of isKnownDuplicate — usable from non-isolated
     /// closures (e.g. inside the actor's local computations) without
     /// triggering Swift 6 actor-isolation diagnostics on `self` capture.
-    static func isKnownDuplicateName(_ source: String) -> Bool {
+    nonisolated static func isKnownDuplicateName(_ source: String) -> Bool {
         source.localizedCaseInsensitiveContains("RingConn") ||
         source.localizedCaseInsensitiveContains("Ring")
     }
@@ -1183,7 +1401,7 @@ actor HealthKitManager: HealthDataFetching {
     /// of trailing awake/inBed records.
     private func isAsleepValue(_ raw: Int) -> Bool {
         switch HKCategoryValueSleepAnalysis(rawValue: raw) {
-        case .asleepDeep, .asleepREM, .asleepCore, .asleepUnspecified, .asleep:
+        case .asleepDeep, .asleepREM, .asleepCore, .asleepUnspecified:
             return true
         default:
             return false

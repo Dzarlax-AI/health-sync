@@ -50,6 +50,13 @@ struct SyncStatusView: View {
                 .font(.dsBodySm)
                 .foregroundStyle(Color.dsTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if engine.isSyncing && engine.isBuildingInitialSleepHistory {
+                Label("Building your recent sleep history. This runs once and does not block today's sync.",
+                      systemImage: "moon.zzz.fill")
+                    .font(.dsBodySm)
+                    .foregroundStyle(Color.dsTextSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let failure = visibleState.metrics.failure ?? visibleState.workouts.failure {
                 failureRow(failure)
             }
@@ -293,7 +300,11 @@ struct SyncStatusView: View {
                     Text("Date range")
                         .font(.dsCaption)
                         .foregroundStyle(Color.dsTextTertiary)
-                    Stepper(value: $customDays, in: 1...90) {
+                    // The server-side availability audit spans 108 days. Keep the
+                    // manual control above that boundary so a user can establish
+                    // the required coverage in one explicit re-sync, while the
+                    // regular/background sync remains its lightweight 7-day job.
+                    Stepper(value: $customDays, in: 1...120) {
                         Text("Last \(customDays) days")
                             .font(.dsHeading)
                             .foregroundStyle(Color.dsText)

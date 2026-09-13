@@ -46,6 +46,16 @@ final class SyncEngine {
     private let legacyDateKey = "health-sync.last-sync-date"
     private let migrationKey = "health-sync.sync-state.legacy-migrated.v1"
     private let metricsOverlap: TimeInterval = 24 * 60 * 60
+    private let initialSleepHistoryDays = 90
+
+    var isBuildingInitialSleepHistory: Bool {
+        guard let state,
+              state.initialSleepHistoryState == .pending,
+              let config = try? configuration.snapshot() else {
+            return false
+        }
+        return config.metricGroups.contains(.sleep)
+    }
 
     private init() {
         configuration = UserDefaultsSyncConfiguration.shared
@@ -238,10 +248,50 @@ final class SyncEngine {
             catch { return await failBoth(config, cutoff, error) }
             guard isCurrent(config) else { return configurationFailure() }
         }
+        await sendInitialSleepHistoryIfNeeded(config, cutoff, reason)
+        if Task.isCancelled { return await cancelled(config) }
         let metric = await sendMetrics(config, cutoff, reason)
         if Task.isCancelled { return await cancelled(config) }
         let workouts = await sendWorkouts(config, cutoff, reason)
         return finish(metric, workouts, config)
+    }
+
+    /// Seeds the personal sleep reference without making a new user manually
+    /// operate a long re-sync. It deliberately sends only the low-volume sleep
+    /// family and never blocks the regular fresh-data path on a failed attempt.
+    private func sendInitialSleepHistoryIfNeeded(_ config: SyncConfiguration,
+                                                 _ cutoff: Date,
+                                                 _ reason: SyncReason) async {
+        guard reason.mayRequestAuthorization,
+              config.metricGroups.contains(.sleep),
+              let current = state,
+              // An explicit full resync is already the stronger request and
+              // includes the sleep-only history. Do not duplicate it with an
+              // onboarding pass or alter its durable session accounting.
+              current.fullResyncStart == nil,
+              current.initialSleepHistoryState == .pending else {
+            return
+        }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: cutoff)
+        let start = calendar.date(byAdding: .day, value: -(initialSleepHistoryDays - 1), to: today) ?? today
+        do {
+            let payload = try await health.fetchMetrics(groups: [.sleep], since: start, until: cutoff)
+            guard isCurrent(config), !Task.isCancelled else { return }
+            // Completion means the server actually received a complete period
+            // snapshot, including the meaningful empty-period case. A query
+            // with no uploadable evidence is not a receipt and stays pending.
+            guard payload.hasUploadableContent else { return }
+            _ = try await transport.uploadMetrics(payload, configuration: config, session: nil)
+            guard isCurrent(config), !Task.isCancelled else { return }
+            guard var updated = state else { return }
+            updated.initialSleepHistoryState = .completed
+            _ = save(updated, config)
+        } catch {
+            // Keep the durable pending marker. The next foreground/manual sync
+            // may retry, but current-day metrics still proceed below.
+        }
     }
 
     private enum ChannelResult { case accepted(Int), noData, disabled, deferred(SyncFailure) }
@@ -264,7 +314,7 @@ final class SyncEngine {
             let payload = try await health.fetchMetrics(groups: config.metricGroups, since: since, until: cutoff)
             guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationFailureValue) }
             var updated = state!
-            if payload.pointCount == 0 {
+            if !payload.hasUploadableContent {
                 clear(&updated.metrics, scanned: cutoff, count: 0, accepted: false)
                 guard save(updated, config) else { return .deferred(stateFailureValue) }
                 return .noData
@@ -307,6 +357,16 @@ final class SyncEngine {
             // Even an empty full-resync payload is a strict server receipt: it
             // completes a session chunk and must be visible as accepted.
             clear(&updated.metrics, scanned: end, count: count, accepted: total > 0)
+            let firstRequiredHistoryDay = calendar.date(
+                byAdding: .day,
+                value: -(initialSleepHistoryDays - 1),
+                to: calendar.startOfDay(for: clock())
+            ) ?? start
+            if sleepSelected,
+               start <= firstRequiredHistoryDay,
+               updated.initialSleepHistoryState == .pending {
+                updated.initialSleepHistoryState = .completed
+            }
             if updated.fullResyncStart == start && updated.fullResyncRevision == revision { updated.fullResyncStart = nil; updated.fullResyncEnd = nil; updated.fullResyncRevision = nil }
             guard save(updated, config) else { return .deferred(stateFailureValue) }
             return .accepted(count)
@@ -415,6 +475,13 @@ final class SyncEngine {
 
     private func loadState(_ config: SyncConfiguration) throws -> SyncPersistedState {
         var loaded = try stateStore.load(fingerprint: config.fingerprint)
+        if loaded.initialSleepHistoryState == nil {
+            let hasExistingCheckpoint = loaded.metrics.acceptedAt != nil ||
+                loaded.metrics.scannedThrough != nil ||
+                loaded.fullResyncStart != nil ||
+                loaded.fullResyncEnd != nil
+            loaded.initialSleepHistoryState = hasExistingCheckpoint ? .notRequired : .pending
+        }
         // `load` deliberately returns a fresh state for a different account;
         // persist it immediately so A → B → A cannot revive A's pending work.
         try stateStore.save(loaded)

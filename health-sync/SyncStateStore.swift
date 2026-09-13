@@ -15,6 +15,15 @@ struct ChannelSyncState: Codable, Equatable {
                                         retryAt: nil, acceptedCount: 0, failure: nil)
 }
 
+/// Account-scoped lifecycle for the one-time sleep-only onboarding backfill.
+/// It is intentionally separate from the regular delivery cursors: the user
+/// can receive current data while history is still being collected.
+enum InitialSleepHistoryState: String, Codable, Equatable {
+    case pending
+    case completed
+    case notRequired = "not_required"
+}
+
 struct SyncPersistedState: Codable, Equatable {
     static let schemaVersion = 1
     var version: Int = SyncPersistedState.schemaVersion
@@ -35,12 +44,17 @@ struct SyncPersistedState: Codable, Equatable {
     /// had pending/full-resync work. Keeping them outside the aggregate metric
     /// checkpoint prevents another enabled group from erasing this intent.
     var deferredMetricGroupSince: [String: Date]? = nil
+    /// Optional so existing account-scoped state decodes without a migration.
+    /// `SyncEngine.loadState` decides whether legacy state is pending or has
+    /// already established a checkpoint and should be left alone.
+    var initialSleepHistoryState: InitialSleepHistoryState? = nil
 
     static func empty(fingerprint: String) -> SyncPersistedState {
         SyncPersistedState(fingerprint: fingerprint, metrics: .empty, workouts: .empty,
                            requestedGeneration: 0, completedGeneration: 0,
                            followUpMetricsSince: nil, followUpWorkoutsSince: nil,
-                           fullResyncStart: nil, fullResyncEnd: nil)
+                           fullResyncStart: nil, fullResyncEnd: nil,
+                           initialSleepHistoryState: .pending)
     }
 }
 

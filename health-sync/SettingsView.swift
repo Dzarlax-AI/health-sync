@@ -536,6 +536,14 @@ struct SettingsView: View {
             case .accepted:
                 connectionState = .ok
                 await loadAccount(expectedProbeID: requestProbeID)
+                // The app is already foregrounded after a user has verified
+                // a new endpoint. Start the normal, opt-in launch sync here
+                // instead of making a new account wait for the next scene
+                // activation (or press a second button) before its one-time
+                // sleep-history job can begin.
+                if syncOnLaunch {
+                    _ = await engine.syncNow(reason: .appActivation)
+                }
             case .failed(let failure):
                 connectionState = .failed(failure.message)
             }

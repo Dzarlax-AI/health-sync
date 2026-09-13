@@ -2,32 +2,49 @@
 
 // MARK: - Top-level payload
 
-struct HealthPayload: Encodable, Sendable {
-    struct DataWrapper: Encodable, Sendable {
+nonisolated struct HealthPayload: Encodable, Sendable {
+    nonisolated struct DataWrapper: Encodable, Sendable {
         let metrics: [MetricData]
         let nightSleepCoverage: [NightSleepCoverage]?
+        let sleepPeriodCoverage: [SleepPeriodCoverage]?
+        let completedSleepEpisodes: [CompletedSleepEpisode]?
 
         enum CodingKeys: String, CodingKey {
             case metrics
             case nightSleepCoverage = "night_sleep_coverage"
+            case sleepPeriodCoverage = "sleep_period_coverage"
+            case completedSleepEpisodes = "completed_sleep_episodes"
         }
     }
     let data: DataWrapper
 
-    init(metrics: [MetricData], nightSleepCoverage: [NightSleepCoverage] = []) {
+    init(metrics: [MetricData],
+         nightSleepCoverage: [NightSleepCoverage] = [],
+         sleepPeriodCoverage: [SleepPeriodCoverage] = [],
+         completedSleepEpisodes: [CompletedSleepEpisode] = []) {
         self.data = DataWrapper(
             metrics: metrics,
-            nightSleepCoverage: nightSleepCoverage.isEmpty ? nil : nightSleepCoverage
+            nightSleepCoverage: nightSleepCoverage.isEmpty ? nil : nightSleepCoverage,
+            sleepPeriodCoverage: sleepPeriodCoverage.isEmpty ? nil : sleepPeriodCoverage,
+            completedSleepEpisodes: completedSleepEpisodes.isEmpty ? nil : completedSleepEpisodes
         )
     }
 
     var pointCount: Int { data.metrics.reduce(0) { $0 + $1.data.count } }
+
+    /// A complete sleep-period commitment is meaningful server input even
+    /// when HealthKit found no asleep samples. Without this, the server cannot
+    /// distinguish a genuinely sleep-free period from a period the adapter
+    /// never observed.
+    var hasUploadableContent: Bool {
+        pointCount > 0 || !(data.sleepPeriodCoverage?.isEmpty ?? true)
+    }
 }
 
 /// A controlled-adapter coverage commitment for one emitted
 /// `night_sleep_total` point. It says which fixed overnight window was read;
 /// it does not claim that HealthKit will never revise the night later.
-struct NightSleepCoverage: Encodable, Sendable {
+nonisolated struct NightSleepCoverage: Encodable, Sendable {
     let wakeDate: String
     let metricDate: String
     let source: String
@@ -49,7 +66,47 @@ struct NightSleepCoverage: Encodable, Sendable {
     }
 }
 
-struct MetricData: Encodable, Sendable {
+/// One complete tenant-local noon-to-noon observation window. It has no
+/// wearable source because it attests to the adapter's query coverage, not to
+/// a particular device. A period may be sent without episodes.
+nonisolated struct SleepPeriodCoverage: Encodable, Sendable {
+    let wakeDate: String
+    let sourceEpoch: String
+    let captureCompleteness: String
+    let syncGeneration: String
+    let coveredIntervalStart: String
+    let coveredIntervalEnd: String
+
+    enum CodingKeys: String, CodingKey {
+        case wakeDate = "wake_date"
+        case sourceEpoch = "source_epoch"
+        case captureCompleteness = "capture_completeness"
+        case syncGeneration = "sync_generation"
+        case coveredIntervalStart = "covered_interval_start"
+        case coveredIntervalEnd = "covered_interval_end"
+    }
+}
+
+/// A source-selected, non-overlapping asleep interval inside one complete
+/// `SleepPeriodCoverage` window. The server derives its identity and rejects
+/// it unless the generation matches the accompanying period commitment.
+nonisolated struct CompletedSleepEpisode: Encodable, Sendable {
+    let wakeDate: String
+    let start: String
+    let end: String
+    let source: String
+    let sourceEpoch: String
+    let syncGeneration: String
+
+    enum CodingKeys: String, CodingKey {
+        case wakeDate = "wake_date"
+        case start, end, source
+        case sourceEpoch = "source_epoch"
+        case syncGeneration = "sync_generation"
+    }
+}
+
+nonisolated struct MetricData: Encodable, Sendable {
     let name: String
     let units: String
     let data: [MetricSample]
@@ -57,7 +114,7 @@ struct MetricData: Encodable, Sendable {
 
 // MARK: - Sample (flexible encoding for different server field names)
 
-enum MetricSample: Encodable, Sendable {
+nonisolated enum MetricSample: Encodable, Sendable {
     /// Most metrics → `qty` field
     case qty(date: String, value: Double, source: String)
     /// heart_rate → `Avg` field
@@ -97,7 +154,7 @@ enum MetricSample: Encodable, Sendable {
 // MARK: - Date formatting (matches server: "2026-04-20 07:01:00 +0200")
 // Uses Calendar to avoid DateFormatter's @MainActor inference in Swift 6.
 
-func formatForServer(_ date: Date, in tz: TimeZone = .current) -> String {
+nonisolated func formatForServer(_ date: Date, in tz: TimeZone = .current) -> String {
     var cal = Calendar(identifier: .gregorian)
     cal.timeZone = tz
     let c = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)

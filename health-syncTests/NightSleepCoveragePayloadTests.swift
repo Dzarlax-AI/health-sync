@@ -38,6 +38,46 @@ struct NightSleepCoveragePayloadTests {
         #expect(data["night_sleep_coverage"] == nil)
     }
 
+    @Test func completeSleepPeriodCarriesSelectedEpisodesUnderOneGeneration() throws {
+        let period = SleepPeriodCoverage(
+            wakeDate: "2026-09-11", sourceEpoch: "health-sync-ios-v1",
+            captureCompleteness: "complete", syncGeneration: "period-1",
+            coveredIntervalStart: "2026-09-10T10:00:00Z", coveredIntervalEnd: "2026-09-11T10:00:00Z"
+        )
+        let episode = CompletedSleepEpisode(
+            wakeDate: "2026-09-11", start: "2026-09-10T21:30:00Z", end: "2026-09-11T05:30:00Z",
+            source: "Alexey's Apple Watch", sourceEpoch: "health-sync-ios-v1", syncGeneration: "period-1"
+        )
+        let payload = HealthPayload(
+            metrics: [], sleepPeriodCoverage: [period], completedSleepEpisodes: [episode]
+        )
+
+        #expect(payload.pointCount == 0)
+        #expect(payload.hasUploadableContent)
+        let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as! [String: Any]
+        let data = raw["data"] as! [String: Any]
+        let encodedPeriod = try #require((data["sleep_period_coverage"] as? [[String: String]])?.first)
+        let encodedEpisode = try #require((data["completed_sleep_episodes"] as? [[String: String]])?.first)
+        #expect(encodedPeriod["wake_date"] == "2026-09-11")
+        #expect(encodedPeriod["capture_completeness"] == "complete")
+        #expect(encodedEpisode["source"] == "Alexey's Apple Watch")
+        #expect(encodedEpisode["sync_generation"] == encodedPeriod["sync_generation"])
+    }
+
+    @Test func onlyFullyCoveredNoonToNoonPeriodsAreCommitted() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "Europe/Belgrade"))
+        let start = try #require(calendar.date(from: DateComponents(year: 2026, month: 9, day: 9, hour: 12)))
+        let end = try #require(calendar.date(from: DateComponents(year: 2026, month: 9, day: 11, hour: 11, minute: 59)))
+
+        let periods = HealthKitManager.completeSleepPeriodWindows(
+            queryStart: start, queryEnd: end, calendar: calendar
+        )
+
+        #expect(periods.count == 1)
+        #expect(calendar.component(.day, from: periods[0].wakeDay) == 10)
+    }
+
     @Test func coverageUsesLocalNoonAcrossDST() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "Europe/Belgrade"))
