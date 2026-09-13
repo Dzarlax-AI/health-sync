@@ -405,7 +405,10 @@ private struct TodayHeroSupportingValues: View {
 
     @ViewBuilder
     private func metricDestination<Label: View>(for card: MetricCard, @ViewBuilder label: () -> Label) -> some View {
-        if card.metric.hasPrefix("sleep_") {
+        // The server's primary duration card is `night_sleep_total`, while
+        // stages use `sleep_*`. Both are a single Sleep destination, never a
+        // generic metric-detail screen.
+        if card.metric.localizedCaseInsensitiveContains("sleep") {
             Button { selection = .sleep } label: { label() }
         } else {
             NavigationLink(destination: MetricDetailView(metric: card.metric, displayName: card.name)) {
