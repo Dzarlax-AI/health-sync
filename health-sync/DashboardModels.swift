@@ -331,12 +331,14 @@ struct TodayInsightsResponse: Decodable, Sendable {
     let updatedAt: String?
     let generation: TodayInsightsGeneration
     let primary: TodayInsight
+    let aiInsight: TodayAIInsight?
     let domains: [TodayInsightDomain]
     let evidence: [TodayInsightEvidence]
     let changes: [TodayInsightChange]
     let hasMore: Bool?
 
     enum CodingKeys: String, CodingKey {
+        case aiInsight = "ai_insight"
         case date, generation, primary, domains, evidence, changes
         case decisionID = "decision_id"
         case snapshotVersion = "snapshot_version"
@@ -352,6 +354,7 @@ struct TodayInsightsResponse: Decodable, Sendable {
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         generation = try container.decode(TodayInsightsGeneration.self, forKey: .generation)
         primary = try container.decode(TodayInsight.self, forKey: .primary)
+        aiInsight = try container.decodeIfPresent(TodayAIInsight.self, forKey: .aiInsight)
         domains = try container.decodeIfPresent([TodayInsightDomain].self, forKey: .domains) ?? []
         evidence = try container.decodeIfPresent([TodayInsightEvidence].self, forKey: .evidence) ?? []
         changes = try container.decodeIfPresent([TodayInsightChange].self, forKey: .changes) ?? []
@@ -360,11 +363,15 @@ struct TodayInsightsResponse: Decodable, Sendable {
 }
 
 struct TodayInsightsGeneration: Decodable, Sendable {
+    let narrativeMode: String?
+    let slots: [TodayInsightSlot]?
     let state: String
     let freshForSnapshot: Bool
     let retryAfterSeconds: Int?
 
     enum CodingKeys: String, CodingKey {
+        case narrativeMode = "narrative_mode"
+        case slots
         case state
         case freshForSnapshot = "fresh_for_snapshot"
         case retryAfterSeconds = "retry_after_seconds"
@@ -401,9 +408,11 @@ struct TodayInsightDomain: Decodable, Sendable, Identifiable {
     let asOf: String?
     let summary: String
     let insight: TodayInsight
+    let aiInsight: TodayAIInsight?
     let destination: TodayInsightDestination
 
     enum CodingKeys: String, CodingKey {
+        case aiInsight = "ai_insight"
         case key, band, confidence, summary, insight, destination
         case dataState = "data_state"
         case asOf = "as_of"
@@ -657,5 +666,94 @@ struct UserSettings: Decodable, Sendable {
         case timezone, username, tenant
         case reportLang = "report_lang"
         case isAdmin = "is_admin"
+    }
+}
+
+// MARK: - Independent AI opinions and daily energy history
+
+struct TodayAIInsight: Decodable, Sendable {
+    let text: String
+    let stance: String
+    let alternativeAction: String?
+    let factIDs: [String]?
+    let evidenceIDs: [String]?
+    enum CodingKeys: String, CodingKey {
+        case text, stance
+        case alternativeAction = "alternative_action"
+        case factIDs = "fact_ids"
+        case evidenceIDs = "evidence_ids"
+    }
+}
+
+struct TodayInsightSlot: Decodable, Sendable {
+    let key: String
+    let state: String
+    let freshForSnapshot: Bool
+    let retryAfterSeconds: Int?
+    enum CodingKeys: String, CodingKey {
+        case key, state
+        case freshForSnapshot = "fresh_for_snapshot"
+        case retryAfterSeconds = "retry_after_seconds"
+    }
+}
+
+extension TodayInsightsResponse {
+    func domain(_ key: String) -> TodayInsightDomain? { domains.first { $0.key == key } }
+
+    func visibleAI(for key: String) -> TodayAIInsight? {
+        if generation.narrativeMode == "disabled" { return nil }
+        if let slot = generation.slots?.first(where: { $0.key == key }) {
+            guard slot.state == "ready", slot.freshForSnapshot else { return nil }
+        } else {
+            guard generation.state == "ready", generation.freshForSnapshot else { return nil }
+        }
+        return key == "overall" ? aiInsight : domain(key)?.aiInsight
+    }
+
+    func state(for key: String) -> String {
+        generation.slots?.first(where: { $0.key == key })?.state ?? generation.state
+    }
+}
+
+enum InsightDestination: Equatable {
+    case sleep, energy, section(String), none
+    static func resolve(domain: TodayInsightDomain) -> Self {
+        switch domain.key {
+        case "sleep": return .sleep
+        case "energy": return .energy
+        case "recovery": return .section("recovery")
+        default:
+            if domain.destination.kind == "section", !domain.destination.id.isEmpty {
+                return .section(domain.destination.id)
+            }
+            return .none
+        }
+    }
+}
+
+struct EnergyHistoryResponse: Decodable, Sendable {
+    let granularity: String
+    let points: [EnergyHistoryPoint]
+    enum CodingKeys: String, CodingKey { case granularity, points }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        granularity = try c.decode(String.self, forKey: .granularity)
+        guard granularity == "day" else {
+            throw DecodingError.dataCorruptedError(forKey: .granularity, in: c, debugDescription: "Expected daily energy history")
+        }
+        points = try c.decodeIfPresent([EnergyHistoryPoint].self, forKey: .points) ?? []
+    }
+}
+
+struct EnergyHistoryPoint: Decodable, Sendable, Identifiable {
+    var id: String { date }
+    let date: String
+    let capacity: Int
+    let currentEOD: Int
+    let drain: Int
+    let verdict: String
+    enum CodingKeys: String, CodingKey {
+        case date, capacity, drain, verdict
+        case currentEOD = "current_eod"
     }
 }

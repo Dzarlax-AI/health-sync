@@ -94,7 +94,12 @@ final class SyncEngine {
             uiState = fixture
             return
         }
-        guard let config = try? configuration.snapshot() else {
+        let config: SyncConfiguration
+        do { config = try configuration.snapshot() }
+        catch is APIKeyError {
+            _ = configurationFailure()
+            return
+        } catch {
             state = nil; clearVisibleAccountState(); uiState = Self.ui(metrics: .idle, workouts: .idle, configured: false, syncing: isSyncing)
             return
         }
@@ -108,7 +113,7 @@ final class SyncEngine {
             lastPointCount = loaded.metrics.acceptedCount + loaded.workouts.acceptedCount
             publish(config, loaded)
             if timer != nil { startForegroundTimer() }
-            BackgroundSyncManager.shared.applyConfiguration()
+            if productionComposition { BackgroundSyncManager.shared.applyConfiguration() }
         } catch { setStateFailure() }
     }
 
@@ -123,6 +128,7 @@ final class SyncEngine {
     func stopForegroundTimer() { timer?.invalidate(); timer = nil }
 
     func handleAppBecameActive() {
+        if productionComposition { BackgroundSyncManager.shared.recoverAfterUnlock() }
         // Loading durable status is independent from whether this activation
         // should trigger an upload. Settings must not look freshly installed
         // just because the user disabled sync-on-launch.
@@ -203,7 +209,7 @@ final class SyncEngine {
         if productionComposition && SyncRuntime.isTestMode {
             return .failed(.init(code: .configuration, message: "Connection testing is disabled in test mode"))
         }
-        guard let config = try? configuration.snapshot() else { return .failed(configurationFailureValue) }
+        guard let config = try? configuration.snapshot() else { return .failed(configurationAccessFailure) }
         do {
             try await transport.validate(configuration: config)
             guard isCurrent(config) else { return .failed(configurationFailureValue) }
@@ -312,7 +318,7 @@ final class SyncEngine {
         guard save(current, config) else { return .deferred(stateFailureValue) }
         do {
             let payload = try await health.fetchMetrics(groups: config.metricGroups, since: since, until: cutoff)
-            guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationFailureValue) }
+            guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
             var updated = state!
             if !payload.hasUploadableContent {
                 clear(&updated.metrics, scanned: cutoff, count: 0, accepted: false)
@@ -320,7 +326,7 @@ final class SyncEngine {
                 return .noData
             }
             _ = try await transport.uploadMetrics(payload, configuration: config, session: nil)
-            guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationFailureValue) }
+            guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
             updated = state!; let count = payload.pointCount
             clear(&updated.metrics, scanned: cutoff, count: count, accepted: true)
             guard save(updated, config) else { return .deferred(stateFailureValue) }
@@ -341,16 +347,16 @@ final class SyncEngine {
         do {
             if sleepSelected {
                 let sleep = try await health.fetchMetrics(groups: [.sleep], since: start, until: end)
-                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationFailureValue) }
+                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
                 _ = try await transport.uploadMetrics(sleep, configuration: config, session: session)
-                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationFailureValue) }
+                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
                 count += sleep.pointCount
             }
             if !other.isEmpty { for (dayStart, dayEnd) in days {
                 let metrics = try await health.fetchMetrics(groups: other, since: dayStart, until: dayEnd)
-                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationFailureValue) }
+                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
                 _ = try await transport.uploadMetrics(metrics, configuration: config, session: session)
-                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationFailureValue) }
+                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
                 count += metrics.pointCount
             } }
             guard isCurrent(config), var updated = state else { return .deferred(configurationFailureValue) }
@@ -389,13 +395,13 @@ final class SyncEngine {
             let next = min(Calendar.current.date(byAdding: .day, value: 1, to: cursor) ?? cutoff, cutoff)
             do {
                 let items = try await health.fetchWorkouts(since: cursor, until: next, includeHRTimeline: config.workoutHRTimeline)
-                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationFailureValue) }
+                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
                 if !items.isEmpty {
                     _ = try await transport.uploadWorkouts(WorkoutsPayload(items: items), configuration: config)
                     count += items.count
                     acceptedAny = true
                 }
-                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationFailureValue) }
+                guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
                 var updated = state!
                 clear(&updated.workouts, scanned: next, count: count, accepted: !items.isEmpty)
                 // The receipt timestamp records delivery, not the cursor. Keep
@@ -417,7 +423,7 @@ final class SyncEngine {
     }
 
     private func fail(_ channel: Channel, _ config: SyncConfiguration, _ since: Date, _ error: Error) async -> ChannelResult {
-        guard var updated = state, isCurrent(config) else { return .deferred(configurationFailureValue) }
+        guard var updated = state, isCurrent(config) else { return .deferred(configurationAccessFailure) }
         var value = channel == .metrics ? updated.metrics : updated.workouts
         let valueFailure = failure(error)
         value.pendingSince = earlier(value.pendingSince, since); value.failure = valueFailure
@@ -554,6 +560,11 @@ final class SyncEngine {
     private func retryDate(_ attempt: Int, _ error: Error) -> Date { if case SyncTransportError.http(_, let date) = error, let date { return date }; return clock().addingTimeInterval(min(21600, pow(2, Double(max(0, attempt - 1))) * 60)) }
 
     private func failure(_ error: Error) -> SyncFailure {
+        if let keyError = error as? APIKeyError {
+            return keyError == .locked
+                ? .init(code: .locked, message: String(localized: "API key temporarily unavailable"))
+                : .init(code: .credentialsUnavailable, message: String(localized: "API key temporarily unavailable"))
+        }
         if let error = error as? SyncTransportError { switch error {
         case .configuration, .unauthorized: return configurationFailureValue
         case .invalidAcknowledgement: return .init(code: .rejectedAck, message: "Server did not confirm the upload")
@@ -570,7 +581,25 @@ final class SyncEngine {
         return .init(code: .healthData, message: "Health data sync failed")
     }
 
-    private func configurationFailure() -> SyncOutcome { lastError = configurationFailureValue.message; return .deferred(configurationFailureValue) }
+    private var configurationAccessFailure: SyncFailure {
+        do { _ = try configuration.snapshot() }
+        catch let error as APIKeyError { return failure(error) }
+        catch { }
+        return configurationFailureValue
+    }
+
+    private func configurationFailure() -> SyncOutcome {
+        let value = configurationAccessFailure
+        lastError = value.message
+        if value.code == .locked || value.code == .credentialsUnavailable {
+            // Leave durable account state untouched and never reuse cached credentials.
+            let channel = SyncChannelSnapshot(status: .error, lastAcceptedAt: nil, pendingSince: nil,
+                                              retryAt: nil, acceptedCount: 0, failure: value)
+            uiState = Self.ui(metrics: channel, workouts: channel, configured: true, syncing: isSyncing)
+            if productionComposition { BackgroundSyncDiagnostics.shared.record(.credentialsUnavailable) }
+        }
+        return value.code == .locked ? .locked : .deferred(value)
+    }
     private func stateFailureOutcome() -> SyncOutcome { setStateFailure(); return .deferred(stateFailureValue) }
     private func setStateFailure() {
         lastError = stateFailureValue.message

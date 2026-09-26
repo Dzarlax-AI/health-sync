@@ -8,17 +8,17 @@ struct HealthSyncApp: App {
 
     private var testColorSchemeOverride: ColorScheme? {
         let arguments = ProcessInfo.processInfo.arguments
-        guard arguments.contains("--ui-test-mode"),
-              arguments.contains("--ui-test-force-dark-mode") else {
-            return nil
-        }
-        return .dark
+        guard arguments.contains("--ui-test-mode") else { return nil }
+        if arguments.contains("--ui-test-force-dark-mode") { return .dark }
+        if arguments.contains("--ui-test-force-light-mode") { return .light }
+        return nil
     }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .preferredColorScheme(testColorSchemeOverride)
+
         }
         .modelContainer(for: SyncHistoryRecord.self)
         .onChange(of: scenePhase) { _, phase in

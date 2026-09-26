@@ -18,15 +18,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
         guard HKHealthStore.isHealthDataAvailable() else { return true }
 
-        // Register observers SYNCHRONOUSLY — HealthKit may fire callbacks on this
-        // same launch, so they must be running before we return.
-        if (try? UserDefaultsSyncConfiguration.shared.snapshot())?.backgroundEnabled == true {
-            BackgroundSyncManager.shared.setupObserverQueriesIfNeeded()
-            BackgroundSyncManager.shared.scheduleNextSync()
-            BackgroundSyncManager.shared.scheduleDailyResync()
-        }
+        // Register queries synchronously without requiring an unlocked API key.
+        BackgroundSyncManager.shared.recoverAfterUnlock()
 
         return true
+    }
+
+    func applicationProtectedDataDidBecomeAvailable(_ application: UIApplication) {
+        BackgroundSyncManager.shared.recoverAfterUnlock(retryPending: true)
     }
 
     // UNUserNotificationCenterDelegate — display notifications in foreground

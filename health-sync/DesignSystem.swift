@@ -144,6 +144,33 @@ extension Color {
     static let dsSleepStageAwake = dsDynamic(lightHex: "#F2B45B", darkHex: "#F2B45B")
 }
 
+// MARK: - Scenic dashboard materials
+
+extension Color {
+    // Fixed materials retain the same lighting and domain identity in both themes.
+    static let dsDashboardBackground = dsDynamic(lightHex: "#F5F6F8", darkHex: "#1D2025")
+    static let dsRingShellLight = dsDynamic(lightHex: "#596271", darkHex: "#596271")
+    static let dsRingShellMid = dsDynamic(lightHex: "#3C4452", darkHex: "#3C4452")
+    static let dsRingShellDark = dsDynamic(lightHex: "#232A34", darkHex: "#232A34")
+    static let dsRingCenterLight = dsDynamic(lightHex: "#464E5C", darkHex: "#464E5C")
+    static let dsRingCenterDark = dsDynamic(lightHex: "#343B48", darkHex: "#343B48")
+    static let dsRingGroove = dsDynamic(lightHex: "#161C26", darkHex: "#161C26")
+    static let dsRingHighlight = dsDynamic(lightHex: "#697384", darkHex: "#697384")
+    static let dsRingText = dsDynamic(lightHex: "#F6F7FC", darkHex: "#F6F7FC")
+    static let dsRingTextSecondary = dsDynamic(lightHex: "#BDC5D3", darkHex: "#BDC5D3")
+    static let dsRingSleepStart = dsDynamic(lightHex: "#7956E5", darkHex: "#7956E5")
+    static let dsRingSleepEnd = dsDynamic(lightHex: "#B9D6FF", darkHex: "#B9D6FF")
+    static let dsRingRecoveryStart = dsDynamic(lightHex: "#8DA63A", darkHex: "#8DA63A")
+    static let dsRingRecoveryEnd = dsDynamic(lightHex: "#DAF675", darkHex: "#DAF675")
+    static let dsRingEnergyStart = dsDynamic(lightHex: "#C28C35", darkHex: "#C28C35")
+    static let dsRingEnergyEnd = dsDynamic(lightHex: "#FFE7A0", darkHex: "#FFE7A0")
+    static let dsRingActivityStart = dsDynamic(lightHex: "#218871", darkHex: "#218871")
+    static let dsRingActivityEnd = dsDynamic(lightHex: "#82E8C2", darkHex: "#82E8C2")
+    static let dsRingCardioStart = dsDynamic(lightHex: "#B75E79", darkHex: "#B75E79")
+    static let dsRingCardioEnd = dsDynamic(lightHex: "#FFB4CA", darkHex: "#FFB4CA")
+    static let dsRecovery = dsDynamic(lightHex: "#5C741E", darkHex: "#DAF675")
+}
+
 // MARK: - Typography
 
 extension Font {

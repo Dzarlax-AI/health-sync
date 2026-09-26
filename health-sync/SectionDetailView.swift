@@ -8,6 +8,19 @@ import Charts
 /// single source of truth for explanations.
 struct SectionDetailView: View {
     let sectionKey: String
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var recoveryBriefing: BriefingResponse?
+    private var appearance: DomainAppearance { DomainAppearance(key: sectionKey) }
+    private var pageTitle: String {
+        if let section { return section.title }
+        switch sectionKey {
+        case "sleep": return String(localized: "Sleep")
+        case "activity": return String(localized: "Activity")
+        case "cardio": return String(localized: "Cardio")
+        default: return String(localized: "Recovery")
+        }
+    }
+    @State private var todayInsights = TodayInsightsController()
 
     @State private var section: SectionResponse?
     @State private var pointsByMetric: [String: [DataPoint]] = [:]
@@ -21,39 +34,64 @@ struct SectionDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: .dsSpacingLg) {
+                if section == nil {
+                    DomainPageHeader(title: pageTitle).domainHero(appearance)
+                }
                 if isLoading && section == nil {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 200)
                 } else if let err = loadError, section == nil {
                     errorBlock(err)
                 } else if let s = section {
+                    sectionHero(s)
+                    let details = sectionKey == "recovery" ? s.details : Array(s.details.dropFirst())
+                    if !details.isEmpty { kpiBlock(Array(details.prefix(2))) }
+                    if sectionKey == "recovery" {
+                        DomainInsightSection(controller: todayInsights, slot: "recovery", appearance: appearance)
+                    }
                     if !s.summary.isEmpty {
                         summaryBlock(s.summary)
                     }
-                    if !s.charts.isEmpty {
-                        sectionRangePicker
-                    }
-                    if !s.details.isEmpty {
-                        kpiBlock(s.details)
-                    }
+                    if details.count > 2 { kpiBlock(Array(details.dropFirst(2))) }
+                    if !s.charts.isEmpty { sectionRangePicker }
                     ForEach(Array(s.charts.enumerated()), id: \.offset) { _, chart in
                         chartBlock(chart)
                     }
-                    if !s.explains.isEmpty {
-                        explainsBlock(s.explains)
-                    }
                 }
+                if let section, !section.explains.isEmpty { explainsBlock(section.explains) }
             }
+            .foregroundStyle(Color.dsText)
             .padding(.dsSpacing)
             .padding(.bottom, .dsTabBarClearance)
         }
-        .background(Color.dsBackground)
-        .navigationTitle(section.map { LocalizedStringKey($0.title) } ?? LocalizedStringKey(sectionKey.capitalized))
-        .navigationBarTitleDisplayMode(.large)
-        .refreshable { await load() }
+        .background { DomainBackdrop(appearance: appearance) }
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .refreshable {
+            async let charts: Void = load()
+            if sectionKey == "recovery" { await todayInsights.refresh() }
+            await charts
+        }
         .task { await load() }
+        .modifier(RecoveryInsightLifecycle(controller: todayInsights, enabled: sectionKey == "recovery"))
     }
 
     // MARK: - Blocks
+
+    private func sectionHero(_ section: SectionResponse) -> some View {
+        VStack(spacing: .dsSpacingLg) {
+            DomainPageHeader(title: pageTitle, date: recoveryBriefing?.date)
+            if sectionKey == "recovery" {
+                DomainGauge(value: recoveryBriefing?.recoveryPct.map { "\($0)%" } ?? "—", label: "Recovery", fraction: recoveryBriefing?.recoveryPct.map { Double($0) / 100 }, appearance: appearance)
+                    .accessibilityIdentifier("domain-hero-recovery")
+            } else if let first = section.details.first {
+                DomainGauge(value: first.value, label: LocalizedStringKey(first.label), fraction: nil, appearance: appearance)
+                    .accessibilityIdentifier("domain-hero-\(sectionKey)")
+            }
+        }
+        .domainHero(appearance)
+    }
 
     private var sectionRangePicker: some View {
         Picker("Chart range", selection: $days) {
@@ -62,7 +100,7 @@ struct SectionDetailView: View {
             Text("90d").tag(90)
         }
         .pickerStyle(.segmented)
-        .tint(Color.dsReadiness)
+        .tint(appearance.accent)
         .onChange(of: days) { _, _ in
             Task { await loadChartsForSelectedRange() }
         }
@@ -72,7 +110,7 @@ struct SectionDetailView: View {
         VStack(alignment: .leading, spacing: .dsSpacingSm) {
             Text("Overview")
                 .font(.dsCaption.weight(.semibold))
-                .foregroundStyle(Color.dsTextTertiary)
+                .foregroundStyle(Color.dsTextSecondary)
             Text(text)
                 .font(.dsBody)
                 .foregroundStyle(Color.dsTextSecondary)
@@ -81,52 +119,25 @@ struct SectionDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.dsSpacing)
-        .dsDetailCard()
+        .domainSurface(appearance)
     }
 
     private func kpiBlock(_ details: [SectionDetail]) -> some View {
-        VStack(spacing: 6) {
-            ForEach(details, id: \.self) { d in
-                HStack(alignment: .center, spacing: 10) {
-                    Circle()
-                        .fill(trendColor(d.trend))
-                        .frame(width: 6, height: 6)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(d.label)
-                                .font(.dsCaption.weight(.semibold))
-                                .foregroundStyle(Color.dsText)
-                            Spacer(minLength: 0)
-                            Text(d.value)
-                                .font(.dsCaption)
-                                .foregroundStyle(Color.dsText)
-                                .monospacedDigit()
-                        }
-                        if let n = d.note, !n.isEmpty {
-                            Text(n)
-                                .font(.system(size: 11))
-                                .foregroundStyle(Color.dsTextTertiary)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.dsSurface2.opacity(0.6))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), alignment: .top),
+                                 count: dynamicTypeSize.isAccessibilitySize ? 1 : 2), spacing: .dsSpacingSm) {
+            ForEach(details, id: \.self) { detail in
+                DomainValueCard(title: LocalizedStringKey(detail.label), value: detail.value,
+                                icon: detail.trend == "up" ? "arrow.up.right" : detail.trend == "down" ? "arrow.down.right" : appearance.icon,
+                                appearance: appearance, note: detail.note)
             }
         }
-        .padding(.dsSpacing)
-        .dsDetailCard()
     }
 
     @ViewBuilder
     private func chartBlock(_ c: SectionChart) -> some View {
         VStack(alignment: .leading, spacing: .dsSpacingSm) {
             Text(c.label)
-                .font(.dsSubhead)
+                .font(.system(.title3, design: .rounded).weight(.semibold))
                 .foregroundStyle(Color.dsText)
 
             if c.virtual == true {
@@ -139,7 +150,7 @@ struct SectionDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.dsSpacing)
-        .dsDetailCard()
+        .domainSurface(appearance)
     }
 
     @ViewBuilder
@@ -162,12 +173,18 @@ struct SectionDetailView: View {
                     .interpolationMethod(.catmullRom)
             }
             .chartYScale(domain: 0...100)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                    AxisGridLine().foregroundStyle(Color.dsBorder)
+                    AxisValueLabel().foregroundStyle(Color.dsTextSecondary)
+                }
+            }
             .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { _ in
                     AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                        .foregroundStyle(Color.dsBorderHover)
-                    AxisValueLabel(format: .dateTime.day().month(.abbreviated))
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsBorder)
+                    AxisValueLabel(format: dynamicTypeSize.isAccessibilitySize ? .dateTime.day().month(.twoDigits) : .dateTime.day().month(.abbreviated))
+                        .foregroundStyle(Color.dsTextSecondary)
                 }
             }
             .frame(height: 160)
@@ -181,8 +198,8 @@ struct SectionDetailView: View {
             chartPlaceholder
         } else {
             Chart(points) { p in
-                BarMark(x: .value("Date", p.date),
-                        y: .value("Hours", p.hours))
+                BarMark(x: .value("Date", p.date, unit: .day),
+                        y: .value("Hours", p.hours), width: .ratio(0.8))
                     .foregroundStyle(by: .value("Stage", p.stage))
             }
             .chartForegroundStyleScale([
@@ -192,16 +209,23 @@ struct SectionDetailView: View {
                 "Asleep": Color.dsSleepUnspecified,
                 "Awake":  Color.dsSleepStageAwake,
             ])
-            .chartLegend(position: .bottom, alignment: .leading)
+            .chartLegend(.hidden)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                    AxisGridLine().foregroundStyle(Color.dsBorder)
+                    AxisValueLabel().foregroundStyle(Color.dsTextSecondary)
+                }
+            }
             .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { _ in
                     AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                        .foregroundStyle(Color.dsBorderHover)
-                    AxisValueLabel(format: .dateTime.day().month(.abbreviated))
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsBorder)
+                    AxisValueLabel(format: dynamicTypeSize.isAccessibilitySize ? .dateTime.day().month(.twoDigits) : .dateTime.day().month(.abbreviated))
+                        .foregroundStyle(Color.dsTextSecondary)
                 }
             }
             .frame(height: 180)
+            SleepStageLegend(hasUnspecified: points.contains { $0.stage == "Asleep" && $0.hours > 0 })
         }
     }
 
@@ -216,8 +240,8 @@ struct SectionDetailView: View {
         } else {
             Chart(points, id: \.id) { p in
                 if isBar {
-                    BarMark(x: .value("Date", p.date),
-                            y: .value("Value", p.qty))
+                    BarMark(x: .value("Date", p.date, unit: .day),
+                            y: .value("Value", p.qty), width: .ratio(0.8))
                         .foregroundStyle(color)
                 } else {
                     LineMark(x: .value("Date", p.date),
@@ -230,14 +254,21 @@ struct SectionDetailView: View {
                         .interpolationMethod(.catmullRom)
                 }
             }
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
-                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                        .foregroundStyle(Color.dsBorderHover)
-                    AxisValueLabel(format: .dateTime.day().month(.abbreviated))
-                        .foregroundStyle(Color.dsTextTertiary)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                    AxisGridLine().foregroundStyle(Color.dsBorder)
+                    AxisValueLabel().foregroundStyle(Color.dsTextSecondary)
                 }
             }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { _ in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                        .foregroundStyle(Color.dsBorder)
+                    AxisValueLabel(format: dynamicTypeSize.isAccessibilitySize ? .dateTime.day().month(.twoDigits) : .dateTime.day().month(.abbreviated))
+                        .foregroundStyle(Color.dsTextSecondary)
+                }
+            }
+            .chartPlotStyle { plot in plot.clipped() }
             .dsChartYScale(domain: DashboardChartScale.domain(
                 for: metric,
                 values: points.map(\.qty),
@@ -250,7 +281,7 @@ struct SectionDetailView: View {
     private var chartPlaceholder: some View {
         Text("No data in this range.")
             .font(.dsCaption)
-            .foregroundStyle(Color.dsTextTertiary)
+            .foregroundStyle(Color.dsTextSecondary)
             .frame(maxWidth: .infinity, minHeight: 100)
     }
 
@@ -273,12 +304,12 @@ struct SectionDetailView: View {
     // "How it works" — server-curated educational text. Real value of this view.
     private func explainsBlock(_ explains: [SectionExplain]) -> some View {
         VStack(alignment: .leading, spacing: .dsSpacingSm) {
-            SectionHeader(title: "How it works")
+            Text("How it works").font(.dsBody.weight(.semibold)).foregroundStyle(Color.dsText)
             VStack(spacing: .dsSpacingSm) {
                 ForEach(explains, id: \.self) { e in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(e.title)
-                            .font(.dsSubhead)
+                            .font(.system(.title3, design: .rounded).weight(.semibold))
                             .foregroundStyle(Color.dsText)
                         Text(e.body)
                             .font(.dsBodySm)
@@ -288,7 +319,7 @@ struct SectionDetailView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.dsSpacing)
-                    .dsCard()
+                    .domainSurface(appearance)
                 }
             }
         }
@@ -314,6 +345,7 @@ struct SectionDetailView: View {
         chartLoadGeneration = requestGeneration
         isLoading = true
         loadError = nil
+        async let overview: Void = loadRecoveryOverview(generation: requestGeneration)
         do {
             let s = try await ServerClient.shared.section(sectionKey)
             guard !Task.isCancelled, requestGeneration == chartLoadGeneration else { return }
@@ -323,9 +355,17 @@ struct SectionDetailView: View {
             guard requestGeneration == chartLoadGeneration else { return }
             loadError = error.localizedDescription
         }
+        await overview
         if requestGeneration == chartLoadGeneration {
             isLoading = false
         }
+    }
+
+    private func loadRecoveryOverview(generation: UUID) async {
+        guard sectionKey == "recovery" else { return }
+        let value = try? await ServerClient.shared.healthBriefing()
+        guard !Task.isCancelled, generation == chartLoadGeneration else { return }
+        recoveryBriefing = value
     }
 
     private func loadChartsForSelectedRange() async {
@@ -466,17 +506,17 @@ struct SectionDetailView: View {
         switch trend {
         case "up", "positive": return .dsGood
         case "down", "negative": return .dsDanger
-        case "stable": return .dsTextTertiary
-        default: return .dsTextTertiary
+        case "stable": return .dsTextSecondary
+        default: return .dsTextSecondary
         }
     }
 
-    /// Parse "#rrggbb" hex from server. Falls back to dsAccent.
+    /// Parse "#rrggbb" hex from server. Falls back to the domain accent.
     private func parseColor(_ hex: String?) -> Color {
-        guard let hex, hex.hasPrefix("#"), hex.count == 7 else { return .dsAccent }
+        guard let hex, hex.hasPrefix("#"), hex.count == 7 else { return appearance.accent }
         let scanner = Scanner(string: String(hex.dropFirst()))
         var rgb: UInt64 = 0
-        guard scanner.scanHexInt64(&rgb) else { return .dsAccent }
+        guard scanner.scanHexInt64(&rgb) else { return appearance.accent }
         return Color(
             .sRGB,
             red:   Double((rgb >> 16) & 0xff) / 255,
@@ -491,5 +531,13 @@ struct SectionDetailView: View {
         cal.timeZone = .current
         let c = cal.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+}
+
+private struct RecoveryInsightLifecycle: ViewModifier {
+    let controller: TodayInsightsController
+    let enabled: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled { content.insightLifecycle(controller) } else { content }
     }
 }

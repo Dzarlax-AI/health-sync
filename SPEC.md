@@ -311,10 +311,53 @@ are actors. Network calls via `async/await` + `URLSession`.
 
 ## iOS 26 Features
 
-- **Background Tasks** (`BGProcessingTask`) — periodic sync when app is closed
-- **HKObserverQuery** + `enableBackgroundDelivery` — real-time wakeup on new data
+- **Background Tasks** (`BGProcessingTask`) — best-effort sync at system-selected times
+- **HKObserverQuery** + `enableBackgroundDelivery` — system-limited wakeups on new data
 - **App Intents** — `SyncNowIntent` for Shortcuts / Siri
-- **WidgetKit** — small widget: "Last sync: 5 min ago · 142 pts"
+- **WidgetKit** — proposed, not implemented
+
+### Background recovery (September 2026)
+
+The user-selected interval drives the foreground timer and the earliest requested
+background sync time. It is not a guaranteed background cadence. HealthKit
+observer events can trigger additional syncs independently of that interval.
+Pending earlier requests, including overdue daily requests, are retained on
+configuration refresh. A changed interval replaces the regular request; daily
+work remains independent. The daily request becomes eligible after 03:00 local
+time, with actual execution determined by iOS.
+
+Observer queries register synchronously at launch using nonsecret preferences.
+Registration and scheduling do not require reading the API key. Temporary
+credential unavailability must never disable HealthKit delivery or cancel queued
+system tasks. Only an explicit background-sync off transition does that.
+Asynchronous delivery enable/disable and scheduler reconciliation are serialized
+to prevent an old callback from resurrecting disabled work or undoing reenable.
+Failed delivery setup is retried on launch, activation, protected-data recovery,
+or a system background task, rather than every configuration refresh.
+
+The existing Keychain item is updated in place to
+`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` while protected data is
+available. New writes use the same accessibility. This allows credentials to be
+read after the first unlock following boot, including later lock periods. The
+key remains in Keychain and does not migrate to a different device through
+backup restore. Missing, locked, and failed Keychain operations are distinct;
+failed migration preserves the item and can retry. HealthKit itself may still
+be unreadable while the device is locked.
+
+Each background execution acknowledges its callback once, including expiration,
+and cancels only its own sync owner. Deferred ranges remain in the existing
+account-scoped sync state, with no checkpoint advancement on locked reads or
+unconfirmed uploads. Protected-data availability retries work deferred for lock
+or credentials when this process receives the notification; it is not a promise
+that unlocking the phone launches the app.
+
+Settings shows system background refresh availability, Low Power Mode, the last
+device-level background receipt, and recent background events. The local journal
+retains at most 40 fixed-vocabulary timestamped events and never includes keys,
+URLs, payloads, health values, or free-form errors. A no-data scan is not a server
+receipt. Upload transport remains a normal URLSession with durable range retry,
+not a background file-upload queue. Real-device delivery and dashboard freshness
+must be verified separately from Simulator tests.
 
 ---
 
@@ -344,3 +387,38 @@ are actors. Network calls via `async/await` + `URLSession`.
 - Apple Watch app
 - Settings export/import
 - Multiple server profiles
+
+### Native Server Insight / AI Insight and Energy (2026-09-26)
+
+The Today snapshot remains server-authored. iOS decodes the optional top-level
+and domain `ai_insight` objects, `generation.narrative_mode`, and per-slot
+state/freshness/retry metadata. Server and AI opinions are separate labeled
+cards; an AI alternative action never replaces the server action. Preview is
+visible on Today, Sleep, Recovery, and Energy. Missing or failed AI retains
+server facts; stale AI is not presented as current. Legacy AI briefing is used
+only when the optional Today endpoint is unavailable.
+
+Today domain cards show server summaries and data states, plus nonempty daily
+changes. Sleep opens the native Sleep tab, Recovery opens its existing detail
+screen, and Energy opens a dedicated screen rather than Activity. Domain
+insights carry their current-day date independently of historical chart ranges.
+
+Energy displays server-provided current reserve/capacity and details, with
+14 daily snapshots from `/api/energy-history?granularity=day&days=14`.
+Daily values may be negative and are not interpreted as hourly observations.
+Energy history, current values, and insights load independently; a missing
+optional resource does not hide other data. No energy formula is computed on
+the client.
+
+Insight refresh runs only while its screen is visible and active. Disabled
+AI is rechecked every 60 seconds without consuming generation retries;
+cold/generating/failed states have a ten-retry budget and honor server backoff.
+Late results after cancellation or account/language/day changes are discarded.
+Transient failures may retain visibly stale facts from the same context;
+authorization failures clear them. A lightweight local context check detects
+rollover without repeatedly fetching already-ready snapshots.
+
+UI fixtures use synthetic data and require both `--ui-test-mode` and
+`--insights-fixture`; real credentials, HealthKit, notifications, and network
+requests remain disabled in test mode. User interface labels support EN/RU/SR;
+server text continues to use `report_lang` independently of the iOS locale.

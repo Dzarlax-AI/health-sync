@@ -95,8 +95,9 @@ struct MetricDetailView: View {
             Chart(chartPoints, id: \.id) { p in
             if isSum {
                 BarMark(
-                    x: .value("Date", p.date),
-                    y: .value("Value", p.qty)
+                    x: .value("Date", p.date, unit: .day),
+                    y: .value("Value", p.qty),
+                    width: .ratio(0.8)
                 )
                 .foregroundStyle(Color.dsAccent)
             } else {
@@ -122,6 +123,7 @@ struct MetricDetailView: View {
                     .foregroundStyle(Color.dsTextTertiary)
             }
             }
+            .chartPlotStyle { plot in plot.clipped() }
             .dsChartYScale(domain: DashboardChartScale.domain(
             for: metric,
             values: chartPoints.map(\.qty),

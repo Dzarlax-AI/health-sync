@@ -438,6 +438,7 @@ struct SyncStatusView: View {
         case .statePersistence: return "Progress could not be saved"
         case .healthData: return "Health data could not be read"
         case .locked: return "Device is locked"
+        case .credentialsUnavailable: return "API key temporarily unavailable"
         case .cancelled: return "Sync was cancelled"
         }
     }

@@ -61,7 +61,7 @@ struct TrendsView: View {
             } else {
                 readinessSummary
 
-                HStack {
+                VStack(alignment: .leading, spacing: .dsSpacingSm) {
                     VStack(alignment: .leading, spacing: .dsSpacingXs) {
                         Text("Readiness history")
                             .font(.dsSubhead)
@@ -70,14 +70,12 @@ struct TrendsView: View {
                             .font(.dsCaption)
                             .foregroundStyle(Color.dsTextSecondary)
                     }
-                    Spacer()
                     Picker("Readiness range", selection: $days) {
                         Text("7d").tag(7)
                         Text("30d").tag(30)
                         Text("90d").tag(90)
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 164)
                     .tint(Color.dsReadiness)
                     .onChange(of: days) { _, _ in
                         Task { await load() }
