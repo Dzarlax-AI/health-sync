@@ -215,10 +215,30 @@ struct BackgroundRecoveryTests {
         health.metrics = [.init(name: "heart_rate", units: "bpm", data: [.avg(date: "fixture", value: 60, source: "fixture")])]
         health.onFetch = { provider.readError = .locked }
         let engine = try makeTestSyncEngine(state: state, health: health, transport: transport, provider: provider)
-        _ = await engine.syncNow(reason: .observer)
+        let outcome = await engine.syncNow(reason: .observer)
+        #expect(outcome.needsUnlockRetry)
+        #expect(outcome == .locked)
         #expect(transport.metricUploadCount == 0)
         #expect(state.value.metrics.scannedThrough == nil)
         #expect(state.value.metrics.pendingSince != nil)
+    }
+
+    @Test func credentialFailureAfterUploadRetainsUnlockOutcome() async throws {
+        for keyError in [APIKeyError.locked, .failure(errSecNotAvailable)] {
+            let provider = TestSyncConfiguration(), state = InMemoryTestSyncState()
+            let health = EmptyTestHealthData(), transport = SuccessTestTransport()
+            health.metrics = [.init(name: "heart_rate", units: "bpm", data: [.avg(date: "fixture", value: 60, source: "fixture")])]
+            transport.onMetricUpload = { provider.readError = keyError }
+            let engine = try makeTestSyncEngine(state: state, health: health, transport: transport, provider: provider)
+            let outcome = await engine.syncNow(reason: .observer)
+            #expect(outcome.needsUnlockRetry)
+            if keyError == .locked { #expect(outcome == .locked) }
+            else if case .deferred(let failure) = outcome { #expect(failure.code == .credentialsUnavailable) }
+            else { Issue.record("Expected a deferred credential failure") }
+            #expect(transport.metricUploadCount == 1)
+            #expect(state.value.metrics.pendingSince != nil)
+            #expect(state.value.metrics.scannedThrough == nil)
+        }
     }
 
     @Test func lockedHealthKitRetainsPendingRange() async throws {
@@ -255,6 +275,87 @@ struct BackgroundRecoveryTests {
         let encoded = try JSONEncoder().encode(restored.events)
         let objects = try #require(JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
         #expect(objects.allSatisfy { Set($0.keys) == ["id", "date", "kind"] })
+    }
+
+    @Test func unlockRetrySurvivesRelaunchAndPreservesOriginalCalendarRange() async throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let intent = BackgroundRetryIntent.daily(now: Date(timeIntervalSince1970: -86_400), calendar: calendar, daysBack: 7)
+        let store = BackgroundUnlockRetry(defaults: defaults)
+        store.record(.locked, intent: intent)
+        let relaunched = BackgroundUnlockRetry(defaults: defaults)
+        #expect(relaunched.pending == intent)
+        #expect(relaunched.beginRecovery(enabled: true, protectedDataAvailable: false) == nil)
+        #expect(relaunched.beginRecovery(enabled: false, protectedDataAvailable: true) == nil)
+        let retry = try #require(relaunched.beginRecovery(enabled: true, protectedDataAvailable: true))
+        #expect(relaunched.beginRecovery(enabled: true, protectedDataAvailable: true) == nil)
+        let health = EmptyTestHealthData()
+        let provider = TestSyncConfiguration()
+        let engine = try makeTestSyncEngine(health: health, provider: provider)
+        #expect(!provider.value.syncOnLaunch)
+        let interval = try #require(retry.fullResync)
+        let outcome = await engine.syncFullDays(in: interval, reason: .dailyResync)
+        #expect(outcome.wasAccepted)
+        #expect(health.fetches.first?.since == interval.start)
+        #expect(health.fetches.last?.until == interval.end)
+        #expect(health.fetches.count == 7)
+        relaunched.record(outcome, intent: retry)
+        relaunched.finishRecovery()
+        #expect(BackgroundUnlockRetry(defaults: defaults).pending == nil)
+    }
+
+    @Test func unrelatedReceiptsAndLateCompletionsCannotEraseFullResyncIntent() throws {
+        let store = BackgroundUnlockRetry(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let daily = BackgroundRetryIntent(fullResync: DateInterval(start: Date(timeIntervalSince1970: 0), duration: 604_800))
+        store.record(.locked, intent: daily)
+        store.record(.acceptedNoData, intent: BackgroundRetryIntent())
+        #expect(store.pending == daily)
+        let ordinary = BackgroundRetryIntent()
+        store.record(.locked, intent: ordinary)
+        #expect(store.pending?.fullResync == daily.fullResync)
+        store.record(.acceptedNoData, intent: daily)
+        #expect(store.pending != nil)
+        store.record(.cancelled, intent: ordinary)
+        #expect(store.pending != nil)
+        store.record(.disabled, intent: ordinary)
+        #expect(store.pending == nil)
+    }
+
+    @Test func legacyUnlockMarkerMigratesToStableRetryIdentity() throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defaults.set(true, forKey: "health-sync.background-unlock-pending")
+        let first = try #require(BackgroundUnlockRetry(defaults: defaults).pending)
+        #expect(first.fullResync == nil)
+        #expect(BackgroundUnlockRetry(defaults: defaults).pending == first)
+        #expect(!defaults.bool(forKey: "health-sync.background-unlock-pending"))
+    }
+
+    @Test func deliveryDiagnosticsRetainTransitionsWithoutNoOpSpam() async {
+        let scheduler = FakeBackgroundScheduler(), observers = FakeBackgroundObservers()
+        let diagnostics = BackgroundSyncDiagnostics(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let coordinator = BackgroundWorkCoordinator(scheduler: scheduler, observers: observers, diagnostics: diagnostics)
+        for _ in 0..<12 {
+            coordinator.apply(.init(enabled: true, interval: 900), retryDelivery: true)
+            await coordinator.waitUntilSettled()
+        }
+        #expect(diagnostics.events.filter { $0.kind == .deliveryEnabled }.count == 1)
+        observers.enableSucceeds = false
+        coordinator.apply(.init(enabled: true, interval: 900), retryDelivery: true)
+        await coordinator.waitUntilSettled()
+        #expect(diagnostics.events.last?.kind == .deliveryFailed)
+        observers.enableSucceeds = true
+        coordinator.apply(.init(enabled: true, interval: 900), retryDelivery: true)
+        await coordinator.waitUntilSettled()
+        #expect(diagnostics.events.last?.kind == .deliveryEnabled)
+        #expect(diagnostics.events.filter { $0.kind == .deliveryEnabled }.count == 2)
+    }
+
+    @Test nonisolated func observerCompletionIsConsumedOnceAcrossConcurrentQueues() {
+        let counter = ObserverCompletionCounter()
+        let completion = HealthObserverCompletion { counter.increment() }
+        DispatchQueue.concurrentPerform(iterations: 100) { _ in completion.finish() }
+        #expect(counter.count == 1)
     }
 
     private func makeCoordinator(_ scheduler: FakeBackgroundScheduler, _ observers: FakeBackgroundObservers) -> BackgroundWorkCoordinator {
@@ -322,4 +423,11 @@ final class FakeKeychainAccess: KeychainAccess {
     }
     func add(_ attributes: [CFString: Any]) -> OSStatus { additions.append(attributes); return status }
     func delete(_ query: [CFString: Any]) -> OSStatus { deletes += 1; return status }
+}
+
+private nonisolated final class ObserverCompletionCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+    func increment() { lock.lock(); value += 1; lock.unlock() }
 }

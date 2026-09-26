@@ -354,7 +354,7 @@ struct TodayInsightsResponse: Decodable, Sendable {
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         generation = try container.decode(TodayInsightsGeneration.self, forKey: .generation)
         primary = try container.decode(TodayInsight.self, forKey: .primary)
-        aiInsight = try container.decodeIfPresent(TodayAIInsight.self, forKey: .aiInsight)
+        aiInsight = try? container.decode(TodayAIInsight.self, forKey: .aiInsight)
         domains = try container.decodeIfPresent([TodayInsightDomain].self, forKey: .domains) ?? []
         evidence = try container.decodeIfPresent([TodayInsightEvidence].self, forKey: .evidence) ?? []
         changes = try container.decodeIfPresent([TodayInsightChange].self, forKey: .changes) ?? []
@@ -375,6 +375,20 @@ struct TodayInsightsGeneration: Decodable, Sendable {
         case state
         case freshForSnapshot = "fresh_for_snapshot"
         case retryAfterSeconds = "retry_after_seconds"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        narrativeMode = try? container.decode(String.self, forKey: .narrativeMode)
+        state = (try? container.decode(String.self, forKey: .state)) ?? "unknown"
+        freshForSnapshot = (try? container.decode(Bool.self, forKey: .freshForSnapshot)) ?? false
+        retryAfterSeconds = try? container.decode(Int.self, forKey: .retryAfterSeconds)
+        // A malformed slot list must not fall back to aggregate approval.
+        if container.contains(.slots), (try? container.decodeNil(forKey: .slots)) != true {
+            slots = (try? container.decode([TodayInsightSlot].self, forKey: .slots)) ?? []
+        } else {
+            slots = nil
+        }
     }
 }
 
@@ -416,6 +430,19 @@ struct TodayInsightDomain: Decodable, Sendable, Identifiable {
         case key, band, confidence, summary, insight, destination
         case dataState = "data_state"
         case asOf = "as_of"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        band = try container.decode(String.self, forKey: .band)
+        dataState = try container.decode(String.self, forKey: .dataState)
+        confidence = try container.decodeIfPresent(String.self, forKey: .confidence)
+        asOf = try container.decodeIfPresent(String.self, forKey: .asOf)
+        summary = try container.decode(String.self, forKey: .summary)
+        insight = try container.decode(TodayInsight.self, forKey: .insight)
+        aiInsight = try? container.decode(TodayAIInsight.self, forKey: .aiInsight)
+        destination = try container.decode(TodayInsightDestination.self, forKey: .destination)
     }
 }
 
@@ -695,6 +722,14 @@ struct TodayInsightSlot: Decodable, Sendable {
         case freshForSnapshot = "fresh_for_snapshot"
         case retryAfterSeconds = "retry_after_seconds"
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = (try? container.decode(String.self, forKey: .key)) ?? ""
+        state = (try? container.decode(String.self, forKey: .state)) ?? "unknown"
+        freshForSnapshot = (try? container.decode(Bool.self, forKey: .freshForSnapshot)) ?? false
+        retryAfterSeconds = try? container.decode(Int.self, forKey: .retryAfterSeconds)
+    }
 }
 
 extension TodayInsightsResponse {
@@ -702,8 +737,9 @@ extension TodayInsightsResponse {
 
     func visibleAI(for key: String) -> TodayAIInsight? {
         if generation.narrativeMode == "disabled" { return nil }
-        if let slot = generation.slots?.first(where: { $0.key == key }) {
-            guard slot.state == "ready", slot.freshForSnapshot else { return nil }
+        if let slots = generation.slots {
+            guard let slot = slots.first(where: { $0.key == key }),
+                  slot.state == "ready", slot.freshForSnapshot else { return nil }
         } else {
             guard generation.state == "ready", generation.freshForSnapshot else { return nil }
         }
@@ -711,7 +747,8 @@ extension TodayInsightsResponse {
     }
 
     func state(for key: String) -> String {
-        generation.slots?.first(where: { $0.key == key })?.state ?? generation.state
+        if let slots = generation.slots { return slots.first(where: { $0.key == key })?.state ?? "unknown" }
+        return generation.state
     }
 }
 

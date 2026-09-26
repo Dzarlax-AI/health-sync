@@ -79,6 +79,7 @@ final class BackgroundWorkCoordinator {
     private var revision = 0
     private var reconciliation: Task<Void, Never>?
     private var appliedDelivery: Bool?
+    private var confirmedDelivery: Bool?
     private var retryDelivery = false
     private var replaceRegular = false
 
@@ -113,7 +114,13 @@ final class BackgroundWorkCoordinator {
             if appliedDelivery != settings.enabled || retry {
                 let success = settings.enabled ? await observers.enableDelivery() : await observers.disableDelivery()
                 appliedDelivery = settings.enabled
-                diagnostics.record(success ? (settings.enabled ? .deliveryEnabled : .disabled) : .deliveryFailed)
+                if !success {
+                    confirmedDelivery = nil
+                    diagnostics.record(.deliveryFailed)
+                } else if confirmedDelivery != settings.enabled {
+                    confirmedDelivery = settings.enabled
+                    diagnostics.record(settings.enabled ? .deliveryEnabled : .disabled)
+                }
             }
             // Finish an in-flight enable/disable before applying a newer state.
             if capturedRevision != revision { continue }

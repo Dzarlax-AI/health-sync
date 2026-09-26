@@ -192,6 +192,59 @@ struct InsightParityTests {
         #expect(controller.historyFailed)
     }
 
+    @Test func malformedOptionalAIPreservesFactsAndFailsClosed() throws {
+        let fact: [String: Any] = ["state": "context", "title": "Facts", "observation": "Available",
+                                  "meaning": "", "evidence_ids": [], "fallback": false]
+        for badAI: Any in [["stance": "qualify"], ["text": "Unvalidated"], "invalid"] {
+            let payload: [String: Any] = ["date": "2026-09-26", "decision_id": "test", "snapshot_version": "test",
+                "generation": ["state": "ready", "fresh_for_snapshot": true], "primary": fact, "ai_insight": badAI,
+                "domains": [["key": "sleep", "band": "fair", "data_state": "partial", "summary": "Sleep",
+                             "insight": fact, "ai_insight": badAI, "destination": ["kind": "sleep", "id": "sleep"]]]]
+            let value = try JSONDecoder().decode(TodayInsightsResponse.self, from: JSONSerialization.data(withJSONObject: payload))
+            #expect(value.primary.observation == "Available")
+            #expect(value.domain("sleep")?.insight.observation == "Available")
+            #expect(value.visibleAI(for: "overall") == nil)
+            #expect(value.visibleAI(for: "sleep") == nil)
+        }
+    }
+
+    @Test func malformedSlotsDoNotAuthorizeAIThroughAggregateFallback() throws {
+        let fact: [String: Any] = ["state": "context", "title": "Facts", "observation": "Available",
+                                  "meaning": "", "evidence_ids": [], "fallback": false]
+        for slots: Any in [[["key": "overall", "state": "ready"]], "invalid", [["state": "ready"]]] {
+            let payload: [String: Any] = ["date": "2026-09-26", "decision_id": "test", "snapshot_version": "test",
+                "generation": ["state": "ready", "fresh_for_snapshot": true, "slots": slots],
+                "primary": fact, "ai_insight": ["text": "Opinion", "stance": "qualify"]]
+            let value = try JSONDecoder().decode(TodayInsightsResponse.self, from: JSONSerialization.data(withJSONObject: payload))
+            #expect(value.primary.observation == "Available")
+            #expect(value.visibleAI(for: "overall") == nil)
+        }
+    }
+
+    @Test func energyLifecycleLoadsOnceAndReloadsOnDayAccountOrLanguageChange() async throws {
+        var identity = "day-one"
+        var waits = 0
+        var briefingLoads = 0
+        var historyLoads = 0
+        let controller = EnergyDataController(loadBriefing: {
+            briefingLoads += 1
+            return try InsightFixtures.briefing()
+        }, loadHistory: {
+            historyLoads += 1
+            return try InsightFixtures.energyHistory()
+        }, context: { identity }, sleep: {
+            waits += 1
+            if waits == 2 { identity = "day-two" }
+            if waits == 4 { identity = "other-account" }
+            if waits == 6 { identity = "other-language" }
+            if waits == 8 { throw CancellationError() }
+        })
+        await controller.run()
+        #expect(briefingLoads == 4)
+        #expect(historyLoads == 4)
+        #expect(controller.briefing?.energyBank != nil)
+    }
+
     private func response(state: String, retry: Int = 0, fresh: Bool = true) throws -> TodayInsightsResponse {
         let object: [String: Any] = ["date": "2026-09-26", "decision_id": "test", "snapshot_version": "test",
             "generation": ["state": state, "fresh_for_snapshot": fresh, "retry_after_seconds": retry],

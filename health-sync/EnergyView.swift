@@ -9,16 +9,30 @@ final class EnergyDataController {
     private(set) var historyFailed = false
     private(set) var briefingFailed = false
     private var generation = UUID()
+    private var lastAttemptContext: String?
+    private let sleep: @MainActor () async throws -> Void
     private let loadBriefing: @MainActor () async throws -> BriefingResponse
     private let loadHistory: @MainActor () async throws -> EnergyHistoryResponse
     private let context: @MainActor () throws -> String
 
     init(loadBriefing: @escaping @MainActor () async throws -> BriefingResponse = { try await ServerClient.shared.healthBriefing() },
          loadHistory: @escaping @MainActor () async throws -> EnergyHistoryResponse = { try await ServerClient.shared.energyHistory() },
-         context: @escaping @MainActor () throws -> String = { try ServerClient.shared.dashboardContext() }) {
+         context: @escaping @MainActor () throws -> String = { try ServerClient.shared.dashboardContext() },
+         sleep: @escaping @MainActor () async throws -> Void = { try await Task.sleep(for: .seconds(60)) }) {
         self.loadBriefing = loadBriefing
         self.loadHistory = loadHistory
         self.context = context
+        self.sleep = sleep
+    }
+
+    /// Observe day/account/language changes without coupling loads to AI arrival.
+    func run() async {
+        await refresh()
+        while !Task.isCancelled {
+            do { try await sleep() } catch { return }
+            guard !Task.isCancelled else { return }
+            if (try? context()) != lastAttemptContext { await refresh() }
+        }
     }
 
     func refresh() async {
@@ -30,6 +44,7 @@ final class EnergyDataController {
         briefingFailed = false
         historyFailed = false
         let identity = try? context()
+        lastAttemptContext = identity
         async let a: Void = refreshBriefing(id: id, identity: identity)
         async let b: Void = refreshHistory(id: id, identity: identity)
         _ = await (a, b)
@@ -134,8 +149,12 @@ struct EnergyView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .insightLifecycle(insights)
-        .task(id: "\(scenePhase)-\(insights.response?.date ?? "")") {
-            if scenePhase == .active { await refreshData() }
+        .task(id: scenePhase) {
+            if scenePhase == .active {
+                await ServerClient.shared.refreshServerLang()
+                guard !Task.isCancelled else { return }
+                await data.run()
+            }
         }
         .refreshable {
             async let values: Void = refreshData()

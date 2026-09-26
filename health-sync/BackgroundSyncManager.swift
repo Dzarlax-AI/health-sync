@@ -8,19 +8,20 @@ private final class HealthBackgroundObservers: HealthBackgroundObserving {
     private let store = HKHealthStore()
     private var queries: [HKObserverQuery] = []
     private var enabledTypes: Set<String> = []
-    private let onUpdate: (@escaping () -> Void, Bool) -> Void
+    private let onUpdate: @MainActor @Sendable (HealthObserverCompletion, Bool) -> Void
     private let types: [HKSampleType] = [HKQuantityType(.stepCount), HKQuantityType(.heartRate),
                                          HKQuantityType(.activeEnergyBurned), HKCategoryType(.sleepAnalysis)]
 
-    init(onUpdate: @escaping (@escaping () -> Void, Bool) -> Void) { self.onUpdate = onUpdate }
+    init(onUpdate: @escaping @MainActor @Sendable (HealthObserverCompletion, Bool) -> Void) { self.onUpdate = onUpdate }
 
     func startObservers() {
         guard queries.isEmpty else { return }
         let onUpdate = self.onUpdate
         for type in types {
-            let query = HKObserverQuery(sampleType: type, predicate: nil) { _, completion, error in
+            let query = HKObserverQuery(sampleType: type, predicate: nil) { @Sendable _, completion, error in
                 let failed = error != nil
-                Task { @MainActor in onUpdate(completion, failed) }
+                let acknowledgement = HealthObserverCompletion(completion)
+                Task { @MainActor in onUpdate(acknowledgement, failed) }
             }
             queries.append(query)
             store.execute(query)
@@ -92,13 +93,13 @@ final class BackgroundSyncManager {
     static let dailyResyncDaysBack = 7
 
     private lazy var observers = HealthBackgroundObservers { [weak self] completion, failed in
-        guard let self else { completion(); return }
-        self.handleObserver(completion: completion, failed: failed)
+        guard let self else { completion.finish(); return }
+        self.handleObserver(completion: { completion.finish() }, failed: failed)
     }
     private lazy var coordinator = BackgroundWorkCoordinator(scheduler: SystemBackgroundScheduler(),
                                                              observers: observers, diagnostics: .shared)
     private var settings: BackgroundSettings { UserDefaultsSyncConfiguration.shared.backgroundSettings }
-    private let unlockRetryKey = "health-sync.background-unlock-pending"
+    private let unlockRetry = BackgroundUnlockRetry()
     private init() {}
 
     func registerBGTask() {
@@ -116,31 +117,37 @@ final class BackgroundSyncManager {
 
     func applyConfiguration(retryDelivery: Bool = false) {
         guard !SyncRuntime.isTestMode else { return }
+        if !settings.enabled { unlockRetry.record(.disabled, intent: BackgroundRetryIntent()) }
         coordinator.apply(settings, retryDelivery: retryDelivery)
     }
 
     /// Called at launch, activation, and protected-data availability. Unlock
     /// notifications do not themselves guarantee that iOS launches this app.
-    func recoverAfterUnlock(retryPending: Bool = false) {
+    func recoverAfterUnlock(retryPending: Bool = true) {
         guard !SyncRuntime.isTestMode else { return }
         if UIApplication.shared.isProtectedDataAvailable {
             do { try KeychainStore.shared.migrateAccessibility() }
             catch { BackgroundSyncDiagnostics.shared.record(.keyMigrationFailed) }
         }
         applyConfiguration(retryDelivery: true)
-        if retryPending && settings.enabled && UserDefaults.standard.bool(forKey: unlockRetryKey) {
+        if retryPending, let intent = unlockRetry.beginRecovery(enabled: settings.enabled,
+                protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable) {
             BackgroundSyncDiagnostics.shared.record(.unlock)
-            handleObserver(completion: {}, failed: false, recordTrigger: false)
+            handleObserver(completion: { self.unlockRetry.finishRecovery() }, failed: false,
+                           recordTrigger: false, intent: intent)
         }
     }
 
-    private func recordOutcome(_ outcome: SyncOutcome) {
+    private func recordOutcome(_ outcome: SyncOutcome, intent: BackgroundRetryIntent) {
         BackgroundSyncDiagnostics.shared.recordOutcome(outcome)
-        if outcome.needsUnlockRetry {
-            UserDefaults.standard.set(true, forKey: unlockRetryKey)
-        } else if outcome.wasAccepted || outcome == .disabled {
-            UserDefaults.standard.removeObject(forKey: unlockRetryKey)
+        unlockRetry.record(outcome, intent: intent)
+    }
+
+    private func execute(_ intent: BackgroundRetryIntent, reason: SyncReason, owner: UUID) async -> SyncOutcome {
+        if let interval = intent.fullResync {
+            return await SyncEngine.shared.syncFullDays(in: interval, reason: .dailyResync, owner: owner)
         }
+        return await SyncEngine.shared.syncNow(reason: reason, owner: owner)
     }
 
     private func handleBGTask(_ task: BGTask, daily: Bool) {
@@ -149,13 +156,11 @@ final class BackgroundSyncManager {
         guard settings.enabled else { completion.finish(false); return }
         BackgroundSyncDiagnostics.shared.record(daily ? .dailyResync : .backgroundTask)
         let owner = UUID()
+        let intent = daily ? BackgroundRetryIntent.daily(now: Date(), daysBack: Self.dailyResyncDaysBack) : BackgroundRetryIntent()
         let run = BackgroundSyncRun(operation: {
-            if daily {
-                return await SyncEngine.shared.syncFullDays(daysBack: Self.dailyResyncDaysBack, reason: .dailyResync, owner: owner)
-            }
-            return await SyncEngine.shared.syncNow(reason: .backgroundTask, owner: owner)
+            await self.execute(intent, reason: .backgroundTask, owner: owner)
         }, cancel: { SyncEngine.shared.cancelCurrentSync(owner: owner) }, completion: { outcome in
-            Self.shared.recordOutcome(outcome)
+            Self.shared.recordOutcome(outcome, intent: intent)
             completion.finish(outcome.wasAccepted)
         })
         task.expirationHandler = {
@@ -167,7 +172,8 @@ final class BackgroundSyncManager {
         run.start()
     }
 
-    private func handleObserver(completion: @escaping () -> Void, failed: Bool, recordTrigger: Bool = true) {
+    private func handleObserver(completion: @escaping () -> Void, failed: Bool, recordTrigger: Bool = true,
+                                intent: BackgroundRetryIntent = BackgroundRetryIntent()) {
         let acknowledgement = BackgroundCompletion { _ in completion() }
         if failed {
             BackgroundSyncDiagnostics.shared.record(.observerFailed)
@@ -179,9 +185,9 @@ final class BackgroundSyncManager {
         let owner = UUID()
         var assertion: UIBackgroundTaskIdentifier = .invalid
         let run = BackgroundSyncRun(operation: {
-            await SyncEngine.shared.syncNow(reason: .observer, owner: owner)
+            await self.execute(intent, reason: .observer, owner: owner)
         }, cancel: { SyncEngine.shared.cancelCurrentSync(owner: owner) }, completion: { outcome in
-            Self.shared.recordOutcome(outcome)
+            Self.shared.recordOutcome(outcome, intent: intent)
             // Acknowledge before giving back the remaining background time.
             acknowledgement.finish(outcome.wasAccepted)
             if assertion != .invalid {

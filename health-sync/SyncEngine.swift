@@ -183,16 +183,23 @@ final class SyncEngine {
     func retryNow() async -> SyncOutcome { await syncNow(reason: .manual) }
 
     func syncFullDays(daysBack: Int = 2, reason: SyncReason = .manual, owner: UUID? = nil) async -> SyncOutcome {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: clock())
+        let start = calendar.date(byAdding: .day, value: -(max(1, daysBack) - 1), to: today) ?? today
+        let end = calendar.date(byAdding: .day, value: 1, to: today) ?? clock()
+        return await syncFullDays(in: DateInterval(start: start, end: end), reason: reason, owner: owner)
+    }
+
+    /// Replays the original calendar interval even after a delayed unlock.
+    func syncFullDays(in interval: DateInterval, reason: SyncReason, owner: UUID? = nil) async -> SyncOutcome {
         guard !Task.isCancelled else { return .cancelled }
         guard let config = try? configuration.snapshot() else { return configurationFailure() }
         do {
             var loaded = try loadState(config)
-            let calendar = Calendar.current
-            let today = calendar.startOfDay(for: clock())
-            let start = calendar.date(byAdding: .day, value: -(max(1, daysBack) - 1), to: today) ?? today
+            let start = interval.start
             loaded.metrics.pendingSince = earlier(loaded.metrics.pendingSince, start)
             loaded.fullResyncStart = earlier(loaded.fullResyncStart, start)
-            loaded.fullResyncEnd = calendar.date(byAdding: .day, value: 1, to: today) ?? clock()
+            loaded.fullResyncEnd = max(loaded.fullResyncEnd ?? interval.end, interval.end)
             loaded.fullResyncRevision = (loaded.fullResyncRevision ?? 0) + 1
             if config.workoutsEnabled { loaded.workouts.pendingSince = earlier(loaded.workouts.pendingSince, start) }
             try stateStore.save(loaded); state = loaded
@@ -233,6 +240,7 @@ final class SyncEngine {
             current.followUpMetricsSince = nil; current.followUpWorkoutsSince = nil
             guard save(current, config) else { return stateFailureOutcome() }
             result = await runOne(config: config, cutoff: cutoff, reason: reason)
+            guard isCurrent(config) else { return configurationFailure() }
             if Task.isCancelled { return await cancelled(config) }
             guard let after = state, after.fingerprint == config.fingerprint else { return configurationFailure() }
             if after.requestedGeneration <= generation {
