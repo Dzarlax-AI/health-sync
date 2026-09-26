@@ -191,11 +191,11 @@ final class ServerClient {
     /// localised metric/section names). Source of truth is the user's
     /// `report_lang` on the server — fetched once and cached. UI chrome
     /// follows iOS locale separately via String Catalog.
-    private func serverLang() async -> String {
+    private func serverLang(force: Bool = false) async -> String {
+        guard !SyncRuntime.isTestMode else { return "en" }
         guard let requestConfiguration = try? config() else { return "en" }
         let fingerprint = requestConfiguration.fingerprint
-        if let cachedLang, cachedLangFingerprint == fingerprint { return cachedLang }
-        cachedLang = nil
+        if !force, let cachedLang, cachedLangFingerprint == fingerprint { return cachedLang }
         do {
             let settings = try await get(UserSettings.self, path: "/api/settings")
             guard let currentConfiguration = try? config(),
@@ -214,14 +214,27 @@ final class ServerClient {
     /// Force-refresh the cached server language. Call after the user changes
     /// it on the server (web).
     func refreshServerLang() async {
-        cachedLang = nil
-        cachedLangFingerprint = nil
-        _ = await serverLang()
+        _ = await serverLang(force: true)
+    }
+
+    /// Account identity stays local and is never logged or displayed.
+    func dashboardContext() throws -> String {
+        if InsightFixtures.enabled { return "fixture" }
+        guard !SyncRuntime.isTestMode else { throw ServerError.missingConfig }
+        return try config().fingerprint + "|" + (cachedLang ?? "") + "|" + Date.now.formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month().day())
+    }
+
+    func energyHistory(days: Int = 14) async throws -> EnergyHistoryResponse {
+        if InsightFixtures.enabled { return try InsightFixtures.energyHistory() }
+        return try await get(EnergyHistoryResponse.self, path: "/api/energy-history",
+                             query: [URLQueryItem(name: "granularity", value: "day"),
+                                     URLQueryItem(name: "days", value: String(days))])
     }
 
     // MARK: Endpoints
 
     func healthBriefing() async throws -> BriefingResponse {
+        if InsightFixtures.enabled { return try InsightFixtures.briefing() }
         let lang = await serverLang()
         return try await get(BriefingResponse.self,
                              path: "/api/health-briefing",
@@ -243,6 +256,7 @@ final class ServerClient {
     /// independent from legacy AI blocks, so factual content remains available
     /// when narrative generation is cold, disabled, or unavailable.
     func todayInsights() async throws -> TodayInsightsResponse {
+        if InsightFixtures.enabled { return try InsightFixtures.snapshot() }
         let lang = await serverLang()
         return try await get(TodayInsightsResponse.self,
                              path: "/api/today-insights",
@@ -250,6 +264,11 @@ final class ServerClient {
     }
 
     func readinessHistory(days: Int = 30) async throws -> [ReadinessPoint] {
+        if InsightFixtures.enabled {
+            return InsightFixtures.sleepNights(days: days).enumerated().map {
+                ReadinessPoint(date: $0.element.date, score: 55 + $0.offset % 35)
+            }
+        }
         struct Wrap: Decodable { let points: [ReadinessPoint] }
         let w = try await get(Wrap.self,
                               path: "/api/readiness-history",
@@ -277,6 +296,7 @@ final class ServerClient {
                     to: String? = nil,
                     bucket: String? = nil,
                     bySource: Bool = false) async throws -> MetricDataResponse {
+        if InsightFixtures.enabled { return InsightFixtures.metricData(name: name, from: from) }
         var q: [URLQueryItem] = [URLQueryItem(name: "metric", value: name)]
         if let from { q.append(URLQueryItem(name: "from", value: from)) }
         if let to { q.append(URLQueryItem(name: "to", value: to)) }
@@ -299,6 +319,30 @@ final class ServerClient {
     /// cardio): summary + KPI details + curated chart list + "How it works"
     /// explainer cards. Mirrors the web's section page.
     func section(_ key: String) async throws -> SectionResponse {
+        if InsightFixtures.enabled {
+            if key == "activity" || key == "cardio" {
+                let activity = key == "activity"
+                return SectionResponse(key: key, title: activity ? String(localized: "Activity") : String(localized: "Cardio"), summary: "", details: [
+                    SectionDetail(label: activity ? "Steps" : "VO₂ max", value: activity ? "6,200" : "38.2", trend: "stable", note: nil),
+                    SectionDetail(label: activity ? "Active calories" : "Blood oxygen", value: activity ? "360 kcal" : "98%", trend: "stable", note: nil),
+                    SectionDetail(label: activity ? "Exercise" : "Respiratory rate", value: activity ? "24 min" : "16/min", trend: "stable", note: nil)
+                ], charts: [SectionChart(metric: activity ? "step_count" : "vo2_max", agg: nil,
+                                         label: activity ? "Daily steps" : "VO₂ max", unit: "", color: nil,
+                                         type: activity ? "bar" : "line", stacked: false, virtual: false)], explains: [])
+            }
+            if ProcessInfo.processInfo.arguments.contains("--charts-fixture") {
+                return SectionResponse(key: key, title: String(localized: "Recovery"), summary: "", details: [], charts: [
+                    SectionChart(metric: nil, agg: nil, label: "Sleep stages", unit: "h", color: nil, type: "bar", stacked: true, virtual: false),
+                    SectionChart(metric: "step_count", agg: nil, label: "Daily steps", unit: "", color: nil, type: "bar", stacked: false, virtual: false)
+                ], explains: [])
+            }
+            return SectionResponse(key: key, title: String(localized: "Recovery"), summary: "", details: [
+                SectionDetail(label: "HRV", value: "48 ms", trend: "stable", note: nil),
+                SectionDetail(label: "Resting heart rate", value: "56 bpm", trend: "stable", note: nil)
+            ], charts: [
+                SectionChart(metric: nil, agg: nil, label: "Recovery history", unit: "%", color: nil, type: "line", stacked: false, virtual: true)
+            ], explains: [])
+        }
         let lang = await serverLang()
         return try await get(SectionResponse.self,
                              path: "/api/section/\(key)",
@@ -310,6 +354,13 @@ final class ServerClient {
     /// navigation rows dynamically instead of hardcoding the list and
     /// its labels. `health_dashboard` PR #90.
     func sections() async throws -> SectionsCatalogueResponse {
+        if InsightFixtures.enabled {
+            return SectionsCatalogueResponse(sections: [
+                SectionCatalogueEntry(key: "recovery", title: "Recovery", subtitle: "Synthetic charts", icon: "leaf"),
+                SectionCatalogueEntry(key: "activity", title: "Activity", subtitle: "Synthetic charts", icon: "figure.walk"),
+                SectionCatalogueEntry(key: "cardio", title: "Cardio", subtitle: "Synthetic charts", icon: "heart")
+            ])
+        }
         let lang = await serverLang()
         return try await get(SectionsCatalogueResponse.self,
                              path: "/api/sections",

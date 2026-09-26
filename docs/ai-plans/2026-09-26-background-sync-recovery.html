@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Health Sync — восстановление фоновой синхронизации</title>
+<style>
+body{margin:0;background:#f4f6f8;color:#202936;font:16px/1.6 system-ui,-apple-system,sans-serif}main{max-width:1000px;margin:auto;padding:32px 22px 70px}section{background:white;border:1px solid #dce2e8;border-radius:10px;padding:22px;margin:18px 0}h1,h2,h3{line-height:1.25}h1{font-size:32px}h2{font-size:23px}h3{font-size:18px}code{background:#edf1f5;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}a{color:#1855a0}li{margin:7px 0}table{border-collapse:collapse;width:100%}td,th{padding:10px;border-bottom:1px solid #dce2e8;text-align:left;vertical-align:top}th{background:#f4f6f8}.note{border-left:4px solid #346db2}.approval{border-left:4px solid #bd7908}.muted{color:#566376}pre{overflow:auto;background:#edf1f5;padding:14px;font-size:13px}p:last-child{margin-bottom:0}
+</style>
+</head>
+<body><main>
+<h1>Восстановление фоновой синхронизации</h1>
+<p class="muted">26 сентября 2026 · health-sync · codex/background-sync-recovery · исходная ревизия 5f89724 · реализация согласована</p>
+<section class="note"><h2>1. Вывод и цель</h2>
+<p>В коде найдены причины, по которым приложение может перестать отправлять данные в фоне и восстановиться после открытия. Пользователь подтвердил: после открытия отправка работает, приложение свайпом не закрывается. Приоритет — восстановить существующий механизм HealthKit + BackgroundTasks и сделать его состояние проверяемым.</p>
+<p><strong>Это анализ исходников, истории Git и документации Apple.</strong> Логи с телефона, версия установленной сборки и фактические атрибуты её Keychain пока не проверены. Найденные дефекты подтверждены кодом; конкретная цепочка сбоя на устройстве остаётся гипотезой. На момент исходного анализа код ещё не менялся. Реализация и результаты последующих проверок приведены в разделе 10.</p>
+</section>
+<section><h2>2. Что происходит сейчас</h2>
+<p><code>AppDelegate</code> синхронно регистрирует observers на шаги, пульс, активную энергию и сон. Каждый callback вызывает общий <code>SyncEngine</code>. Есть два <code>BGProcessingTask</code>: обычная синхронизация и пересканирование семи дней после 03:00. Entitlements HealthKit/background-delivery и разрешённые task identifiers присутствуют.</p>
+<p>Движок перечитывает диапазоны дат, сохраняет границы незавершённой работы и принимает успешность только после проверки ответа сервера. Транспорт использует обычную <code>URLSession</code> с timeout 120 секунд. Отдельной очереди сериализованных payload и системной background URLSession нет. Время жизни загрузки зависит от доступного приложению фонового времени.</p>
+<table><thead><tr><th>Приоритет</th><th>Наблюдение</th><th>Последствие</th></tr></thead><tbody>
+<tr><td>P1</td><td><code>SettingsView.swift:729–750</code>: Keychain сохраняется без <code>kSecAttrAccessible</code>, результат чтения игнорируется. <code>SyncConfiguration.swift:14–18</code> превращает недоступность ключа в отсутствие конфигурации.</td><td>У созданного таким способом ключа стандартный доступ WhenUnlocked. При блокировке фоновый запуск может остаться без ключа. Не проверено, какие атрибуты у записи на конкретном телефоне.</td></tr>
+<tr><td>P1</td><td><code>AppDelegate.swift:23</code> и <code>BackgroundSyncManager.swift:146</code> требуют полного snapshot с ключом для observers. <code>scheduleNextSync</code>, <code>scheduleDailyResync</code>, <code>applyConfiguration</code> при ошибке snapshot вызывают <code>cancelScheduledWork</code>.</td><td>Временная недоступность credentials может помешать регистрации observers либо отменить оба задания и вызвать <code>disableAllBackgroundDelivery</code>. Эти проверки добавлены в <code>06b8cd5</code> от 11 сентября; это кандидат на регрессию, а не доказанная дата сбоя на устройстве.</td></tr>
+<tr><td>P2</td><td><code>SyncEngine.refreshConfiguration → applyConfiguration → scheduleDailyResync</code>: повторная отправка заявки на следующие 03:00. Обычная заявка аналогично получает новое <code>now + interval</code>.</td><td>Повторная заявка заменяет старую. Например, невыполненные сегодняшние 03:00 при вызове в 08:00 заменяются завтрашними. Возможно откладывание фоновой работы при частых обновлениях конфигурации.</td></tr>
+<tr><td>P2</td><td>Ошибки submit скрыты через <code>try?</code>; enableBackgroundDelivery только печатает ошибку. <code>observersRegistered</code> устанавливается до результатов enable.</td><td>Регистрация query не доказывает успешное включение delivery; нет явного повторного включения неуспешных типов до пересоздания observers и понятной диагностики в интерфейсе.</td></tr>
+</tbody></table>
+<p>Ветка expiration уже отменяет принадлежащую ей синхронизацию. Нельзя объявлять отсутствие отмены причиной сбоя. Однако observer completion сейчас зависит от возврата асинхронного ожидания; его своевременный однократный вызов при expiration нужно закрепить тестом и явным управлением завершением.</p>
+</section>
+<section><h2>3. Предлагаемый первый этап</h2><ol>
+<li><strong>Исправить хранение и чтение credentials.</strong> Выделить Keychain-адаптер, различать отсутствующий ключ, временно недоступный ключ и прочие OSStatus. Для новых записей использовать <code>AfterFirstUnlockThisDeviceOnly</code>. При разблокированном приложении обновить accessibility существующей записи без удаления и без изменения значения. Проверять результат миграции; не считать её успешной при ошибке.</li>
+<li><strong>Отделить настройки планирования от секретов.</strong> Для синхронной регистрации observers достаточно настройки backgroundSync и несекретных параметров. Ошибка чтения credentials должна откладывать работу, сохранять pending/checkpoints и диагностироваться, а не выключать background delivery. Полную конфигурацию проверять перед отправкой. Явное выключение пользователем продолжает отменять фоновые задания и subscriptions.</li>
+<li><strong>Сделать планирование идемпотентным.</strong> Через адаптер BGTaskScheduler проверить pending requests, сохранять уже назначенную более раннюю заявку, включая просроченные 03:00. Новую создавать при отсутствии заявки, после фактического запуска либо при осмысленном изменении настройки. Сериализовать операции, чтобы callback проверки не воскресил задания после выключения. Обрабатывать ошибки submit/register.</li>
+<li><strong>Восстанавливать фоновый цикл.</strong> При доступности protected data и при активации повторять отложенную настройку/миграцию и допустимую незавершённую работу. Состояние регистрации observers отделить от успешности enable delivery по каждому типу. Повторять только неуспешные enable на подходящем lifecycle-событии, без непрерывного retry loop. Сериализовать off→on, чтобы поздний callback disable не выключил новое включение.</li>
+<li><strong>Закрепить завершение фоновых обработчиков.</strong> Единый однократный completion для success/error/expiration; отмена только владельцем соответствующей работы. Сохранить незавершённые диапазоны, не продвигать checkpoints на locked/cancelled/неподтверждённом upload. Не возвращать ранний completion до сохранения необходимого состояния.</li>
+<li><strong>Добавить компактную диагностику в Settings.</strong> Последний фоновый триггер, причина и итог попытки, подтверждённая отправка, состояние scheduler/delivery, временная недоступность данных или credentials, системный background refresh и Low Power Mode. Хранить ограниченный локальный набор событий без API key, payload, значений метрик и URL. Новые UI-строки — en/ru/sr, цвета — через <code>Color.ds*</code>.</li>
+</ol>
+<p>Критерий результата: временная блокировка не отключает механизм; заявка не отодвигается при каждом refresh; успешная фоновая доставка подтверждается сервером на реальном устройстве. Фиксированное расписание каждые 15 минут не обещается.</p>
+</section>
+<section><h2>4. Виджет и границы изменений</h2>
+<p><strong>Виджет полезен как второй этап:</strong> «последняя подтверждённая отправка», «данные ожидают отправки», переход в приложение для синхронизации. WidgetKit имеет отдельный бюджет обновлений и не держит основное приложение запущенным. Он не устраняет ошибку credentials и ограничения доступа к HealthKit.</p>
+<p>Первый этап не добавляет Widget Extension, App Group, push-инфраструктуру, HealthKit anchors или background URLSession. Надёжная передача уже собранного payload через системную URLSession потребует отдельного проекта: защищённые файлы очереди, account isolation, обработка relaunch и ACK, очистка и дедупликация. Возвращаться к этому стоит, если диагностика после исправлений подтвердит срыв сетевой передачи при suspension.</p>
+<p>Серверный API, формат payload, правила sleep coverage и обработка на сервере сохраняются. Меняются клиентское хранение credentials, фоновой lifecycle и небольшой блок диагностики.</p>
+</section>
+<section><h2>5. Предполагаемые файлы</h2>
+<table><thead><tr><th>Файлы</th><th>Причина</th></tr></thead><tbody>
+<tr><td><code>KeychainStore.swift</code> (новый), <code>SettingsView.swift</code></td><td>Выделение существующего KeychainStore, ошибки чтения/записи, миграция, UI диагностики.</td></tr>
+<tr><td><code>SyncConfiguration.swift</code>, <code>SyncContracts.swift</code></td><td>Несекретные настройки планирования и различение временной недоступности.</td></tr>
+<tr><td><code>BackgroundSyncManager.swift</code>, <code>AppDelegate.swift</code></td><td>Observers, pending requests, recovery, completion и lifecycle.</td></tr>
+<tr><td><code>SyncEngine.swift</code></td><td>Корректный исход при временной недоступности, ограниченная диагностика причины/результата, сохранение account guards.</td></tr>
+<tr><td><code>BackgroundSyncDiagnostics.swift</code> (новый), <code>Localizable.xcstrings</code></td><td>Безопасная локальная диагностика и локализация.</td></tr>
+<tr><td><code>health-syncTests/…</code>, <code>SPEC.md</code>, этот план</td><td>Регрессии, документирование фактического поведения и результатов проверки.</td></tr>
+</tbody></table>
+</section>
+<section><h2>6. Проверки</h2>
+<p>Сначала тесты, воспроизводящие ошибочные решения на injected Keychain/scheduler/clock/HealthKit dependencies; реальные credentials и сервер в автоматических тестах не использовать. До запуска проверить test mode и отключение уведомлений для тестовой сборки.</p>
+<ul>
+<li>Locked Keychain на cold launch: observers регистрируются; задания/delivery не отменяются; запрос без ключа не отправляется.</li>
+<li>Миграция сохраняет значение и account fingerprint; error/notFound/locked различаются; неуспешная миграция повторяется после unlock, не уничтожая запись.</li>
+<li>Повторные refresh не отодвигают ранний запрос; просроченные 03:00 сохраняются; после выполнения назначается следующий день. Проверить смену часового пояса/DST и изменение интервала.</li>
+<li>Неуспешное enable delivery повторяется без дублирования queries; быстрые off→on и поздние callback не приводят к неверному конечному состоянию.</li>
+<li>Success/error/expiration/cancellation дают ровно один observer completion и BGTask completion; expiration одного waiter не отменяет работу другого владельца.</li>
+<li>Locked HealthKit, медленная сеть и expiration не продвигают checkpoints. Account switch, частичный ACK, retry и sleep coverage проходят существующие регрессионные тесты.</li>
+<li>Диагностика не содержит секретов/health payload; видна в light/dark и крупном Dynamic Type.</li>
+</ul>
+<pre>xcodebuild -scheme health-sync -showdestinations
+# Select an available iOS Simulator compatible with the test target.
+xcodebuild -scheme health-sync -destination 'platform=iOS Simulator,id=&lt;SIMULATOR_ID&gt;' \
+  -derivedDataPath /tmp/health-sync-background-review \
+  -parallel-testing-enabled NO test
+git diff --check</pre>
+<p><strong>Физический iPhone обязателен:</strong> сначала отдельная тестовая конфигурация/сборка, уведомления выключены. Затем согласованная проверка обычного пользовательского сценария: запуск, уход в фон без force quit, блокировка, поступление samples с Watch, разблокировка без открытия приложения, последующее сравнение журнала с серверным приёмом. Проверить также временное отсутствие сети, рестарт с первым unlock и сутки естественных запусков без debugger. Непосредственно во время блокировки новых HealthKit-чтений может не быть — это ограничение iOS.</p>
+<p>Симулятор проверяет решения state machine и UI, но не подтверждает HealthKit background delivery. Наличие HTTP ACK подтверждает приём; актуальность пользовательского dashboard проверяется отдельно. Установка на телефон и реальные uploads не выполнены этим анализом.</p>
+</section>
+<section><h2>7. Риски, допущения и откат</h2><ul>
+<li><code>AfterFirstUnlockThisDeviceOnly</code> делает ключ доступным приложению после первой разблокировки до перезагрузки, включая последующие блокировки. Он не переносится на другой телефон при восстановлении backup; там потребуется повторный ввод. Это осознанное изменение защиты credentials.</li>
+<li>Сам HealthKit может оставаться недоступным при блокировке. Исправление Keychain не открывает HealthKit и не гарантирует wakeup при каждом unlock. Lifecycle notification помогает уже работающему процессу; последующие HealthKit/BGTask запуски также должны восстанавливать работу.</li>
+<li>Изменять account guard так, чтобы старые credentials могли отправлять после смены аккаунта, нельзя. Временная недоступность должна вести к defer, а не к обходу проверки.</li>
+<li>Обычная URLSession не гарантирует завершение после suspension. Первый этап делает это наблюдаемым и сохраняет диапазоны для повтора, но не обещает системную очередь upload.</li>
+<li>Фактические атрибуты Keychain, OSStatus, background refresh, энергосбережение и установленная версия неизвестны. Сбор логов должен разрешить эти неизвестные без вывода ключа.</li>
+<li>Откат: отменить только изменения этого этапа. Не удалять sync-state, историю и ключ. Миграцию accessibility откатывать отдельным проверяемым <code>SecItemUpdate</code> на разблокированном устройстве, только при явном решении вернуть прежнюю защиту.</li>
+</ul></section>
+<section><h2>8. Источники</h2><ul>
+<li><a href="https://developer.apple.com/documentation/security/restricting-keychain-item-accessibility">Apple: доступность Keychain и стандартный WhenUnlocked</a>.</li>
+<li><a href="https://developer.apple.com/documentation/security/ksecattraccessibleafterfirstunlockthisdeviceonly">Apple: AfterFirstUnlockThisDeviceOnly</a>.</li>
+<li><a href="https://developer.apple.com/documentation/healthkit/protecting-user-privacy">Apple: HealthKit и блокировка устройства</a>.</li>
+<li><a href="https://developer.apple.com/documentation/healthkit/hkhealthstore/enablebackgrounddelivery(for:frequency:withcompletion:)">Apple: observer registration, completion, ограничения частоты и проверка на устройстве</a>.</li>
+<li><a href="https://developer.apple.com/documentation/uikit/using-background-tasks-to-update-your-app">Apple: повторная заявка заменяет предыдущую</a>; это же подтверждено локальным SDK, <code>BGTaskScheduler.h</code>.</li>
+<li><a href="https://developer.apple.com/documentation/widgetkit/keeping-a-widget-up-to-date">Apple: бюджет обновления виджетов</a>.</li>
+</ul></section>
+<section class="approval"><h2>9. Согласование</h2>
+<p><strong>Первый этап согласован пользователем: «давай править».</strong> Настройка интервала сохранена, виджет не добавлялся. Реализация выполнена в отдельной ветке без коммита и push.</p>
+<p>Открытые вопросы для device QA: версия установленной сборки; доступность тестового iPhone и изолированного сервера. Они не мешают реализации первого этапа после согласования. Коммит, push, установка и deployment этим планом не подразумеваются.</p>
+</section>
+<section class="note"><h2>10. Реализация и проверка</h2>
+<p><strong>Реализовано локально; device QA остаётся невыполненной.</strong> Ниже результаты фактических проверок, отдельно от исходных гипотез.</p>
+<ul>
+<li><code>KeychainStore.swift</code>: проверяемый адаптер Security, отдельные notFound/locked/OSStatus error, запись с AfterFirstUnlockThisDeviceOnly, идемпотентная миграция существующего item без удаления.</li>
+<li><code>SyncConfiguration.swift</code>: несекретный BackgroundSettings; <code>AppDelegate</code> синхронно регистрирует observers независимо от ключа. Миграция и повтор неуспешной настройки — при запуске/активации/unlock.</li>
+<li><code>BackgroundScheduling.swift</code>: сериализация scheduler/delivery, сохранение ранних и просроченных заявок, изменение интервала меняет только обычное задание. Ошибки отражаются в диагностике.</li>
+<li><code>BackgroundSyncManager.swift</code>: раздельный учёт queries и delivery по типам, последовательный off/on, однократное завершение callback при expiration. Отложенная работа повторяется после доступности protected data, включая частичную отправку с заблокированным вторым каналом.</li>
+<li><code>SyncEngine.swift</code>: временная недоступность credentials не теряет durable state и не разрешает отправку с закэшированным ключом. Сохранены проверки конфигурации после async-операций и изоляция владельцев отмены.</li>
+<li><code>BackgroundSyncDiagnostics.swift</code>, Settings и SyncStatus: локальный журнал максимум 40 событий с закрытым словарём, время последнего фонового приёма, системные ограничения. 29 новых строк en/ru/sr; все ранее существовавшие переводы сохранены без изменений.</li>
+</ul>
+<table><thead><tr><th>Проверка</th><th>Результат</th></tr></thead><tbody>
+<tr><td>Unit tests, iPhone 17 Pro Max / iOS 26.5</td><td>88 тестов в 10 suites прошли; 20 новых BackgroundRecoveryTests. Fake Keychain/HealthKit/scheduler, без реальных ключей и отправок.</td></tr>
+<tr><td>UI: диагностика light и dark Accessibility XXXL</td><td>Обе проверки прошли после исправления идентификатора объединённой accessibility-строки. Скриншоты просмотрены; дополнительная проверка полной видимости строки над tab bar также прошла.</td></tr>
+<tr><td>UI: background toggle light/dark</td><td>2 существующих теста прошли. Полный UI-прогон: 4/4.</td></tr>
+<tr><td>История проверок</td><td>Первые сборки выявили ошибки actor annotation, неоднозначную перегрузку и неверное имя цветового токена — исправлены. Первый UI-прогон: 2 ошибки поиска дочернего accessibility-элемента, исправлены. Unit-тесты того прогона: 82/82.</td></tr>
+<tr><td>Статические проверки</td><td>git diff --check; парсинг xcstrings; сохранность всех старых локализаций; наличие en/ru/sr для новых строк.</td></tr>
+<tr><td>Физический iPhone, естественные background wakeups, серверный приём</td><td>Не выполнялись. Успех тестов не является доказательством устранения симптома на телефоне пользователя.</td></tr>
+</tbody></table>
+<p>Скриншоты: <a href="../reviews/2026-09-26-background-sync/diagnostics-light.png">светлая тема</a> · <a href="../reviews/2026-09-26-background-sync/diagnostics-dark-accessibility.png">тёмная тема, Accessibility XXXL</a>.</p>
+<p>Тестовый режим блокирует production sync и dashboard network requests; тестовые уведомления отключены. Runtime-сборки и xcresult находятся в <code>/tmp/health-sync-background-review</code>; логи — <code>/tmp/health-sync-background-*.log</code>. Сборка продолжает использовать Swift 5 mode; существующие предупреждения Swift 6 в тестовом support/моделях не являются частью этой задачи.</p>
+<p>В рабочем дереве также появился не связанный с правкой <code>health-sync.xcodeproj/xcshareddata/xcodecloud/manifest.json</code>; этот файл не редактировался и не удалялся.</p>
+<p><strong>Остаётся:</strong> после установки этой сборки на физический iPhone один раз открыть приложение разблокированным для миграции ключа, затем проверить естественную синхронизацию без debugger по сценарию раздела 6. По последующей команде пользователя Release-сборка установлена на iPhone (см. раздел 11). Коммит, push и изменения серверного API не выполнялись.</p>
+</section>
+<section class="note"><h2>11. Установка на iPhone</h2>
+<p>По явной команде пользователя «ставь на iphone» собрана Release-конфигурация из текущей ветки и установлена на подключённый физический iPhone 16 Pro Max поверх приложения с bundle ID <code>com.dzarlax.health-sync</code>. <code>xcodebuild</code> завершился BUILD SUCCEEDED; <code>devicectl device install app</code> подтвердил установку. Подпись проверена; entitlements HealthKit и background-delivery включены.</p>
+<p><strong>Приложение успешно запущено на iPhone.</strong> После явного разрешения обычной синхронизации и подтверждения прежнего сервера проверен сохранённый URL в настройках этого устройства. Затем <code>devicectl device process launch</code> подтвердил запуск; отдельная проверка processes нашла работающий процесс Health Sync (PID 1771). Предыдущие попытки были заблокированы проверкой разрешений до запуска, а не завершились сбоем приложения. Применение миграции на телефоне, серверный приём и естественная фоновая отправка отдельно пока не подтверждены.</p>
+<p>Локальные доказательства: <code>/tmp/health-sync-background-device-build.log</code> , <code>/tmp/health-sync-device-install.json</code> и <code>/tmp/health-sync-device-launch.json</code>. Данные приложения не удалялись; uninstall не выполнялся.</p>
+</section><section><h2>Исправления ревью PR #21</h2><p>Исправлены сохранение повторов после блокировки, исходный диапазон пересинхронизации, изоляция callback HealthKit, обработка неполных AI-ответов, шум диагностики и повторная загрузка энергии. Итог: 115 тестов прошли; код observer дополнительно проверен в строгом Swift 6. На физический iPhone эти последующие исправления ещё не установлены.</p><p><a href="../reviews/2026-09-26-pr-21-follow-up.md">Изменения и результаты проверки</a></p></section></main></body></html>

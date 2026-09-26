@@ -75,6 +75,29 @@ final class health_syncUITests: XCTestCase {
         add(attachment)
     }
 
+    @MainActor
+    func testSettingsToggleAnnouncesLocalizedState() throws {
+        let locales = [
+            ("ru", "Настройки", "Фоновая синхронизация", ["Включено", "Выключено", "1", "0"]),
+            ("sr", "Podešavanja", "Pozadinska sinhronizacija", ["Uključeno", "Isključeno", "1", "0"])
+        ]
+        for (locale, settings, label, values) in locales {
+            let app = XCUIApplication()
+            app.launchArguments = ["--ui-test-mode", "-AppleLanguages", "(\(locale))", "-AppleLocale", locale]
+            app.launch()
+            app.tabBars.buttons[settings].tap()
+            let toggle = app.switches[label]
+            XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+            let initial = try XCTUnwrap(toggle.value as? String)
+            XCTAssertTrue(values.contains(initial), "Unexpected switch value: \(initial)")
+            toggle.tap()
+            let updated = try XCTUnwrap(toggle.value as? String)
+            XCTAssertTrue(values.contains(updated), "Unexpected switch value: \(updated)")
+            XCTAssertNotEqual(initial, updated)
+            app.terminate()
+        }
+    }
+
     /// XCUITest returns the platform switch value as either `On`/`Off` or
     /// `1`/`0` depending on the simulator runtime. Both represent the same
     /// accessible switch state.

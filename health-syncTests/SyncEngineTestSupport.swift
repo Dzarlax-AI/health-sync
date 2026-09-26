@@ -5,7 +5,8 @@ import SwiftData
 @MainActor
 final class TestSyncConfiguration: SyncConfigurationProviding {
     var value = SyncConfiguration(endpoint: URL(string: "https://example.test")!, apiKey: "test-key", fingerprint: "test-account", metricGroups: [.vitals], workoutsEnabled: false, backgroundEnabled: true, syncOnLaunch: false, interval: 60, workoutHRTimeline: false)
-    func snapshot() throws -> SyncConfiguration { value }
+    var readError: APIKeyError?
+    func snapshot() throws -> SyncConfiguration { if let readError { throw readError }; return value }
 }
 
 final class EmptyTestHealthData: HealthDataFetching, @unchecked Sendable {
@@ -13,6 +14,7 @@ final class EmptyTestHealthData: HealthDataFetching, @unchecked Sendable {
     var fetches: [Fetch] = []
     var cancelCount = 0
     var onFetch: (() async -> Void)?
+    var fetchError: Error?
     var metrics: [MetricData] = []
     var nightSleepCoverage: [NightSleepCoverage] = []
     var sleepPeriodCoverage: [SleepPeriodCoverage] = []
@@ -24,6 +26,7 @@ final class EmptyTestHealthData: HealthDataFetching, @unchecked Sendable {
     func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?) async throws -> HealthPayload {
         fetches.append(.init(groups: groups, since: since, until: until))
         if let onFetch { await onFetch() }
+        if let fetchError { throw fetchError }
         return HealthPayload(
             metrics: metrics,
             nightSleepCoverage: nightSleepCoverage,

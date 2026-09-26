@@ -1,51 +1,28 @@
 import SwiftUI
 import Charts
 
-struct TodayMorningBackdrop: View {
-    var body: some View {
-        ZStack(alignment: .top) {
-            Color.dsBackground
-            GeometryReader { geometry in
-                Image("TodayMorningHero")
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: geometry.size.width, height: 500)
-                    .clipped()
-                    .overlay {
-                        LinearGradient(
-                            colors: [
-                                Color.dsSurface.opacity(0.10),
-                                Color.dsBackground.opacity(0.32),
-                                Color.dsBackground
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-                    .accessibilityHidden(true)
-            }
-            .frame(height: 500)
-        }
-    }
-}
-
 struct TodayPageHeader: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let date: String
     let syncStatus: SyncStatus
     let openSyncStatus: () -> Void
 
     var body: some View {
-        HStack(alignment: .top) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        layout {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Today")
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(Color.dsText)
+                    .font(.system(.title, design: .rounded).weight(.semibold))
+                    .foregroundStyle(Color.dsRingText)
                 Text(verbatim: formattedDate)
                     .font(.dsBodySm)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsRingText)
             }
-            Spacer(minLength: .dsSpacing)
+            if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
             TodayHeaderSyncButton(status: syncStatus, action: openSyncStatus)
+                .environment(\.colorScheme, .dark)
         }
     }
 
@@ -58,6 +35,8 @@ struct TodayPageHeader: View {
 }
 
 struct TodayHeroBlock: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let briefing: BriefingResponse
     let history: [ReadinessPoint]
     @Binding var expandedStressFlag: String?
@@ -66,31 +45,35 @@ struct TodayHeroBlock: View {
     let aiResponse: AIBriefingResponse?
     let aiGenerating: Bool
     let todayInsights: TodayInsightsResponse?
+    var insightsStale = false
 
     var body: some View {
-        let score = briefing.readinessToday ?? briefing.readinessScore ?? 0
-        VStack(spacing: .dsSpacingLg) {
-            VStack(spacing: .dsSpacingSm) {
-                TodayReadinessRing(
-                    score: score,
-                    label: todayReadinessDisplay(briefing, score: score)
-                )
-                if let energyBank = briefing.energyBank {
-                    TodayEnergyPill(energyBank: energyBank)
-                }
+        VStack(spacing: 16) {
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(spacing: 20)) : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+            layout {
+                NavigationLink { EnergyView() } label: {
+                    ring(value: briefing.energyBank?.current.formatted() ?? "—",
+                         label: briefing.energyBank.map { LocalizedStringKey("of \($0.capacity)") } ?? "Current energy",
+                         title: "Energy", fraction: briefing.energyBank.flatMap { $0.capacity > 0 ? Double($0.current) / Double($0.capacity) : nil }, appearance: .energy)
+                }.accessibilityIdentifier("today-ring-energy")
+                NavigationLink { SectionDetailView(sectionKey: "recovery") } label: {
+                    ring(value: briefing.recoveryPct.map { "\($0)%" } ?? "—", label: "Recovery", title: "Recovery",
+                         fraction: briefing.recoveryPct.map { Double($0) / 100 }, appearance: .recovery)
+                }.accessibilityIdentifier("today-ring-recovery")
+                Button { selection = .sleep } label: {
+                    ring(value: briefing.sleep.map { "\(Int($0.efficiency.rounded()))%" } ?? "—",
+                         label: "Sleep efficiency", title: "Sleep efficiency", fraction: briefing.sleep.map { $0.efficiency / 100 }, appearance: .sleep)
+                }.accessibilityIdentifier("today-ring-sleep")
             }
-            .frame(width: contentWidth, height: 226)
-
-            let supportingCards = Array((briefing.metricCards ?? [])
-                .sorted(by: todayMetricCardSort)
-                .prefix(2))
-            if !supportingCards.isEmpty {
-                TodayHeroSupportingValues(cards: supportingCards, selection: $selection)
-                    .frame(width: contentWidth)
-            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12).padding(.vertical, 18)
+            .frame(maxWidth: .infinity)
+            .background(Color.dsRingGroove.opacity(reduceTransparency || dynamicTypeSize.isAccessibilitySize ? 1 : 0.32), in: RoundedRectangle(cornerRadius: 24))
+            .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.dsRingHighlight.opacity(0.45), lineWidth: 1))
 
             if let todayInsights {
-                TodayInsightsPrimaryCard(insight: todayInsights.primary)
+                InsightPairView(snapshot: todayInsights, stale: insightsStale)
                     .frame(width: contentWidth)
             } else if briefing.dailyDecision != nil {
                 TodayDailyPlanCard(
@@ -113,6 +96,16 @@ struct TodayHeroBlock: View {
         .frame(width: contentWidth, alignment: .leading)
     }
 
+    private func ring(value: String, label: LocalizedStringKey, title: LocalizedStringKey,
+                      fraction: Double?, appearance: DomainAppearance) -> some View {
+        VStack(spacing: 10) {
+            DomainGauge(value: value, label: label, fraction: fraction, appearance: appearance,
+                        size: dynamicTypeSize.isAccessibilitySize ? 158 : max(76, (contentWidth - 48) / 3), compact: true, showsCaption: appearance == .energy)
+            Text(title).font(.system(.caption).weight(.semibold)).foregroundStyle(Color.dsRingText)
+                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        }.frame(maxWidth: .infinity)
+    }
+
     private var shouldShowHeroDetails: Bool {
         if let headline = briefing.headline, !headline.detail.isEmpty { return true }
         if briefing.energyBank != nil { return true }
@@ -126,54 +119,29 @@ struct TodayHeroBlock: View {
     }
 }
 
-private struct TodayInsightsPrimaryCard: View {
-    let insight: TodayInsight
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: .dsSpacingSm) {
-            Label("Today’s focus", systemImage: "scope")
-                .font(.dsBody.weight(.semibold))
-                .foregroundStyle(Color.dsText)
-            Text(insight.title)
-                .font(.system(.title3, design: .default).weight(.semibold))
-                .foregroundStyle(Color.dsText)
-                .fixedSize(horizontal: false, vertical: true)
-            if !insight.observation.isEmpty {
-                Text(insight.observation)
-                    .font(.dsBodySm)
-                    .foregroundStyle(Color.dsTextSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if !insight.meaning.isEmpty {
-                Text(insight.meaning)
-                    .font(.dsBodySm)
-                    .foregroundStyle(Color.dsText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let nextStep = insight.nextStep, !nextStep.text.isEmpty {
-                Text(nextStep.text)
-                    .font(.dsCaption.weight(.semibold))
-                    .foregroundStyle(Color.dsAccent)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.dsSpacing)
-        .todayRecommendationSurface()
-        .accessibilityElement(children: .combine)
-    }
-}
-
 struct TodayInsightsDomainsBlock: View {
     let snapshot: TodayInsightsResponse
     @Binding var selection: TabSelection
 
     var body: some View {
         VStack(alignment: .leading, spacing: .dsSpacingSm) {
-            SectionHeader(title: "Today by domain")
+            Text("Today by domain").font(.system(.title3, design: .rounded).weight(.semibold))
             VStack(spacing: .dsSpacingSm) {
                 ForEach(snapshot.domains) { domain in
                     TodayInsightDomainLink(domain: domain, selection: $selection)
                 }
+            }
+            if !snapshot.changes.isEmpty {
+                VStack(alignment: .leading, spacing: .dsSpacingSm) {
+                    Text("Changes today").font(.system(.headline, design: .rounded))
+                    ForEach(snapshot.changes) { change in
+                        Text(change.title).font(.dsBodySm.weight(.semibold))
+                        Text(change.detail).font(.dsBodySm).foregroundStyle(Color.dsTextSecondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.dsSpacing).dsCard()
+                .accessibilityIdentifier("insight-changes")
             }
         }
     }
@@ -183,28 +151,39 @@ private struct TodayInsightDomainLink: View {
     let domain: TodayInsightDomain
     @Binding var selection: TabSelection
 
-    private var isNavigable: Bool {
-        domain.destination.kind == "section" && !domain.destination.id.isEmpty
-    }
+    private var destination: InsightDestination { .resolve(domain: domain) }
+    private var isNavigable: Bool { destination != .none }
 
     @ViewBuilder
     var body: some View {
-        if isNavigable, domain.destination.id == "sleep" {
-            Button { selection = .sleep } label: { card }
-                .buttonStyle(.plain)
-        } else if isNavigable {
-            NavigationLink(destination: SectionDetailView(sectionKey: domain.destination.id)) { card }
-                .buttonStyle(.plain)
-        } else {
-            card
+        Group {
+            switch destination {
+            case .sleep:
+                Button { selection = .sleep } label: { card }.buttonStyle(.plain)
+            case .energy:
+                NavigationLink { EnergyView() } label: { card }.buttonStyle(.plain)
+            case .section(let key):
+                NavigationLink { SectionDetailView(sectionKey: key) } label: { card }.buttonStyle(.plain)
+            case .none: card
+            }
+        }
+        .accessibilityIdentifier("insight-domain-\(domain.key)")
+    }
+
+    private var dataStateLabel: LocalizedStringKey {
+        switch domain.dataState {
+        case "fresh": return "Data is current"
+        case "partial": return "Partial data"
+        case "stale": return "Data needs updating"
+        default: return "Not enough data"
         }
     }
 
     private var card: some View {
         VStack(alignment: .leading, spacing: .dsSpacingXs) {
             HStack(alignment: .firstTextBaseline, spacing: .dsSpacingSm) {
-                Text(domain.insight.title)
-                    .font(.dsSubhead)
+                Text(domain.summary)
+                    .font(.system(.headline, design: .rounded))
                     .foregroundStyle(Color.dsText)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
@@ -212,28 +191,12 @@ private struct TodayInsightDomainLink: View {
                     .font(.system(size: isNavigable ? 13 : 7, weight: .semibold))
                     .foregroundStyle(Color.dsTextTertiary)
             }
-            if !domain.insight.observation.isEmpty {
-                Text(domain.insight.observation)
-                    .font(.dsBodySm)
-                    .foregroundStyle(Color.dsTextSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if !domain.insight.meaning.isEmpty {
-                Text(domain.insight.meaning)
-                    .font(.dsCaption)
-                    .foregroundStyle(Color.dsText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let nextStep = domain.insight.nextStep, !nextStep.text.isEmpty {
-                Text(nextStep.text)
-                    .font(.dsCaption.weight(.semibold))
-                    .foregroundStyle(Color.dsAccent)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(dataStateLabel).font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+
         }
         .padding(.dsSpacing)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .todayFocusSurface()
+        .domainSurface(.recovery)
         .accessibilityElement(children: .combine)
     }
 }

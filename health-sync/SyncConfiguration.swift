@@ -6,14 +6,21 @@ final class UserDefaultsSyncConfiguration: SyncConfigurationProviding {
     static let shared = UserDefaultsSyncConfiguration()
 
     private let defaults: UserDefaults
+    private let readAPIKey: @MainActor () throws -> String?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, readAPIKey: @escaping @MainActor () throws -> String? = { try KeychainStore.shared.read() }) {
         self.defaults = defaults
+        self.readAPIKey = readAPIKey
+    }
+
+    var backgroundSettings: BackgroundSettings {
+        BackgroundSettings(enabled: bool("backgroundSync", defaultValue: true),
+                           interval: TimeInterval(max(1, defaults.object(forKey: "syncIntervalMinutes") as? Int ?? 15) * 60))
     }
 
     func snapshot() throws -> SyncConfiguration {
         let rawURL = defaults.string(forKey: "serverURL") ?? ""
-        let key = KeychainStore.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let key = try readAPIKey()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard let endpoint = Self.normalizedEndpoint(rawURL), !key.isEmpty else {
             throw SyncTransportError.configuration
         }

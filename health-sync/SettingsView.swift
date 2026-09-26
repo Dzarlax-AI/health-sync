@@ -41,6 +41,7 @@ struct SettingsView: View {
                     syncStatusSection
                     accountSection
                     syncSection
+                    BackgroundDiagnosticsView()
                     metricsSection
                     workoutsSection
                 }
@@ -325,8 +326,12 @@ struct SettingsView: View {
 
                         DSSecureField(label: "API Key", placeholder: "your-secret-key", text: $apiKey)
                             .onChange(of: apiKey) { _, new in
-                                KeychainStore.apiKey = new
-                                invalidateConnection()
+                                do {
+                                    try KeychainStore.shared.write(new)
+                                    invalidateConnection()
+                                } catch {
+                                    connectionState = .failed(String(localized: "Unable to save API key"))
+                                }
                             }
 
                         HStack {
@@ -719,40 +724,8 @@ private struct DSSwitchStyle: ToggleStyle {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(configuration.isOn ? "On" : "Off")
+        .accessibilityValue(configuration.isOn ? Text("On") : Text("Off"))
         .accessibilityAddTraits(.isToggle)
-    }
-}
-
-// MARK: - Keychain
-
-enum KeychainStore {
-    private static let key = "health-sync.api-key"
-
-    static var apiKey: String? {
-        get {
-            let query: [CFString: Any] = [
-                kSecClass: kSecClassGenericPassword,
-                kSecAttrAccount: key,
-                kSecReturnData: true,
-                kSecMatchLimit: kSecMatchLimitOne
-            ]
-            var result: AnyObject?
-            SecItemCopyMatching(query as CFDictionary, &result)
-            guard let data = result as? Data else { return nil }
-            return String(data: data, encoding: .utf8)
-        }
-        set {
-            let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrAccount: key]
-            if let value = newValue, !value.isEmpty {
-                let attrs: [CFString: Any] = [kSecValueData: Data(value.utf8)]
-                if SecItemUpdate(query as CFDictionary, attrs as CFDictionary) == errSecItemNotFound {
-                    SecItemAdd(query.merging(attrs) { $1 } as CFDictionary, nil)
-                }
-            } else {
-                SecItemDelete(query as CFDictionary)
-            }
-        }
     }
 }
 

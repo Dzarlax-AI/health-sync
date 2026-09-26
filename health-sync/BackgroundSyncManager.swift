@@ -1,239 +1,206 @@
+import BackgroundTasks
 import Foundation
 import HealthKit
-import BackgroundTasks
 import UIKit
 
-// Box for mutable bg task id shared between expiration handler and async code
 @MainActor
-private final class BGTaskHolder {
-    var id: UIBackgroundTaskIdentifier = .invalid
-    var waiter: Task<SyncOutcome, Never>?
+private final class HealthBackgroundObservers: HealthBackgroundObserving {
+    private let store = HKHealthStore()
+    private var queries: [HKObserverQuery] = []
+    private var enabledTypes: Set<String> = []
+    private let onUpdate: @MainActor @Sendable (HealthObserverCompletion, Bool) -> Void
+    private let types: [HKSampleType] = [HKQuantityType(.stepCount), HKQuantityType(.heartRate),
+                                         HKQuantityType(.activeEnergyBurned), HKCategoryType(.sleepAnalysis)]
+
+    init(onUpdate: @escaping @MainActor @Sendable (HealthObserverCompletion, Bool) -> Void) { self.onUpdate = onUpdate }
+
+    func startObservers() {
+        guard queries.isEmpty else { return }
+        let onUpdate = self.onUpdate
+        for type in types {
+            let query = HKObserverQuery(sampleType: type, predicate: nil) { @Sendable _, completion, error in
+                let failed = error != nil
+                let acknowledgement = HealthObserverCompletion(completion)
+                Task { @MainActor in onUpdate(acknowledgement, failed) }
+            }
+            queries.append(query)
+            store.execute(query)
+        }
+    }
+
+    func stopObservers() { queries.forEach { store.stop($0) }; queries.removeAll() }
+
+    func enableDelivery() async -> Bool {
+        for type in types where !enabledTypes.contains(type.identifier) {
+            let success = await withCheckedContinuation { continuation in
+                store.enableBackgroundDelivery(for: type, frequency: .immediate) { success, error in
+                    continuation.resume(returning: success && error == nil)
+                }
+            }
+            if success { enabledTypes.insert(type.identifier) }
+        }
+        return enabledTypes.count == types.count
+    }
+
+    func disableDelivery() async -> Bool {
+        let success = await withCheckedContinuation { continuation in
+            store.disableAllBackgroundDelivery { success, error in
+                continuation.resume(returning: success && error == nil)
+            }
+        }
+        // After any disable attempt, re-enable every type on the next on transition.
+        enabledTypes.removeAll()
+        return success
+    }
+}
+
+/// Completes the OS callback immediately on expiration, independent of how
+/// quickly the underlying network or HealthKit operation responds to cancel.
+@MainActor
+final class BackgroundSyncRun {
+    private var waiter: Task<Void, Never>?
+    private let operation: () async -> SyncOutcome
+    private let cancel: () -> Void
+    private var completion: ((SyncOutcome) -> Void)?
+
+    init(operation: @escaping () async -> SyncOutcome, cancel: @escaping () -> Void,
+         completion: @escaping (SyncOutcome) -> Void) {
+        self.operation = operation; self.cancel = cancel; self.completion = completion
+    }
+    func start() {
+        guard waiter == nil, completion != nil else { return }
+        waiter = Task { finish(await operation()) }
+    }
+    func expire() {
+        guard completion != nil else { return }
+        waiter?.cancel()
+        cancel()
+        finish(.cancelled)
+    }
+    private func finish(_ outcome: SyncOutcome) {
+        let completion = self.completion
+        self.completion = nil
+        completion?(outcome)
+        waiter = nil
+    }
 }
 
 @MainActor
-final class BackgroundSyncManager: @unchecked Sendable {
+final class BackgroundSyncManager {
     static let shared = BackgroundSyncManager()
     static let taskIdentifier = "com.health-sync.background-sync"
     static let dailyResyncIdentifier = "com.health-sync.daily-resync"
-    // Window the nightly BGProcessingTask re-pulls. Bigger than the live sync
-    // overlap because watch-side classifiers and shared-device dribbles can
-    // drop samples into HK days after the fact.
     static let dailyResyncDaysBack = 7
 
-    private let store = HKHealthStore()
-    private let lock = NSLock()
-    private var observersRegistered = false
-    private var observers: [HKObserverQuery] = []
-
+    private lazy var observers = HealthBackgroundObservers { [weak self] completion, failed in
+        guard let self else { completion.finish(); return }
+        self.handleObserver(completion: { completion.finish() }, failed: failed)
+    }
+    private lazy var coordinator = BackgroundWorkCoordinator(scheduler: SystemBackgroundScheduler(),
+                                                             observers: observers, diagnostics: .shared)
+    private var settings: BackgroundSettings { UserDefaultsSyncConfiguration.shared.backgroundSettings }
+    private let unlockRetry = BackgroundUnlockRetry()
     private init() {}
-
-    // MARK: - BGTask registration — must be called before app finishes launching
 
     func registerBGTask() {
         guard !SyncRuntime.isTestMode else { return }
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: Self.taskIdentifier,
-            using: nil
-        ) { task in
-            Task { await Self.handleBGTask(task as! BGProcessingTask) }
-        }
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: Self.dailyResyncIdentifier,
-            using: nil
-        ) { task in
-            Task { await Self.handleDailyResync(task as! BGProcessingTask) }
+        for identifier in [Self.taskIdentifier, Self.dailyResyncIdentifier] {
+            let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { task in
+                MainActor.assumeIsolated { Self.shared.handleBGTask(task, daily: identifier == Self.dailyResyncIdentifier) }
+            }
+            if !registered { BackgroundSyncDiagnostics.shared.record(.registrationFailed) }
         }
     }
 
-    func scheduleNextSync() {
-        guard !SyncRuntime.isTestMode,
-              let config = try? UserDefaultsSyncConfiguration.shared.snapshot(),
-              config.backgroundEnabled else {
-            cancelScheduledWork()
-            return
-        }
-        let interval = config.interval
-        let req = BGProcessingTaskRequest(identifier: Self.taskIdentifier)
-        req.earliestBeginDate = Date(timeIntervalSinceNow: interval)
-        req.requiresNetworkConnectivity = true
-        req.requiresExternalPower = false
-        try? BGTaskScheduler.shared.submit(req)
+    func scheduleNextSync() { applyConfiguration() }
+    func scheduleDailyResync() { applyConfiguration() }
+
+    func applyConfiguration(retryDelivery: Bool = false) {
+        guard !SyncRuntime.isTestMode else { return }
+        if !settings.enabled { unlockRetry.record(.disabled, intent: BackgroundRetryIntent()) }
+        coordinator.apply(settings, retryDelivery: retryDelivery)
     }
 
-    // Schedules the next daily full-day re-sync to fire after the next 03:00 local time.
-    // BG tasks run at iOS's discretion; this is an "earliest" hint, not a guarantee.
-    func scheduleDailyResync() {
-        guard !SyncRuntime.isTestMode,
-              let config = try? UserDefaultsSyncConfiguration.shared.snapshot(),
-              config.backgroundEnabled else {
-            cancelScheduledWork()
-            return
+    /// Called at launch, activation, and protected-data availability. Unlock
+    /// notifications do not themselves guarantee that iOS launches this app.
+    func recoverAfterUnlock(retryPending: Bool = true) {
+        guard !SyncRuntime.isTestMode else { return }
+        if UIApplication.shared.isProtectedDataAvailable {
+            do { try KeychainStore.shared.migrateAccessibility() }
+            catch { BackgroundSyncDiagnostics.shared.record(.keyMigrationFailed) }
         }
-        let cal = Calendar.current
-        let now = Date()
-        var next = cal.nextDate(
-            after: now,
-            matching: DateComponents(hour: 3, minute: 0),
-            matchingPolicy: .nextTime
-        ) ?? now.addingTimeInterval(24 * 3600)
-        // Safety: if for some reason `next` is in the past, push forward 24h
-        if next <= now { next = now.addingTimeInterval(24 * 3600) }
-
-        let req = BGProcessingTaskRequest(identifier: Self.dailyResyncIdentifier)
-        req.earliestBeginDate = next
-        req.requiresNetworkConnectivity = true
-        req.requiresExternalPower = false
-        try? BGTaskScheduler.shared.submit(req)
+        applyConfiguration(retryDelivery: true)
+        if retryPending, let intent = unlockRetry.beginRecovery(enabled: settings.enabled,
+                protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable) {
+            BackgroundSyncDiagnostics.shared.record(.unlock)
+            handleObserver(completion: { self.unlockRetry.finishRecovery() }, failed: false,
+                           recordTrigger: false, intent: intent)
+        }
     }
 
-    // MARK: - BGTask handler
+    private func recordOutcome(_ outcome: SyncOutcome, intent: BackgroundRetryIntent) {
+        BackgroundSyncDiagnostics.shared.recordOutcome(outcome)
+        unlockRetry.record(outcome, intent: intent)
+    }
 
-    private static func handleBGTask(_ task: BGProcessingTask) async {
-        BackgroundSyncManager.shared.scheduleNextSync()
+    private func execute(_ intent: BackgroundRetryIntent, reason: SyncReason, owner: UUID) async -> SyncOutcome {
+        if let interval = intent.fullResync {
+            return await SyncEngine.shared.syncFullDays(in: interval, reason: .dailyResync, owner: owner)
+        }
+        return await SyncEngine.shared.syncNow(reason: reason, owner: owner)
+    }
 
+    private func handleBGTask(_ task: BGTask, daily: Bool) {
+        applyConfiguration(retryDelivery: true)
+        let completion = BackgroundCompletion { task.setTaskCompleted(success: $0) }
+        guard settings.enabled else { completion.finish(false); return }
+        BackgroundSyncDiagnostics.shared.record(daily ? .dailyResync : .backgroundTask)
         let owner = UUID()
-        let syncTask = Task { @MainActor in
-            await SyncEngine.shared.syncNow(reason: .backgroundTask, owner: owner)
+        let intent = daily ? BackgroundRetryIntent.daily(now: Date(), daysBack: Self.dailyResyncDaysBack) : BackgroundRetryIntent()
+        let run = BackgroundSyncRun(operation: {
+            await self.execute(intent, reason: .backgroundTask, owner: owner)
+        }, cancel: { SyncEngine.shared.cancelCurrentSync(owner: owner) }, completion: { outcome in
+            Self.shared.recordOutcome(outcome, intent: intent)
+            completion.finish(outcome.wasAccepted)
+        })
+        task.expirationHandler = {
+            Task { @MainActor in
+                BackgroundSyncDiagnostics.shared.record(.expired)
+                run.expire()
+            }
         }
-
-        task.expirationHandler = { syncTask.cancel(); Task { @MainActor in SyncEngine.shared.cancelCurrentSync(owner: owner) } }
-
-        let outcome = await syncTask.value
-        task.setTaskCompleted(success: outcome.wasAccepted)
+        run.start()
     }
 
-    private static func handleDailyResync(_ task: BGProcessingTask) async {
-        guard let config = try? UserDefaultsSyncConfiguration.shared.snapshot(), config.backgroundEnabled else {
-            task.setTaskCompleted(success: false)
+    private func handleObserver(completion: @escaping () -> Void, failed: Bool, recordTrigger: Bool = true,
+                                intent: BackgroundRetryIntent = BackgroundRetryIntent()) {
+        let acknowledgement = BackgroundCompletion { _ in completion() }
+        if failed {
+            BackgroundSyncDiagnostics.shared.record(.observerFailed)
+            acknowledgement.finish(false)
             return
         }
-        // Reschedule first so we always have a next slot queued, even if this run fails.
-        BackgroundSyncManager.shared.scheduleDailyResync()
-
+        guard settings.enabled else { acknowledgement.finish(false); return }
+        if recordTrigger { BackgroundSyncDiagnostics.shared.record(.observer) }
         let owner = UUID()
-        let resyncTask = Task { @MainActor in
-            await SyncEngine.shared.syncFullDays(daysBack: dailyResyncDaysBack, reason: .dailyResync, owner: owner)
-        }
-
-        task.expirationHandler = { resyncTask.cancel(); Task { @MainActor in SyncEngine.shared.cancelCurrentSync(owner: owner) } }
-
-        let outcome = await resyncTask.value
-        task.setTaskCompleted(success: outcome.wasAccepted)
-    }
-
-    // MARK: - HKObserverQuery + background delivery
-    //
-    // Subscribe only to a small set of high-frequency "trigger" metrics.
-    // When any of these fire, we sync ALL metrics. Subscribing to all 100+
-    // types causes iOS to throttle background wake-ups.
-
-    private static let triggerQuantityTypes: [HKQuantityTypeIdentifier] = [
-        .stepCount,           // fires during any walking/movement
-        .heartRate,           // fires ~every few minutes from Apple Watch
-        .activeEnergyBurned,  // fires during activity
-    ]
-
-    // Sleep is added to HealthKit asynchronously (often hours after the fact,
-    // when the watch syncs to phone or the classifier reanalyses). Observing
-    // it here means a fresh sleep_analysis sample wakes the app and triggers
-    // a sync — which then pulls the last 24h overlap window, picking up the
-    // late record. Sleep volume is ~1–10 samples/day, no throttling concern.
-    private static let triggerCategoryTypes: [HKCategoryTypeIdentifier] = [
-        .sleepAnalysis,
-    ]
-
-    func setupObserverQueriesIfNeeded() {
-        guard !SyncRuntime.isTestMode,
-              let config = try? UserDefaultsSyncConfiguration.shared.snapshot(),
-              config.backgroundEnabled else { return }
-        lock.lock()
-        if observersRegistered { lock.unlock(); return }
-        observersRegistered = true
-        lock.unlock()
-
-        let quantitySampleTypes: [(label: String, type: HKSampleType)] =
-            Self.triggerQuantityTypes.map { id in
-                (label: id.rawValue, type: HKQuantityType(id))
+        var assertion: UIBackgroundTaskIdentifier = .invalid
+        let run = BackgroundSyncRun(operation: {
+            await self.execute(intent, reason: .observer, owner: owner)
+        }, cancel: { SyncEngine.shared.cancelCurrentSync(owner: owner) }, completion: { outcome in
+            Self.shared.recordOutcome(outcome, intent: intent)
+            // Acknowledge before giving back the remaining background time.
+            acknowledgement.finish(outcome.wasAccepted)
+            if assertion != .invalid {
+                UIApplication.shared.endBackgroundTask(assertion)
+                assertion = .invalid
             }
-        let categorySampleTypes: [(label: String, type: HKSampleType)] =
-            Self.triggerCategoryTypes.map { id in
-                (label: id.rawValue, type: HKObjectType.categoryType(forIdentifier: id)!)
-            }
-
-        for (label, sampleType) in quantitySampleTypes + categorySampleTypes {
-            store.enableBackgroundDelivery(for: sampleType, frequency: .immediate) { success, err in
-                if !success || err != nil {
-                    print("[bgDelivery] \(label.suffix(20)) ok=\(success) err=\(err?.localizedDescription ?? "-")")
-                }
-            }
-
-            let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { _, completionHandler, error in
-                if let error = error {
-                    print("[observer] \(label.suffix(20)) err=\(error.localizedDescription)")
-                    completionHandler()
-                    return
-                }
-                Task { @MainActor in
-                    defer { completionHandler() }
-                    guard let config = try? UserDefaultsSyncConfiguration.shared.snapshot(),
-                          config.backgroundEnabled else { return }
-                    let owner = UUID()
-                    // Proper bg task lifecycle — if we run out of time, iOS calls
-                    // the expiration handler and we MUST end the task there or iOS
-                    // punishes us with more aggressive throttling on next wake.
-                    let holder = BGTaskHolder()
-                    holder.id = UIApplication.shared.beginBackgroundTask(withName: "health-sync") {
-                        holder.waiter?.cancel()
-                        Task { @MainActor in SyncEngine.shared.cancelCurrentSync(owner: owner) }
-                        if holder.id != .invalid {
-                            UIApplication.shared.endBackgroundTask(holder.id)
-                            holder.id = .invalid
-                        }
-                    }
-                    let waiter = Task { @MainActor in
-                        await SyncEngine.shared.syncNow(reason: .observer, owner: owner)
-                    }
-                    holder.waiter = waiter
-                    _ = await waitForSyncTask(waiter)
-                    holder.waiter = nil
-                    if holder.id != .invalid {
-                        UIApplication.shared.endBackgroundTask(holder.id)
-                        holder.id = .invalid
-                    }
-                }
-            }
-            store.execute(query)
-            observers.append(query)
+        })
+        assertion = UIApplication.shared.beginBackgroundTask(withName: "health-sync") {
+            BackgroundSyncDiagnostics.shared.record(.expired)
+            run.expire()
         }
+        // HealthKit delivery itself provides execution time even if UIKit
+        // declines an additional assertion. BG/HealthKit still control lifetime.
+        run.start()
     }
-
-    func cancelScheduledWork() {
-        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.taskIdentifier)
-        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.dailyResyncIdentifier)
-        store.disableAllBackgroundDelivery { _, _ in }
-        lock.lock()
-        let active = observers
-        observers.removeAll()
-        observersRegistered = false
-        lock.unlock()
-        active.forEach { store.stop($0) }
-    }
-
-    /// Called after a Settings mutation so off→on/off takes effect in this
-    /// process rather than waiting for a relaunch.
-    func applyConfiguration() {
-        guard !SyncRuntime.isTestMode,
-              let config = try? UserDefaultsSyncConfiguration.shared.snapshot() else {
-            cancelScheduledWork()
-            return
-        }
-        if config.backgroundEnabled {
-            setupObserverQueriesIfNeeded()
-            scheduleNextSync()
-            scheduleDailyResync()
-        } else {
-            cancelScheduledWork()
-        }
-    }
-
 }

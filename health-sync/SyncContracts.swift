@@ -37,6 +37,7 @@ struct SyncFailure: Codable, Sendable, Equatable {
         case statePersistence
         case healthData
         case locked
+        case credentialsUnavailable
         case cancelled
     }
 
@@ -96,6 +97,15 @@ enum SyncOutcome: Sendable, Equatable {
     var wasAccepted: Bool {
         switch self {
         case .accepted, .acceptedNoData: return true
+        default: return false
+        }
+    }
+
+    var needsUnlockRetry: Bool {
+        switch self {
+        case .locked: return true
+        case .deferred(let failure), .partial(_, let failure):
+            return failure.code == .locked || failure.code == .credentialsUnavailable
         default: return false
         }
     }

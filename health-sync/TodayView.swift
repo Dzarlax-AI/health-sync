@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TodayView: View {
     @Binding var selection: TabSelection
+    @Environment(\.scenePhase) private var scenePhase
 
     @AppStorage("serverURL") private var serverURL = ""
     private let syncEngine = SyncEngine.shared
@@ -25,9 +26,7 @@ struct TodayView: View {
             GeometryReader { viewport in
                 let contentWidth = max(0, viewport.size.width - (2 * .dsSpacing))
                 ZStack(alignment: .top) {
-                    TodayMorningBackdrop()
-                        .frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
-                        .ignoresSafeArea(edges: .top)
+                    Color.dsDashboardBackground.ignoresSafeArea()
 
                     ScrollView {
                         VStack(spacing: .dsSpacingLg) {
@@ -43,11 +42,35 @@ struct TodayView: View {
                         .padding(.top, .dsSpacingXl)
                         .padding(.bottom, .dsTabBarClearance)
                         .frame(maxWidth: .infinity)
+                        .background(alignment: .top) {
+                            DomainLandscape(appearance: .recovery)
+                                .frame(width: viewport.size.width, height: 550)
+                                .offset(y: -130)
+                        }
                     }
                 }
             }
+            .insightLifecycle(todayInsights)
+            .onDisappear { aiBriefing.cancelPolling() }
             .toolbar(.hidden, for: .navigationBar)
-            .refreshable { await load() }
+            .refreshable {
+                async let core: Void = load()
+                async let insights: Void = todayInsights.refresh()
+                _ = await (core, insights)
+            }
+        }
+        .task(id: todayInsights.response?.date) {
+            if let date = todayInsights.response?.date, let briefing, briefing.date != date,
+               scenePhase == .active { await load() }
+        }
+        .task(id: todayInsights.unavailable) {
+            if todayInsights.unavailable, todayInsights.response == nil { await loadLegacyAI() }
+        }
+        .onChange(of: todayInsights.response?.snapshotVersion) {
+            if todayInsights.response != nil { aiBriefing.reset() }
+        }
+        .onChange(of: scenePhase) {
+            if scenePhase != .active { aiBriefing.cancelPolling() }
         }
         .task {
             syncEngine.refreshConfiguration()
@@ -67,7 +90,7 @@ struct TodayView: View {
         }
         .onDisappear {
             aiBriefing.cancelPolling()
-            todayInsights.cancelPolling()
+            todayInsights.invalidateRequest()
         }
     }
 
@@ -88,7 +111,8 @@ struct TodayView: View {
                 selection: $selection,
                 aiResponse: aiBriefing.response,
                 aiGenerating: aiBriefing.generating,
-                todayInsights: todayInsights.response
+                todayInsights: todayInsights.response,
+                insightsStale: todayInsights.isStale
             )
             if let alerts = briefing.alerts, !alerts.isEmpty {
                 TodayAlertsBlock(alerts: alerts)
@@ -110,6 +134,9 @@ struct TodayView: View {
                 TodayOverviewBlock(sections: sections, selection: $selection)
                     .frame(width: width)
             }
+        } else if let snapshot = todayInsights.response {
+            InsightPairView(snapshot: snapshot, stale: todayInsights.isStale)
+            TodayInsightsDomainsBlock(snapshot: snapshot, selection: $selection)
         } else if isLoading {
             TodayLoadingState()
                 .frame(width: width)
@@ -150,38 +177,30 @@ struct TodayView: View {
         loadError = nil
         async let briefingTask = ServerClient.shared.healthBriefing()
         async let historyTask = ServerClient.shared.readinessHistory(days: 30)
-        async let aiTask: AIBriefingResponse? = try? ServerClient.shared.aiBriefing()
-        async let todayInsightsTask: TodayInsightsResponse? = try? ServerClient.shared.todayInsights()
 
         do {
-            let (briefing, history) = try await (briefingTask, historyTask)
+            let briefing = try await briefingTask
             guard !Task.isCancelled, requestGeneration == loadGeneration else { return }
             self.briefing = briefing
-            self.history = history
+            let loadedHistory = (try? await historyTask) ?? []
+            guard !Task.isCancelled, requestGeneration == loadGeneration else { return }
+            self.history = loadedHistory
             self.lastLoadedAt = Date()
         } catch {
             guard !Task.isCancelled, requestGeneration == loadGeneration else { return }
             self.loadError = error.localizedDescription
         }
 
-        // AI is independent: a cold Gemini cache or AI endpoint failure must
-        // not block the rest of the Today view.
-        if let ai = await aiTask,
-           !Task.isCancelled,
-           requestGeneration == loadGeneration {
-            aiBriefing.apply(ai)
-        }
-        if let snapshot = await todayInsightsTask,
-           !Task.isCancelled,
-           requestGeneration == loadGeneration {
-            todayInsights.apply(snapshot)
-        }
-        if requestGeneration == loadGeneration {
-            aiBriefing.schedulePollingIfNeeded(for: self.briefing?.dailyDecision?.id)
-            todayInsights.schedulePollingIfNeeded()
-        }
         if requestGeneration == loadGeneration {
             isLoading = false
+        }
+    }
+
+    private func loadLegacyAI() async {
+        if let ai = try? await ServerClient.shared.aiBriefing(),
+           !Task.isCancelled, todayInsights.response == nil {
+            aiBriefing.apply(ai)
+            aiBriefing.schedulePollingIfNeeded(for: briefing?.dailyDecision?.id)
         }
     }
 
