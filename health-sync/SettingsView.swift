@@ -724,7 +724,7 @@ private struct DSSwitchStyle: ToggleStyle {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(configuration.isOn ? "On" : "Off")
+        .accessibilityValue(configuration.isOn ? Text("On") : Text("Off"))
         .accessibilityAddTraits(.isToggle)
     }
 }
