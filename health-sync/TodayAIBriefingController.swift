@@ -18,6 +18,10 @@ final class TodayAIBriefingController {
     func apply(_ response: AIBriefingResponse) {
         disabled = response.disabled
         generating = response.generating
+        if disabled {
+            self.response = nil
+            return
+        }
         if Self.hasContent(response) {
             self.response = response
         }
@@ -42,20 +46,23 @@ final class TodayAIBriefingController {
 
     /// Poll /api/ai-briefing while the server reports a regen in flight and
     /// the cache is still empty. Stops on first non-empty insight or after
-    /// 5 minutes (10 ticks x 30 s).
+    /// five minutes the cadence slows to once every five minutes.
     func schedulePollingIfNeeded(for decisionID: String? = nil) {
         cancelPolling()
         let alreadyHaveContent = response.map(Self.hasContent) ?? false
         let planIsFresh = isPlanFresh(for: decisionID)
         guard !disabled, !planIsFresh, (generating || !alreadyHaveContent || decisionID != nil) else { return }
         pollTask = Task { @MainActor in
-            for _ in 0..<10 {
-                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+            var attempts = 0
+            while !Task.isCancelled {
+                let delay: UInt64 = attempts < 10 ? 30 : 300
+                try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+                attempts += 1
                 if Task.isCancelled { return }
                 guard let response = try? await ServerClient.shared.aiBriefing() else { continue }
                 apply(response)
                 let haveContent = self.response.map(Self.hasContent) ?? false
-                if disabled || self.isPlanFresh(for: decisionID) || (decisionID == nil && haveContent) { return }
+                if disabled || self.isPlanFresh(for: decisionID) || (decisionID == nil && haveContent && response.previous == nil && !response.generating) { return }
             }
         }
     }
@@ -66,7 +73,8 @@ final class TodayAIBriefingController {
     }
 
     static func hasContent(_ response: AIBriefingResponse) -> Bool {
-        planHasContent(response.plan)
+        !(response.previous?.text ?? "").isEmpty
+            || planHasContent(response.plan)
             || !response.insight.isEmpty
             || !(response.sleep ?? "").isEmpty
             || !(response.yesterday ?? "").isEmpty

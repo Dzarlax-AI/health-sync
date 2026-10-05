@@ -25,6 +25,30 @@ struct InsightParityTests {
         #expect(try InsightFixtures.snapshot(mode: "disabled").visibleAI(for: "sleep") == nil)
     }
 
+    @Test func retainedOpinionsSurvivePendingNullAndFailureStates() throws {
+        for state in ["cold", "generating", "failed", "ready"] {
+            let value = try InsightFixtures.snapshot(state: state, retained: true)
+            #expect(value.visibleAI(for: "sleep")?.stale == true)
+            #expect(value.visibleAI(for: "sleep")?.sourceDate == "2026-09-25")
+            #expect(!value.primary.observation.isEmpty)
+        }
+        #expect(try InsightFixtures.snapshot(mode: "disabled", retained: true).visibleAI(for: "sleep") == nil)
+        #expect(TodayInsightsController.pollDelay(try response(state: "cold"), attempts: 20) == 300)
+    }
+
+    @Test func legacyPreviousTextDoesNotAuthorizePlanAndExplicitDisableClearsIt() throws {
+        let json = #"{"date":"2026-09-26","lang":"en","insight":"","blocks":{},"generating":true,"disabled":false,"previous":{"source_date":"2026-09-25","text":"Previous opinion"}}"#
+        let decoder = JSONDecoder()
+        let value = try decoder.decode(AIBriefingResponse.self, from: Data(json.utf8))
+        let controller = TodayAIBriefingController()
+        controller.apply(value)
+        #expect(controller.response?.previous?.text == "Previous opinion")
+        #expect(!controller.isPlanFresh(for: "current-decision"))
+        let disabled = try decoder.decode(AIBriefingResponse.self, from: Data(json.replacingOccurrences(of: "\"disabled\":false", with: "\"disabled\":true").utf8))
+        controller.apply(disabled)
+        #expect(controller.response == nil)
+    }
+
     @Test func routesUseDomainInsteadOfLegacyEnergyDestination() throws {
         let value = try InsightFixtures.snapshot()
         #expect(InsightDestination.resolve(domain: value.domain("sleep")!) == .sleep)
@@ -42,10 +66,10 @@ struct InsightParityTests {
         #expect(try JSONDecoder().decode(EnergyHistoryResponse.self, from: Data(#"{"granularity":"day","points":null}"#.utf8)).points.isEmpty)
     }
 
-    @Test func pollingHonorsProviderBackoffAndBudget() throws {
+    @Test func pollingHonorsProviderBackoffAndSlowsAfterBudget() throws {
         let value = try response(state: "failed", retry: 900)
         #expect(TodayInsightsController.pollDelay(value, attempts: 0) == 900)
-        #expect(TodayInsightsController.pollDelay(value, attempts: 10) == nil)
+        #expect(TodayInsightsController.pollDelay(value, attempts: 10) == 900)
         #expect(TodayInsightsController.pollDelay(try response(state: "disabled"), attempts: 100) == 60)
         #expect(TodayInsightsController.pollDelay(try response(state: "ready"), attempts: 0) == nil)
         #expect(TodayInsightsController.pollDelay(try response(state: "unknown", fresh: false), attempts: 0) == 60)
@@ -126,13 +150,13 @@ struct InsightParityTests {
             requests += 1
             return try response(state: requests <= 12 ? "disabled" : "generating")
         }, context: { "account" }, prepare: {}, sleep: { seconds in
-            #expect(seconds == 60)
+            #expect(seconds == (waits < 22 ? 60 : 300))
             waits += 1
             if waits > 25 { throw CancellationError() }
         })
         await controller.run()
-        // 12 disabled responses, discovery of generation, then 10 budgeted retries.
-        #expect(requests == 23)
+        // Disabled discovery does not spend the budget; pending results then refresh slowly.
+        #expect(requests == 26)
     }
 
     @Test func missingSnapshotFailuresHaveBoundedRetries() async throws {
@@ -181,7 +205,7 @@ struct InsightParityTests {
             if waits > 15 { throw CancellationError() }
         })
         await controller.run()
-        #expect(requests == 11)
+        #expect(requests == 16)
     }
 
     @Test func missingConfigurationShowsEnergyErrorsInsteadOfEndlessLoading() async {

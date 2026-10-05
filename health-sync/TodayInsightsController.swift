@@ -97,7 +97,11 @@ final class TodayInsightsController {
         let generation = value.generation
         let pending = generation.slots?.filter { ["cold", "generating", "failed"].contains($0.state) || !$0.freshForSnapshot } ?? []
         if generation.state == "disabled", pending.isEmpty { return 60 }
-        guard attempts < 10 else { return nil }
+        // Keep occasional refreshes after the active budget; retain visible prose.
+        if attempts >= 10, !pending.isEmpty || ["cold", "generating", "failed"].contains(generation.state) {
+            let retry = max(generation.retryAfterSeconds ?? 0, pending.compactMap(\.retryAfterSeconds).max() ?? 0)
+            return max(300, retry)
+        }
         guard ["cold", "generating", "failed"].contains(generation.state)
                 || !generation.freshForSnapshot || !pending.isEmpty else { return nil }
         // Honor the longest retry window. Never shorten a provider backoff.

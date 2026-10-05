@@ -564,6 +564,13 @@ private struct TodayDailyPlanCard: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("today-ai-insight-details")
             }
+            if !hasFreshPlan, let previous = aiResponse?.previous {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Previous AI insight").font(.dsCaption)
+                    Text(previous.sourceDate).font(.dsCaption)
+                    Text(previous.text).font(.dsBodySm)
+                }.foregroundStyle(Color.dsTextSecondary)
+            }
             if !hasFreshPlan && (aiGenerating || aiResponse?.generating == true || aiResponse?.freshForDecision == false) {
                 Label("Detailed plan is updating", systemImage: "arrow.trianglehead.2.clockwise")
                     .font(.dsCaption.weight(.medium))
@@ -911,6 +918,14 @@ private struct TodayAIInsightExpanded: View {
                 }
             }
 
+            if let previous = response.previous {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Previous AI insight")
+                    Text(previous.sourceDate)
+                    Text(response.generating ? "AI insight is updating" : "Previous context")
+                }.font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+            }
+
             Text(primaryText)
                 .font(.dsBodySm)
                 .foregroundStyle(Color.dsTextSecondary)
@@ -1131,6 +1146,14 @@ private struct TodayAISections {
     let fallback: String
 
     init(response: AIBriefingResponse) {
+        if let previous = response.previous {
+            sleep = ""
+            yesterday = ""
+            recovery = ""
+            recommendation = ""
+            fallback = previous.text
+            return
+        }
         let parsed = Self.parseLegacyInsight(response.insight)
         sleep = Self.cleaned(response.sleep) ?? parsed["SLEEP"] ?? ""
         yesterday = Self.cleaned(response.yesterday) ?? parsed["YESTERDAY"] ?? ""

@@ -297,6 +297,7 @@ struct AIBriefingResponse: Decodable, Sendable {
     let freshForDecision: Bool?
     let updatedAt: String?
     let plan: AIBriefingPlan?
+    let previous: PreviousAIBriefing?
 
     enum CodingKeys: String, CodingKey {
         case date, lang, insight, sleep, yesterday, recovery, recommendation, blocks
@@ -304,7 +305,18 @@ struct AIBriefingResponse: Decodable, Sendable {
         case decisionId = "decision_id"
         case freshForDecision = "fresh_for_decision"
         case updatedAt = "updated_at"
-        case plan
+        case plan, previous
+    }
+}
+
+struct PreviousAIBriefing: Decodable, Sendable {
+    let sourceDate: String
+    let text: String
+    let generatedAt: String?
+    enum CodingKeys: String, CodingKey {
+        case text
+        case sourceDate = "source_date"
+        case generatedAt = "generated_at"
     }
 }
 
@@ -699,12 +711,18 @@ struct UserSettings: Decodable, Sendable {
 // MARK: - Independent AI opinions and daily energy history
 
 struct TodayAIInsight: Decodable, Sendable {
+    let stale: Bool?
+    let sourceDate: String?
+    let generatedAt: String?
     let text: String
     let stance: String
     let alternativeAction: String?
     let factIDs: [String]?
     let evidenceIDs: [String]?
     enum CodingKeys: String, CodingKey {
+        case stale
+        case sourceDate = "source_date"
+        case generatedAt = "generated_at"
         case text, stance
         case alternativeAction = "alternative_action"
         case factIDs = "fact_ids"
@@ -737,6 +755,8 @@ extension TodayInsightsResponse {
 
     func visibleAI(for key: String) -> TodayAIInsight? {
         if generation.narrativeMode == "disabled" { return nil }
+        let candidate = key == "overall" ? aiInsight : domain(key)?.aiInsight
+        if candidate?.stale == true { return candidate }
         if let slots = generation.slots {
             guard let slot = slots.first(where: { $0.key == key }),
                   slot.state == "ready", slot.freshForSnapshot else { return nil }
