@@ -6870,29 +6870,6 @@
         }
       }
     },
-    "AI insight is updating" : {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "AI insight is updating"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "AI-инсайт обновляется"
-          }
-        },
-        "sr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "AI uvid se ažurira"
-          }
-        }
-      }
-    },
     "Previous context" : {
       "localizations": {
         "en": {

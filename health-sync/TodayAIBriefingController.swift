@@ -60,6 +60,7 @@ final class TodayAIBriefingController {
                 attempts += 1
                 if Task.isCancelled { return }
                 guard let response = try? await ServerClient.shared.aiBriefing() else { continue }
+                guard !Task.isCancelled else { return }
                 apply(response)
                 let haveContent = self.response.map(Self.hasContent) ?? false
                 if disabled || self.isPlanFresh(for: decisionID) || (decisionID == nil && haveContent && response.previous == nil && !response.generating) { return }

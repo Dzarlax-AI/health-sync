@@ -1146,7 +1146,7 @@ private struct TodayAISections {
     let fallback: String
 
     init(response: AIBriefingResponse) {
-        if let previous = response.previous {
+        if let previous = response.previous, response.freshForDecision != true {
             sleep = ""
             yesterday = ""
             recovery = ""
