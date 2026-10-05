@@ -10,6 +10,12 @@ struct InsightPairView: View {
 
     private var insight: TodayInsight? { slot == "overall" ? snapshot.primary : snapshot.domain(slot)?.insight }
 
+    private func generationDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    }
+
     var body: some View {
         if let insight {
             VStack(alignment: .leading, spacing: 12) {
@@ -55,7 +61,7 @@ struct InsightPairView: View {
                 }
                 .padding(16).domainSurface(appearance ?? .recovery)
 
-                if !stale, let ai = snapshot.visibleAI(for: slot), !ai.text.isEmpty {
+                if let ai = snapshot.visibleAI(for: slot), !ai.text.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
                         Button { aiExpanded.toggle() } label: {
                             HStack(spacing: 8) {
@@ -73,6 +79,18 @@ struct InsightPairView: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("ai-insight-\(slot)")
                         .accessibilityValue(aiExpanded ? Text("Expanded") : Text("Collapsed"))
+                        if ai.stale == true || stale {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Previous AI insight")
+                                if let date = ai.sourceDate { Text(date).font(.dsCaption) }
+                                if let generatedAt = ai.generatedAt,
+                                   let date = generationDate(generatedAt) {
+                                    Text(date, style: .time).font(.dsCaption)
+                                }
+                                Text(snapshot.state(for: slot) == "failed" ? "AI refresh failed" :
+                                     ["cold", "generating"].contains(snapshot.state(for: slot)) ? "AI insight is updating" : "Previous context")
+                            }.font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                        }
                         if aiExpanded {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text(ai.text)

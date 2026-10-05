@@ -43,7 +43,7 @@ enum InsightFixtures {
                                   bySource: nil, pointsBySource: nil)
     }
 
-    static func snapshot(state: String = "ready", mode: String = "preview", staleSlot: String? = nil) throws -> TodayInsightsResponse {
+    static func snapshot(state: String = "ready", mode: String = "preview", staleSlot: String? = nil, retained: Bool = false) throws -> TodayInsightsResponse {
         let arguments = ProcessInfo.processInfo.arguments
         let state = arguments.contains("--insights-failed") ? "failed" :
             arguments.contains("--insights-disabled") ? "disabled" :
@@ -60,8 +60,13 @@ enum InsightFixtures {
              "next_step": ["id": "fixture", "text": ru ? "Сверься со своим самочувствием." : sr ? "Uporedi sa svojim osećajem." : "Compare this with how you feel."],
              "evidence_ids": ["synthetic"], "fallback": false]
         }
-        let ai: [String: Any] = ["text": ru ? "Это пример пояснения по тестовым данным. Оценка сервера не учитывает субъективное самочувствие." : sr ? "Ovo je primer tumačenja test podataka. Procena servera ne uključuje subjektivni osećaj." : "This is an explanation of synthetic data. The server assessment does not include how you feel.",
+        var ai: [String: Any] = ["text": ru ? "Это пример пояснения по тестовым данным. Оценка сервера не учитывает субъективное самочувствие." : sr ? "Ovo je primer tumačenja test podataka. Procena servera ne uključuje subjektivni osećaj." : "This is an explanation of synthetic data. The server assessment does not include how you feel.",
             "stance": "qualify", "alternative_action": ru ? "Сначала оцени, хватает ли сил на обычные дела." : sr ? "Prvo proceni energiju za uobičajene aktivnosti." : "First consider your energy for ordinary activities.", "fact_ids": ["synthetic"], "evidence_ids": ["synthetic"]]
+        if retained {
+            ai["stale"] = true
+            ai["source_date"] = "2026-09-25"
+            ai["generated_at"] = "2026-09-25T07:00:00Z"
+        }
         let keys = ["overall", "sleep", "recovery", "energy"]
         let slots: [[String: Any]] = keys.map { ["key": $0, "state": state, "fresh_for_snapshot": $0 != staleSlot] }
         let domains: [[String: Any]] = Array(keys.dropFirst()).enumerated().map { index, key in
