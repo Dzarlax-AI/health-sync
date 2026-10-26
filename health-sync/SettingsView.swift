@@ -546,9 +546,7 @@ struct SettingsView: View {
                 // instead of making a new account wait for the next scene
                 // activation (or press a second button) before its one-time
                 // sleep-history job can begin.
-                if syncOnLaunch {
-                    _ = await engine.syncNow(reason: .appActivation)
-                }
+                _ = await engine.syncAfterConnectionTest()
             case .failed(let failure):
                 connectionState = .failed(failure.message)
             }
