@@ -322,6 +322,40 @@ struct SyncAttemptStateTests {
         #expect(await engine.testConnection() == .failed(.init(code: .rejectedAck, message: "Server did not confirm the upload")))
     }
 
+    @Test func successfulConnectionCheckResumesPersistedAuthenticationFailure() async throws {
+        let state = InMemoryTestSyncState()
+        state.value.enabledMetricGroups = [.vitals]
+        state.value.workoutsEnabled = false
+        let pending = Date(timeIntervalSince1970: -172_800)
+        state.value.metrics.pendingSince = pending
+        state.value.metrics.failure = .init(code: .configuration, message: "Configure the server URL and API key")
+        let health = EmptyTestHealthData(), transport = SuccessTestTransport()
+        health.metrics = [.init(name: "heart_rate", units: "bpm", data: [.avg(date: "2026-01-01 00:00:00 +0000", value: 60, source: "Watch")])]
+        let provider = TestSyncConfiguration()
+        let engine = try makeTestSyncEngine(state: state, health: health, transport: transport, provider: provider)
+        provider.value = SyncConfiguration(endpoint: provider.value.endpoint, apiKey: provider.value.apiKey,
+            fingerprint: provider.value.fingerprint, metricGroups: [.vitals], workoutsEnabled: false,
+            backgroundEnabled: true, syncOnLaunch: true, interval: 60, workoutHRTimeline: false)
+
+        _ = await engine.syncNow(reason: .appActivation)
+        #expect(transport.metricUploadCount == 0)
+        #expect(await engine.testConnection() == .accepted)
+        #expect(await engine.syncAfterConnectionTest() == .accepted(points: 1, workouts: 0))
+        #expect(transport.metricUploadCount == 1)
+        #expect(health.fetches.first?.since == pending)
+        #expect(state.value.metrics.failure == nil)
+    }
+
+    @Test func successfulConnectionCheckRespectsDisabledLaunchSync() async throws {
+        let health = EmptyTestHealthData(), transport = SuccessTestTransport()
+        let engine = try makeTestSyncEngine(health: health, transport: transport)
+
+        #expect(await engine.testConnection() == .accepted)
+        #expect(await engine.syncAfterConnectionTest() == .disabled)
+        #expect(health.fetches.isEmpty)
+        #expect(transport.metricUploadCount == 0)
+    }
+
     @Test func syncStateStoreRoundTripsPendingFullAndDeferredRanges() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let store = SyncStateStore(directory: directory)

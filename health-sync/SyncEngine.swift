@@ -182,6 +182,13 @@ final class SyncEngine {
 
     func retryNow() async -> SyncOutcome { await syncNow(reason: .manual) }
 
+    func syncAfterConnectionTest() async -> SyncOutcome {
+        guard let config = try? configuration.snapshot(), config.syncOnLaunch else { return .disabled }
+        // An explicit successful connection check must be able to retry a
+        // persisted authentication failure from a temporary server outage.
+        return await syncNow(reason: .manual)
+    }
+
     func syncFullDays(daysBack: Int = 2, reason: SyncReason = .manual, owner: UUID? = nil) async -> SyncOutcome {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: clock())
