@@ -22,8 +22,7 @@ struct TrendsView: View {
                 let contentWidth = max(0, viewport.size.width - (2 * .dsSpacing))
                 ZStack(alignment: .top) {
                     TrendsBackdrop()
-                        .frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
-                        .ignoresSafeArea(edges: .top)
+                        .ignoresSafeArea()
 
                     ScrollView {
                         VStack(alignment: .leading, spacing: .dsSpacingLg) {
