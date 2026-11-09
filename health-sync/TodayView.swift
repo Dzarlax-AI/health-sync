@@ -48,6 +48,8 @@ struct TodayView: View {
                                 .offset(y: -130)
                         }
                     }
+                    .domainScrollViewport(.recovery)
+                    .accessibilityIdentifier("today-scroll")
                 }
             }
             .insightLifecycle(todayInsights)
@@ -112,7 +114,8 @@ struct TodayView: View {
                 aiResponse: aiBriefing.response,
                 aiGenerating: aiBriefing.generating,
                 todayInsights: todayInsights.response,
-                insightsStale: todayInsights.isStale
+                insightsStale: todayInsights.isStale,
+                insightsIdentity: todayInsights.contentIdentity
             )
             if let alerts = briefing.alerts, !alerts.isEmpty {
                 TodayAlertsBlock(alerts: alerts)
@@ -136,6 +139,7 @@ struct TodayView: View {
             }
         } else if let snapshot = todayInsights.response {
             InsightPairView(snapshot: snapshot, stale: todayInsights.isStale)
+                .id("\(todayInsights.contentIdentity)-\(snapshot.date)-overall")
             TodayInsightsDomainsBlock(snapshot: snapshot, selection: $selection)
         } else if isLoading {
             TodayLoadingState()

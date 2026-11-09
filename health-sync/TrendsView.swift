@@ -2,6 +2,8 @@ import SwiftUI
 import Charts
 
 struct TrendsView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .largeTitle) private var scoreSize: CGFloat = 42
     @State private var history: [ReadinessPoint] = []
     @State private var days: Int = 30
     @State private var loadError: String?
@@ -36,6 +38,8 @@ struct TrendsView: View {
                         .padding(.bottom, .dsTabBarClearance)
                         .frame(maxWidth: .infinity)
                     }
+                    .clipped()
+                    .accessibilityIdentifier("trends-scroll")
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -121,20 +125,32 @@ struct TrendsView: View {
     }
 
     private var readinessSummary: some View {
-        HStack(alignment: .center, spacing: .dsSpacing) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: .dsSpacing))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: .dsSpacing))
+        return layout {
             Text("\(latestReadinessScore)")
-                .font(.system(size: 42, weight: .bold, design: .rounded))
+                .font(.system(size: scoreSize, weight: .bold, design: .rounded))
                 .foregroundStyle(Color.dsReadiness)
+                .accessibilityLabel("Readiness")
+                .accessibilityValue("\(latestReadinessScore)")
             VStack(alignment: .leading, spacing: 2) {
-                Text("Today’s readiness")
+                Text(ReadinessPresentation.title(date: history.last?.date ?? "", today: MetricDateWindow.iso(Date(), timeZone: .current)))
                     .font(.dsCaption)
                     .foregroundStyle(Color.dsTextSecondary)
-                Text(readinessDeltaSummary)
+                    .accessibilityIdentifier("readiness-summary-title")
+                if let date = history.last?.date {
+                    Text(ReadinessPresentation.dateCaption(date))
+                        .font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                        .accessibilityIdentifier("readiness-summary-date")
+                }
+                Text(readinessChangeExplanation)
                     .font(.dsCaption)
                     .foregroundStyle(Color.dsTextSecondary)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("readiness-comparison")
             }
-            Spacer(minLength: 0)
+            if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
             if let readinessBadge {
                 DSStatusBadge(verbatim: readinessBadge.label, status: readinessBadge.status)
             }
@@ -152,25 +168,7 @@ struct TrendsView: View {
     }
 
     private var readinessChangeExplanation: String {
-        guard let first = history.first?.score, let last = history.last?.score else {
-            return String(localized: "No trend yet")
-        }
-        let delta = last - first
-        if delta == 0 {
-            return String(localized: "Unchanged from the start of this range")
-        }
-        let direction = delta > 0 ? String(localized: "higher") : String(localized: "lower")
-        return String(localized: "\(abs(delta)) points \(direction) than the start of this range")
-    }
-
-    private var readinessDeltaSummary: String {
-        guard let first = history.first?.score, let last = history.last?.score else {
-            return String(localized: "No trend yet")
-        }
-        let delta = last - first
-        if delta == 0 { return String(localized: "Unchanged from start") }
-        let direction = delta > 0 ? String(localized: "higher") : String(localized: "lower")
-        return String(localized: "\(abs(delta)) points \(direction)")
+        ReadinessPresentation.comparison(first: history.first?.score, last: history.last?.score)
     }
 
     private var rangeStartLabel: String {
@@ -189,15 +187,12 @@ struct TrendsView: View {
     }
 
     private func formattedRangeDate(_ value: String?) -> String {
-        guard let value,
-              let date = try? Date(value, strategy: .iso8601.year().month().day()) else {
-            return value ?? ""
-        }
-        return date.formatted(.dateTime.day().month(.abbreviated))
+        guard let value else { return "" }
+        return ReadinessPresentation.dateCaption(value)
     }
 
     private static func chartDate(_ raw: String) -> Date? {
-        try? Date(raw, strategy: .iso8601.year().month().day())
+        MetricDateWindow.date(raw)
     }
 
     private var latestReadinessScore: Int {

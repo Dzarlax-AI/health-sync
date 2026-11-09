@@ -108,6 +108,24 @@ struct DomainSurface: ViewModifier {
 }
 
 extension View {
+    /// Clip scrolling foreground at the viewport; paint the landscape in the
+    /// system inset separately so text never travels underneath the clock.
+    func domainScrollViewport(_ appearance: DomainAppearance) -> some View {
+        clipped()
+            .background {
+                GeometryReader { viewport in
+                    DomainLandscape(appearance: appearance)
+                        .frame(height: 550)
+                        .offset(y: -130)
+                        .frame(height: viewport.safeAreaInsets.top, alignment: .top)
+                        .clipped()
+                        .offset(y: -viewport.safeAreaInsets.top)
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+    }
+
     func domainSurface(_ appearance: DomainAppearance) -> some View {
         modifier(DomainSurface(appearance: appearance))
     }
@@ -145,6 +163,36 @@ struct DomainGauge: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 16) {
+                        Text(label).font(.callout).fixedSize()
+                        Spacer(minLength: 0)
+                        accessibleValue.fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(label).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        accessibleValue
+                    }
+                }
+                .foregroundStyle(Color.dsRingText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ring
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(value)
+    }
+
+    private var accessibleValue: some View {
+        Text(value).font(.system(.title2, design: .rounded).weight(.semibold))
+            .monospacedDigit().fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var ring: some View {
         VStack(spacing: 8) {
             ZStack {
                 Circle().fill(LinearGradient(colors: [.dsRingShellLight, .dsRingShellMid, .dsRingShellDark],
@@ -166,22 +214,20 @@ struct DomainGauge: View {
                     Text(value).font(.system(size: size * 0.24, weight: .semibold, design: .rounded))
                         .monospacedDigit().foregroundStyle(Color.dsRingText)
                         .lineLimit(1).minimumScaleFactor(0.5)
-                    if showsCaption && !dynamicTypeSize.isAccessibilitySize {
-                        Text(label).font(.system(size: compact ? 10 : 12, weight: .medium))
+                    if showsCaption && compact {
+                        Text(label).font(.caption2.weight(.medium))
                             .foregroundStyle(Color.dsRingTextSecondary).multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }.padding(.horizontal, size * 0.22)
             }
             .frame(width: size, height: size)
-            if showsCaption && dynamicTypeSize.isAccessibilitySize {
-                Text(label).font(.dsCaption).foregroundStyle(Color.dsRingText)
+            if showsCaption && !compact {
+                Text(label).font(.body).foregroundStyle(Color.dsRingText)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityValue(value)
     }
 }
 

@@ -8,6 +8,20 @@ enum InsightFixtures {
         ProcessInfo.processInfo.arguments.contains("--insights-fixture")
     }
 
+    static func readinessHistory(days: Int) -> [ReadinessPoint] {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard enabled, arguments.contains("--trends-date-fixture") else {
+            return sleepNights(days: days).enumerated().map { ReadinessPoint(date: $0.element.date, score: 55 + $0.offset % 35) }
+        }
+        let today = MetricDateWindow.iso(Date(), timeZone: .current)
+        let end = arguments.contains("--trends-yesterday")
+            ? MetricDateWindow.ending(at: today, days: 2)!.from
+            : arguments.contains("--trends-historical") ? "2024-02-29" : today
+        let first = MetricDateWindow.ending(at: end, days: days)!.from
+        let lastScore = arguments.contains("--trends-flat") ? 55 : arguments.contains("--trends-falling") ? 45 : 65
+        return [ReadinessPoint(date: first, score: 55), ReadinessPoint(date: end, score: lastScore)]
+    }
+
     static func sleepNights(days: Int) -> [SleepNight] {
         if enabled && ProcessInfo.processInfo.arguments.contains("--insights-empty-sleep") { return [] }
         let calendar = Calendar(identifier: .gregorian)

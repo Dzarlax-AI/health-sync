@@ -46,6 +46,7 @@ struct TodayHeroBlock: View {
     let aiGenerating: Bool
     let todayInsights: TodayInsightsResponse?
     var insightsStale = false
+    var insightsIdentity: UUID?
 
     var body: some View {
         VStack(spacing: 16) {
@@ -74,6 +75,7 @@ struct TodayHeroBlock: View {
 
             if let todayInsights {
                 InsightPairView(snapshot: todayInsights, stale: insightsStale)
+                    .id("\(insightsIdentity?.uuidString ?? "")-\(todayInsights.date)-overall")
                     .frame(width: contentWidth)
             } else if briefing.dailyDecision != nil {
                 TodayDailyPlanCard(
@@ -99,11 +101,24 @@ struct TodayHeroBlock: View {
     private func ring(value: String, label: LocalizedStringKey, title: LocalizedStringKey,
                       fraction: Double?, appearance: DomainAppearance) -> some View {
         VStack(spacing: 10) {
-            DomainGauge(value: value, label: label, fraction: fraction, appearance: appearance,
-                        size: dynamicTypeSize.isAccessibilitySize ? 158 : max(76, (contentWidth - 48) / 3), compact: true, showsCaption: appearance == .energy)
-            Text(title).font(.system(.caption).weight(.semibold)).foregroundStyle(Color.dsRingText)
-                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-        }.frame(maxWidth: .infinity)
+            DomainGauge(value: value, label: dynamicTypeSize.isAccessibilitySize ? title : label,
+                        fraction: fraction, appearance: appearance,
+                        size: max(76, (contentWidth - 48) / 3), compact: true, showsCaption: appearance == .energy)
+            if dynamicTypeSize.isAccessibilitySize {
+                if appearance == .energy {
+                    Text(label).font(.caption).foregroundStyle(Color.dsRingText)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            } else {
+                Text(title).font(.system(.caption).weight(.semibold)).foregroundStyle(Color.dsRingText)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(appearance == .energy ? Text("\(value) \(Text(label))") : Text(value))
     }
 
     private var shouldShowHeroDetails: Bool {
@@ -266,6 +281,8 @@ private struct TodayHeaderSyncButton: View {
             .frame(minHeight: 34)
             .background(backgroundTint, in: Capsule())
             .overlay(Capsule().stroke(Color.dsElevatedBorder, lineWidth: 1))
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("today-sync-status")

@@ -143,6 +143,8 @@ struct EnergyView: View {
             .padding(.dsSpacing)
             .padding(.bottom, .dsTabBarClearance)
         }
+        .domainScrollViewport(appearance)
+        .accessibilityIdentifier("energy-scroll")
         .background { DomainBackdrop(appearance: appearance) }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)

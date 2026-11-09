@@ -63,6 +63,8 @@ struct SectionDetailView: View {
             .padding(.dsSpacing)
             .padding(.bottom, .dsTabBarClearance)
         }
+        .domainScrollViewport(appearance)
+        .accessibilityIdentifier("section-scroll-\(sectionKey)")
         .background { DomainBackdrop(appearance: appearance) }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)

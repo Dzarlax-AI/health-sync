@@ -2,6 +2,7 @@ import SwiftUI
 import UserNotifications
 
 struct SettingsView: View {
+    var connectionRequest: UUID? = nil
     @AppStorage("serverURL") private var serverURL = ""
     @AppStorage("health-sync.config-revision") private var configRevision = 0
     @AppStorage("backgroundSync") private var backgroundSync = true
@@ -56,6 +57,9 @@ struct SettingsView: View {
                 appliedServerEndpoint = normalizedServerURL?.absoluteString
                 applyBackgroundSyncSetting()
                 await loadAccount()
+            }
+            .onChange(of: connectionRequest, initial: true) { _, request in
+                if request != nil { showServerDetails = true }
             }
             .onChange(of: serverURL) { _, _ in
                 resetConnectionState()
@@ -323,8 +327,10 @@ struct SettingsView: View {
                             .keyboardType(.URL)
                             .autocorrectionDisabled()
                             .onSubmit(commitServerConfiguration)
+                            .accessibilityIdentifier("settings-server-url")
 
                         DSSecureField(label: "API Key", placeholder: "your-secret-key", text: $apiKey)
+                            .accessibilityIdentifier("settings-api-key")
                             .onChange(of: apiKey) { _, new in
                                 do {
                                     try KeychainStore.shared.write(new)

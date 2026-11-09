@@ -1,11 +1,13 @@
 import SwiftUI
 
 struct MetricsView: View {
+    var openConnection: () -> Void = {}
     @State private var metrics: [MetricSummary] = []
     @State private var search: String = ""
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var lastLoadedAt: Date?
+    @State private var missingConfiguration = false
 
     private var filtered: [MetricSummary] {
         let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -18,11 +20,18 @@ struct MetricsView: View {
 
     private var orderedMetrics: [MetricSummary] {
         filtered.sorted {
-            ($0.displayName ?? $0.name).localizedCaseInsensitiveCompare($1.displayName ?? $1.name) == .orderedAscending
+            let order = $0.title.localizedCaseInsensitiveCompare($1.title)
+            return order == .orderedSame ? $0.name < $1.name : order == .orderedAscending
         }
     }
 
+    private var collidingNames: Set<String> {
+        let groups = Dictionary(grouping: metrics) { $0.title.folding(options: .caseInsensitive, locale: .current) }
+        return Set(groups.filter { $0.value.count > 1 }.keys)
+    }
+
     var body: some View {
+        let collisions = collidingNames
         NavigationStack {
             ZStack {
                 LinearGradient(
@@ -35,9 +44,22 @@ struct MetricsView: View {
                 if isLoading && metrics.isEmpty {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let err = loadError, metrics.isEmpty {
-                    ComingSoonView(icon: "exclamationmark.triangle",
-                                   title: "Couldn't load metrics",
-                                   message: LocalizedStringKey(err))
+                    VStack(spacing: .dsSpacing) {
+                        Image(systemName: missingConfiguration ? "server.rack" : "exclamationmark.triangle")
+                            .font(.largeTitle).foregroundStyle(Color.dsTextSecondary)
+                        Text(missingConfiguration ? "Connect your server to browse metrics." : "Couldn't load metrics")
+                            .font(.dsBody).multilineTextAlignment(.center)
+                        if !missingConfiguration { Text(verbatim: err).font(.dsCaption).foregroundStyle(Color.dsTextSecondary) }
+                        if missingConfiguration {
+                            Button("Connect server", action: openConnection)
+                                .buttonStyle(DSSecondaryButtonStyle())
+                                .accessibilityIdentifier("metrics-connect-server")
+                        } else {
+                            Button("Retry") { Task { await load() } }
+                                .buttonStyle(DSSecondaryButtonStyle())
+                                .accessibilityIdentifier("metrics-retry")
+                        }
+                    }.padding(.dsSpacing)
                 } else if filtered.isEmpty {
                     emptyState
                 } else {
@@ -55,7 +77,7 @@ struct MetricsView: View {
                             VStack(spacing: 0) {
                                 ForEach(Array(orderedMetrics.enumerated()), id: \.element.id) { index, metric in
                                     if index > 0 { Divider().padding(.leading, 70) }
-                                    metricRow(metric)
+                                    metricRow(metric, hasNameCollision: collisions.contains(metric.title.folding(options: .caseInsensitive, locale: .current)))
                                 }
                             }
                             .dsDetailCard()
@@ -76,10 +98,10 @@ struct MetricsView: View {
 
     private var emptyState: some View {
         VStack(spacing: .dsSpacingSm) {
-            Image(systemName: search.isEmpty ? "waveform.path.ecg" : "magnifyingglass")
+            Image(systemName: metrics.isEmpty ? "waveform.path.ecg" : "magnifyingglass")
                 .font(.system(size: 40))
                 .foregroundStyle(Color.dsTextTertiary)
-            Text(search.isEmpty ? "No metrics yet." : "No matching metrics.")
+            Text(metrics.isEmpty ? "No metrics yet." : "No matching metrics.")
                 .font(.dsBodySm)
                 .foregroundStyle(Color.dsTextSecondary)
                 .multilineTextAlignment(.center)
@@ -87,11 +109,13 @@ struct MetricsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func metricRow(_ metric: MetricSummary) -> some View {
+    private func metricRow(_ metric: MetricSummary, hasNameCollision: Bool) -> some View {
         NavigationLink(destination: MetricDetailView(
             metric: metric.name,
             displayName: metric.displayName,
-            unit: metric.units
+            unit: metric.units,
+            unitStatus: metric.unitStatus,
+            variantLabel: metric.variantDescription(hasNameCollision: hasNameCollision)
         )) {
             HStack(spacing: .dsSpacing) {
                 Image(systemName: "waveform.path.ecg")
@@ -101,16 +125,25 @@ struct MetricsView: View {
                     .background(Color.dsAccent.opacity(0.10), in: Circle())
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(metric.displayName ?? metric.name)
+                    Text(metric.title)
                         .font(.dsBody.weight(.semibold))
                         .foregroundStyle(Color.dsText)
+                    if let variant = metric.variantDescription(hasNameCollision: hasNameCollision) {
+                        Text(verbatim: variant)
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsTextSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let date = MetricDateWindow.date(metric.max) {
+                        Text("Last record: \(date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: .gmt)))")
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsTextTertiary)
+                    }
                     HStack(spacing: 6) {
-                        if !metric.units.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(metric.units)
-                                .font(.dsCaption)
-                                .foregroundStyle(Color.dsTextSecondary)
-                        }
-                        Text("\(metric.count.formatted()) samples")
+                        Text(verbatim: metric.unitMetadata.displayUnit ?? metric.unitMetadata.notice ?? "")
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsTextSecondary)
+                        Text("\(metric.count) records")
                             .font(.dsCaption)
                             .foregroundStyle(Color.dsTextTertiary)
                     }
@@ -125,38 +158,18 @@ struct MetricsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    private func dateRange(for metric: MetricSummary) -> String {
-        if metric.min.isEmpty { return metric.max }
-        if metric.max.isEmpty || metric.min == metric.max { return metric.min }
-        return "\(metric.min) - \(metric.max)"
-    }
-
-    private func localizedDateRange(for metric: MetricSummary) -> String {
-        guard let start = parseDate(metric.min), let end = parseDate(metric.max) else {
-            return dateRange(for: metric)
-        }
-        if Calendar.current.isDate(start, inSameDayAs: end) {
-            return start.formatted(.dateTime.day().month(.abbreviated).year())
-        }
-        if Calendar.current.component(.year, from: start) != Calendar.current.component(.year, from: end) {
-            return "\(start.formatted(.dateTime.day().month(.abbreviated).year())) – \(end.formatted(.dateTime.day().month(.abbreviated).year()))"
-        }
-        return "\(start.formatted(.dateTime.day().month(.abbreviated))) – \(end.formatted(.dateTime.day().month(.abbreviated).year()))"
-    }
-
-    private func parseDate(_ raw: String) -> Date? {
-        try? Date(raw, strategy: .iso8601.year().month().day())
+        .accessibilityIdentifier("metric-row-\(metric.name)")
     }
 
     private func load() async {
         isLoading = true
         loadError = nil
+        missingConfiguration = false
         do {
             metrics = try await ServerClient.shared.listMetrics()
             lastLoadedAt = Date()
         } catch {
+            if case .missingConfig = error as? ServerError { missingConfiguration = true }
             loadError = error.localizedDescription
         }
         isLoading = false

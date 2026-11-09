@@ -114,6 +114,8 @@ struct SleepView: View {
                         .padding(.bottom, .dsTabBarClearance)
                         .frame(maxWidth: .infinity)
                     }
+                    .domainScrollViewport(.sleep)
+                    .accessibilityIdentifier("sleep-scroll")
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
