@@ -2,6 +2,7 @@ import SwiftUI
 import UserNotifications
 
 struct SettingsView: View {
+    var connectionRequest: UUID? = nil
     @AppStorage("serverURL") private var serverURL = ""
     @AppStorage("health-sync.config-revision") private var configRevision = 0
     @AppStorage("backgroundSync") private var backgroundSync = true
@@ -49,13 +50,16 @@ struct SettingsView: View {
                 .padding(.bottom, .dsTabBarClearance)
             }
             .scrollDismissesKeyboard(.immediately)
-            .background(Color.dsBackground)
+            .background(Color.dsHorizonBackground)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
             .task {
                 appliedServerEndpoint = normalizedServerURL?.absoluteString
                 applyBackgroundSyncSetting()
                 await loadAccount()
+            }
+            .onChange(of: connectionRequest, initial: true) { _, request in
+                if request != nil { showServerDetails = true }
             }
             .onChange(of: serverURL) { _, _ in
                 resetConnectionState()
@@ -111,11 +115,11 @@ struct SettingsView: View {
         return HStack(spacing: .dsSpacing) {
             Text(label)
                 .font(.dsBody)
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
             Spacer()
             Text(value)
                 .font(.dsMono)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
             if let trailing = visibleTrailing {
                 Text(trailing)
                     .font(.dsCaption.weight(.medium))
@@ -151,7 +155,7 @@ struct SettingsView: View {
                 HStack(alignment: .top, spacing: .dsSpacing) {
                     Text("Upload status")
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                     Spacer(minLength: 0)
                     syncStatusBadge
                 }
@@ -182,14 +186,14 @@ struct SettingsView: View {
             NavigationLink(destination: SyncStatusView(onConfigure: openServerDetailsFromStatus)) {
                 HStack(spacing: .dsSpacing) {
                     Image(systemName: "clock.arrow.circlepath")
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .frame(width: 20)
                     Text("Recent activity & re-sync")
                         .font(.dsBody)
-                        .foregroundStyle(Color.dsText)
+                        .foregroundStyle(Color.dsHorizonText)
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .padding(.horizontal, .dsSpacing)
@@ -215,25 +219,25 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: .dsSpacingXs) {
                 Text(title)
                     .font(.dsBodySm.weight(.medium))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 if let acceptedAt = channel.lastAcceptedAt {
                     Text("Last accepted")
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                     Text(acceptedAt, style: .relative)
                         .font(.dsBodySm)
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 } else {
                     Text("Never accepted")
                         .font(.dsBodySm)
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             Spacer(minLength: 0)
             if channel.acceptedCount > 0 {
                 Text(uploadCount(channel.acceptedCount, isWorkout: isWorkout))
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
             }
         }
         .padding(.vertical, .dsSpacingXs)
@@ -306,10 +310,10 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(serverSummaryTitle)
                             .font(.dsBody)
-                            .foregroundStyle(Color.dsText)
+                            .foregroundStyle(Color.dsHorizonText)
                         Text(serverSummarySubtitle)
                             .font(.dsCaption)
-                            .foregroundStyle(Color.dsTextTertiary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                             .lineLimit(2)
                     }
                     Spacer(minLength: 0)
@@ -323,8 +327,10 @@ struct SettingsView: View {
                             .keyboardType(.URL)
                             .autocorrectionDisabled()
                             .onSubmit(commitServerConfiguration)
+                            .accessibilityIdentifier("settings-server-url")
 
                         DSSecureField(label: "API Key", placeholder: "your-secret-key", text: $apiKey)
+                            .accessibilityIdentifier("settings-api-key")
                             .onChange(of: apiKey) { _, new in
                                 do {
                                     try KeychainStore.shared.write(new)
@@ -349,9 +355,9 @@ struct SettingsView: View {
                 } label: {
                     Text("Connection details")
                         .font(.dsBodySm.weight(.medium))
-                        .foregroundStyle(Color.dsText)
+                        .foregroundStyle(Color.dsHorizonText)
                 }
-                .tint(Color.dsTextSecondary)
+                .tint(Color.dsHorizonTextSecondary)
             }
             .padding(.horizontal, .dsSpacing)
             .padding(.top, .dsSpacingSm)
@@ -383,7 +389,7 @@ struct SettingsView: View {
                 )
                 Text("Foreground checks follow this interval when the app is open; iOS may delay background work.")
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, .dsSpacing)
@@ -587,7 +593,7 @@ struct SectionHeader: View {
     var body: some View {
         Text(title)
             .font(.dsSubhead)
-            .foregroundStyle(Color.dsText)
+            .foregroundStyle(Color.dsHorizonText)
             .padding(.horizontal, .dsSpacing)
             .padding(.top, .dsSpacing)
     }
@@ -602,10 +608,10 @@ private struct DSTextField: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextTertiary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
             TextField(placeholder, text: $text)
                 .font(.dsBody)
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
                 .accessibilityIdentifier("server-url-field")
         }
         .padding(.horizontal, .dsSpacing)
@@ -622,10 +628,10 @@ private struct DSSecureField: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextTertiary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
             SecureField(placeholder, text: $text)
                 .font(.dsBody)
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
                 .accessibilityIdentifier("server-api-key-field")
         }
         .padding(.horizontal, .dsSpacing)
@@ -642,7 +648,7 @@ private struct DSPickerRow: View {
         HStack {
             Text(label)
                 .font(.dsBody)
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
             Spacer()
             Picker("", selection: $selection) {
                 ForEach(options, id: \.0) { value, title in
@@ -669,11 +675,11 @@ private struct DSToggleRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .font(.dsBody)
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 if let subtitle {
                     Text(subtitle)
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
         }
@@ -708,7 +714,7 @@ private struct DSSwitchStyle: ToggleStyle {
                         .fill(configuration.isOn ? onColor : Color.dsSurface3)
                         .overlay(
                             Capsule().strokeBorder(
-                                configuration.isOn ? Color.clear : Color.dsBorder,
+                                configuration.isOn ? Color.clear : Color.dsHorizonBorder,
                                 lineWidth: 1
                             )
                         )

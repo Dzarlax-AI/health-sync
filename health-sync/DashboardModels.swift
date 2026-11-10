@@ -549,6 +549,21 @@ struct MetricSummary: Decodable, Sendable, Identifiable, Hashable {
     let count: Int
     let min: String
     let max: String
+    let unitStatus: String?
+    let variantLabel: String?
+
+    var unitMetadata: MetricUnitMetadata {
+        MetricUnitMetadata(metric: name, units: units, status: unitStatus)
+    }
+
+    var title: String { displayName.flatMap { $0.isEmpty ? nil : $0 } ?? name }
+
+    func variantDescription(hasNameCollision: Bool) -> String? {
+        if let variantLabel, !variantLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return variantLabel
+        }
+        return hasNameCollision ? String(localized: "Identifier: \(name)") : nil
+    }
 
     /// Server shipped two shapes in the wild:
     ///  - new: `name`, `units`, `count`, `min`, `max`, `display_name`
@@ -583,6 +598,9 @@ struct MetricSummary: Decodable, Sendable, Identifiable, Hashable {
         self.min   = try str("min", "Min")
         self.max   = try str("max", "Max")
         self.displayName = try? c.decode(String.self, forKey: AnyKey("display_name"))
+        let statusKey = AnyKey("unit_status")
+        self.unitStatus = c.contains(statusKey) ? ((try? c.decode(String.self, forKey: statusKey)) ?? "unknown") : nil
+        self.variantLabel = try? c.decode(String.self, forKey: AnyKey("variant_label"))
     }
 
     private struct AnyKey: CodingKey, Hashable {

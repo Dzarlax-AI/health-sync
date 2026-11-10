@@ -23,7 +23,7 @@ struct SleepStageLegend: View {
             Text(LocalizedStringKey(label))
                 .font(.dsCaption)
                 .fixedSize(horizontal: false, vertical: true)
-                .foregroundStyle(nightStyle ? Color.dsSleepNightTextSecondary : Color.dsTextSecondary)
+                .foregroundStyle(nightStyle ? Color.dsSleepNightTextSecondary : Color.dsHorizonTextSecondary)
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("stage-legend-\(label)")

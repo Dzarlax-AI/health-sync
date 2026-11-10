@@ -1,6 +1,212 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Today sleep ring title" : {
+      "comment" : "Compact visible caption on Today's sleep ring; accessibility keeps the full metric name.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sleep efficiency" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сон" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Efikasnost sna" } }
+      }
+    },
+    "Date unavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Date unavailable"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дата недоступна"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Datum nije dostupan"
+          }
+        }
+      }
+    },
+    "Latest value" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Latest value"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Последнее значение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poslednja vrednost"
+          }
+        }
+      }
+    },
+    "AI insight is unavailable." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI insight is unavailable."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вывод ИИ недоступен."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI uvid nije dostupan."
+          }
+        }
+      }
+    },
+    "Connect your server to browse metrics." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect your server to browse metrics."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подключите сервер для просмотра метрик."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Povežite server da biste pregledali metrike."
+          }
+        }
+      }
+    },
+    "Couldn’t update this period. The chart still shows the previous dates." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t update this period. The chart still shows the previous dates."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось обновить период. На графике остаются прежние даты."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Period nije ažuriran. Grafikon i dalje prikazuje prethodne datume."
+          }
+        }
+      }
+    },
+    "No records are available for these dates." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No records are available for these dates."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "За эти даты записи недоступны."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nema dostupnih zapisa za ove datume."
+          }
+        }
+      }
+    },
+    "Available records: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Available records: %@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступные записи: %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostupni zapisi: %@"
+          }
+        }
+      }
+    },
+    "Show latest records" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show latest records"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать последние записи"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prikaži poslednje zapise"
+          }
+        }
+      }
+    },
+    "Current period" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Current period"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "К текущему периоду"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekući period"
+          }
+        }
+      }
+    },
     "of %lld" : {
       "localizations" : {
         "en" : {
@@ -1171,9 +1377,7 @@
         }
       }
     },
-    "" : {
-
-    },
+    "" : {},
     "--" : {
       "comment" : "A placeholder value for a number.",
       "isCommentAutoGenerated" : true
@@ -1329,10 +1533,6 @@
         }
       }
     },
-    "%lld percent" : {
-      "comment" : "A value describing a user's sleep efficiency as a percentage.",
-      "isCommentAutoGenerated" : true
-    },
     "%lld points" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1427,9 +1627,75 @@
       "isCommentAutoGenerated" : true,
       "localizations" : {
         "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$lld points %2$@ than the start of this range"
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%1$lld point %2$@ than the start of this range"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%1$lld points %2$@ than the start of this range"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "На %1$lld пункт %2$@, чем в начале периода"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "На %1$lld пункта %2$@, чем в начале периода"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "На %1$lld пунктов %2$@, чем в начале периода"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "На %1$lld пункта %2$@, чем в начале периода"
+                }
+              }
+            }
+          }
+        },
+        "sr" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Za %1$lld poen %2$@ nego na početku perioda"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Za %1$lld poena %2$@ nego na početku perioda"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Za %1$lld poena %2$@ nego na početku perioda"
+                }
+              }
+            }
           }
         }
       }
@@ -1603,10 +1869,6 @@
           }
         }
       }
-    },
-    "%lld%%" : {
-      "comment" : "A ring-shaped view that shows a percentage value.",
-      "isCommentAutoGenerated" : true
     },
     "%lldd" : {
       "comment" : "A button that sets the sleep range.",
@@ -1970,10 +2232,29 @@
     },
     "AI insight" : {
       "comment" : "The title of a screen that shows the user's AI insights.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI insight"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вывод ИИ"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI uvid"
+          }
+        }
+      }
     },
     "AI Insight" : {
-      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1997,7 +2278,27 @@
     },
     "AI plan" : {
       "comment" : "A label for the \"AI plan\" section of the Today view.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI plan"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "План ИИ"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI plan"
+          }
+        }
+      }
     },
     "All phases" : {
       "extractionState" : "stale",
@@ -2269,7 +2570,27 @@
     },
     "Browse all available health data" : {
       "comment" : "A heading for the health data displayed in the Metrics app.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Browse all available health data"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все доступные показатели здоровья"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pregled svih dostupnih zdravstvenih podataka"
+          }
+        }
+      }
     },
     "Building your recent sleep history. This runs once and does not block today's sync." : {
       "comment" : "A message that appears when the app is building sleep history.",
@@ -2320,7 +2641,26 @@
       }
     },
     "Chart range" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chart range"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Период графика"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Period grafikona"
+          }
+        }
+      }
     },
     "Check connection settings" : {
       "localizations" : {
@@ -2368,7 +2708,27 @@
     },
     "Connect a server to see your health data." : {
       "comment" : "Text displayed in a button that opens the settings screen to connect a server.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect a server to see your health data."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подключите сервер для просмотра данных о здоровье."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Povežite server da biste videli podatke o zdravlju."
+          }
+        }
+      }
     },
     "Connect server" : {
       "localizations" : {
@@ -2497,7 +2857,7 @@
         "sr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nije moguće učitati metrike"
+            "value" : "Metrike nisu učitane"
           }
         }
       }
@@ -2552,11 +2912,51 @@
     },
     "Daily guidance" : {
       "comment" : "A label describing the daily guidance section.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Daily guidance"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Рекомендации на день"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dnevne smernice"
+          }
+        }
+      }
     },
     "Daily values" : {
       "comment" : "A label displayed above a chart of daily values.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Daily values"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Значения по дням"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dnevne vrednosti"
+          }
+        }
+      }
     },
     "Dashboard API configured" : {
       "localizations" : {
@@ -2759,7 +3159,27 @@
     },
     "Detailed plan is updating" : {
       "comment" : "A label that indicates that the detailed plan is being generated.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Detailed plan is updating"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подробный план обновляется"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Detaljan plan se ažurira"
+          }
+        }
+      }
     },
     "Details" : {
       "comment" : "A label for a button that reveals more details.",
@@ -3077,7 +3497,27 @@
     },
     "Explore your data" : {
       "comment" : "A heading for a section of the app.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Explore your data"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ваши показатели подробнее"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Istražite svoje podatke"
+          }
+        }
+      }
     },
     "Fair" : {
       "localizations" : {
@@ -3393,7 +3833,26 @@
       }
     },
     "higher" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "higher"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "выше"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "više"
+          }
+        }
+      }
     },
     "History & re-sync" : {
       "localizations" : {
@@ -3423,6 +3882,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Часы"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hours"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sati"
           }
         }
       }
@@ -3892,11 +4363,51 @@
     },
     "Learn more" : {
       "comment" : "A button that can be tapped to learn more.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Learn more"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подробнее"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saznaj više"
+          }
+        }
+      }
     },
     "Loading your health data" : {
       "comment" : "A label that describes the loading of health data.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading your health data"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузка данных о здоровье"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Učitavanje podataka o zdravlju"
+          }
+        }
+      }
     },
     "Local push after each successful sync" : {
       "localizations" : {
@@ -3965,7 +4476,26 @@
       }
     },
     "lower" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "lower"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ниже"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "niže"
+          }
+        }
+      }
     },
     "Max" : {
       "localizations" : {
@@ -4223,13 +4753,13 @@
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "В этом периоде данных нет."
+            "value" : "В этом периоде нет данных."
           }
         },
         "sr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nema podataka u ovom periodu."
+            "value" : "Nema podataka za ovaj period."
           }
         }
       }
@@ -4289,7 +4819,7 @@
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Нет подходящих метрик."
+            "value" : "Подходящих метрик нет."
           }
         },
         "sr" : {
@@ -4348,7 +4878,27 @@
     },
     "No score" : {
       "comment" : "A label that reads \"No score\" when the user's readiness score is zero.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No score"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет оценки"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nema ocene"
+          }
+        }
+      }
     },
     "No sleep data yet." : {
       "localizations" : {
@@ -4622,7 +5172,26 @@
       }
     },
     "Overview" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Overview"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обзор"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pregled"
+          }
+        }
+      }
     },
     "Partial" : {
       "localizations" : {
@@ -5016,11 +5585,50 @@
       }
     },
     "Readiness history" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Readiness history"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История готовности"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Istorija spremnosti"
+          }
+        }
+      }
     },
     "Readiness range" : {
       "comment" : "A label for a picker that lets the user select the number of days to show in the readiness chart.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Readiness range"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Период готовности"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Period spremnosti"
+          }
+        }
+      }
     },
     "Readiness today" : {
       "localizations" : {
@@ -5137,7 +5745,27 @@
     },
     "Recommendation is updating" : {
       "comment" : "A label that indicates that the recommendation is being generated.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recommendation is updating"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Рекомендация обновляется"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preporuka se ažurira"
+          }
+        }
+      }
     },
     "Recorded since" : {
       "localizations" : {
@@ -5500,11 +6128,51 @@
     },
     "Show more" : {
       "comment" : "A button that shows more text.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show more"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать больше"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prikaži više"
+          }
+        }
+      }
     },
     "Shows more detail" : {
       "comment" : "A hint that describes a button that shows more details.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shows more detail"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывает подробности"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prikazuje više detalja"
+          }
+        }
+      }
     },
     "Signals to watch" : {
       "comment" : "A label for the signals that the user can watch.",
@@ -5919,7 +6587,26 @@
       }
     },
     "Sync issue" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync issue"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Проблема синхронизации"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Problem sa sinhronizacijom"
+          }
+        }
+      }
     },
     "Sync now" : {
       "localizations" : {
@@ -6421,15 +7108,51 @@
     },
     "Today's AI plan" : {
       "comment" : "A label for the title of the section that displays the user's AI plan for today.",
-      "isCommentAutoGenerated" : true
-    },
-    "Today’s focus" : {
-      "comment" : "A label describing the insight.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Today's AI plan"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "План ИИ на сегодня"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Današnji AI plan"
+          }
+        }
+      }
     },
     "Today’s readiness" : {
       "comment" : "A label displayed above the user's readiness score.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Today’s readiness"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Готовность сегодня"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Današnja spremnost"
+          }
+        }
+      }
     },
     "Trend" : {
       "localizations" : {
@@ -6482,7 +7205,27 @@
     },
     "Unchanged from the start of this range" : {
       "comment" : "A description of readiness score change that indicates no change from the start of the range.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unchanged from the start of this range"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Без изменений относительно начала периода"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez promene u odnosu na početak perioda"
+          }
+        }
+      }
     },
     "Up to date" : {
       "extractionState" : "stale",
@@ -6509,7 +7252,27 @@
     },
     "Updated" : {
       "comment" : "A label for a sync that has been successfully completed.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Updated"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обновлено"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ažurirano"
+          }
+        }
+      }
     },
     "Upload size: %lld" : {
       "extractionState" : "stale",
@@ -6536,7 +7299,27 @@
     },
     "Upload status" : {
       "comment" : "A label displayed above the upload status of the user's HealthKit data.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Upload status"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Статус отправки"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Status slanja"
+          }
+        }
+      }
     },
     "Upload was only partly accepted" : {
       "localizations" : {
@@ -6606,7 +7389,27 @@
     },
     "View AI insight" : {
       "comment" : "A label for a button that opens a new view.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View AI insight"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть вывод ИИ"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prikaži AI uvid"
+          }
+        }
+      }
     },
     "View all" : {
       "comment" : "A button that can be used to view all the metrics.",
@@ -6635,7 +7438,27 @@
     },
     "View details" : {
       "comment" : "A label for a button that expands a Today AI insight.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View details"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подробнее"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prikaži detalje"
+          }
+        }
+      }
     },
     "Vital signs" : {
       "localizations" : {
@@ -6706,7 +7529,27 @@
     },
     "Why this fits today" : {
       "comment" : "A heading for the reasons why the AI plan fits today.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Why this fits today"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Почему это подходит сегодня"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zašto ovo odgovara današnjem danu"
+          }
+        }
+      }
     },
     "Why?" : {
       "comment" : "A button that reveals the reasons for the current readiness score.",
@@ -6779,7 +7622,27 @@
     },
     "Your health over time" : {
       "comment" : "A description of the health trends.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your health over time"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Как меняются ваши показатели"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vaše zdravlje tokom vremena"
+          }
+        }
+      }
     },
     "your-secret-key" : {
       "localizations" : {
@@ -6827,67 +7690,289 @@
       }
     },
     "Previous AI insight" : {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Previous AI insight"
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Previous AI insight"
           }
         },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Предыдущий AI инсайт"
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Предыдущий AI инсайт"
           }
         },
-        "sr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Prethodni AI uvid"
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prethodni AI uvid"
           }
         }
       }
     },
     "AI refresh failed" : {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "AI refresh failed"
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI refresh failed"
           }
         },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Не удалось обновить AI инсайт"
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось обновить AI инсайт"
           }
         },
-        "sr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ažuriranje AI uvida nije uspelo"
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ažuriranje AI uvida nije uspelo"
           }
         }
       }
     },
     "Previous context" : {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Previous context"
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Previous context"
           }
         },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Предыдущий контекст"
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Предыдущий контекст"
           }
         },
-        "sr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Prethodni kontekst"
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prethodni kontekst"
+          }
+        }
+      }
+    },
+    "%@ – %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ – %2$@"
+          }
+        }
+      }
+    },
+    "Cardio" : {
+      "comment" : "Section key for the cardio section.",
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cardio"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Кардио"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kardio"
+          }
+        }
+      }
+    },
+    "Stress" : {
+      "comment" : "Label for the stress value in the energy section.",
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stress"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Стресс"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stres"
+          }
+        }
+      }
+    },
+    "Unit not specified" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unit not specified"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Единица не указана"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jedinica nije navedena"
+          }
+        }
+      }
+    },
+    "Units vary" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Units vary"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Единицы различаются"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jedinice se razlikuju"
+          }
+        }
+      }
+    },
+    "Identifier: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Identifier: %@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Идентификатор: %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Identifikator: %@"
+          }
+        }
+      }
+    },
+    "Last record: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Last record: %@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Последняя запись: %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poslednji zapis: %@"
+          }
+        }
+      }
+    },
+    "%lld records" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld record"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld records"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld запись"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld записи"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld записей"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld записи"
+                }
+              }
+            }
+          }
+        },
+        "sr" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld zapis"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld zapisa"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld zapisa"
+                }
+              }
+            }
           }
         }
       }

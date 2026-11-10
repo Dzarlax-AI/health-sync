@@ -11,7 +11,11 @@ Native iOS app for the self-hosted [health_dashboard](https://github.com/Dzarlax
 - **Metrics:** server-provided metric catalog and individual history charts.
 - **Settings:** server connection, account information, sync controls, recent activity and background diagnostics.
 
-The five main tabs are Today, Sleep, Trends, Metrics and Settings. Domain detail screens share landscape headers, score rings and chart cards. The interface supports light and dark appearances, with consistent ring colors across themes and layouts for larger text.
+The metric catalogue preserves separate series with matching display names and shows a server-provided variant label, or an identifier fallback for older servers. Known units appear on charts and statistics; missing or mixed units are stated explicitly. Catalogue counts describe records, not raw HealthKit samples. The additive `unit_status` and `variant_label` metadata remains optional for compatibility with older servers.
+
+The Metrics dashboard shows each series’ latest record date. An empty current period can open the latest available 7/30/90-day window using fresh server range metadata, with an explicit return to the current period. Failed refreshes retain the previous chart and its original dates. Missing configuration opens the connection fields in Settings; network errors offer retry. Server insights expand by default when no AI text is visible, while manual disclosure choices persist during polling within the same date and account.
+
+The five main tabs are Today, Sleep, Trends, Metrics and Settings. The Horizon theme combines paired day/night landscape assets, adaptive score rings, rounded system typography and quiet tonal cards. Shared `dsHorizon*` colors are mirrored from the canonical design-system tokens; domain colors retain their meaning across light and dark appearances. One stationary backdrop spans the system inset while scrolling content stays below it. Large domain rings keep their labels outside the value; accessibility text sizes use scalable text summaries. Increased contrast adds card boundaries, and reduced transparency uses opaque surfaces. Trends identify the latest record by date and explain changes relative to the start of the selected range.
 
 **The server owns the health interpretation.** Scores, metric names, section explanations and insight content come from the server. Server Insight and AI Insight remain separate: unavailable, generating or invalid AI content does not replace the server's facts. The app respects the server's insight mode and feature gates.
 
@@ -109,7 +113,7 @@ Server JSON API -> ServerClient -> dashboard models/controllers -> SwiftUI
 | [EnergyView.swift](health-sync/EnergyView.swift) | Renders current energy and daily history. |
 | [DesignSystem.swift](health-sync/DesignSystem.swift) | Defines shared colors, typography, rings and themed surfaces. |
 
-The dashboard uses `/api/health-briefing`, `/api/today-insights`, `/api/energy-history`, `/api/section/{key}`, `/api/readiness-history`, `/api/metrics`, `/api/metrics/data` and `/api/settings`, with additional supporting endpoints in `ServerClient`.
+The dashboard uses `/api/health-briefing`, `/api/today-insights`, `/api/energy-history`, `/api/section/{key}`, `/api/readiness-history`, `/api/metrics`, `/api/metrics/data`, `/api/metrics/range` and `/api/settings`, with additional supporting endpoints in `ServerClient`.
 
 ## Related
 

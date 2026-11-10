@@ -8,6 +8,7 @@ final class TodayInsightsController {
     private(set) var response: TodayInsightsResponse?
     private(set) var isStale = false
     private(set) var unavailable = false
+    private(set) var contentIdentity = UUID()
     private var requestID = UUID()
     private var appliedContext: String?
     private var lastAttemptContext: String?
@@ -28,6 +29,7 @@ final class TodayInsightsController {
 
     func reset() {
         requestID = UUID()
+        contentIdentity = UUID()
         response = nil
         appliedContext = nil
         lastAttemptContext = nil
@@ -46,6 +48,7 @@ final class TodayInsightsController {
         do {
             let requestedContext = try context()
             if appliedContext != requestedContext {
+                contentIdentity = UUID()
                 response = nil
                 isStale = false
             }

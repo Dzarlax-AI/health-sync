@@ -5,6 +5,7 @@ enum TabSelection: Hashable {
 }
 
 struct ContentView: View {
+    @State private var connectionRequest: UUID?
     @State private var selection: TabSelection = .today
     @AppStorage("health-sync.config-revision") private var configRevision = 0
 
@@ -23,14 +24,18 @@ struct ContentView: View {
                     .id("trends-\(configRevision)")
             }
             Tab("Metrics", systemImage: "list.bullet", value: TabSelection.metrics) {
-                MetricsView()
+                MetricsView(openConnection: {
+                    connectionRequest = UUID()
+                    selection = .settings
+                })
                     .id("metrics-\(configRevision)")
             }
             Tab("Settings", systemImage: "gearshape", value: TabSelection.settings) {
-                SettingsView()
+                SettingsView(connectionRequest: connectionRequest)
+                    .id(connectionRequest)
             }
         }
-        .tint(.dsAccent)
+        .tint(.dsHorizonAccent)
     }
 }
 

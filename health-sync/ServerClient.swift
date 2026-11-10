@@ -219,7 +219,7 @@ final class ServerClient {
 
     /// Account identity stays local and is never logged or displayed.
     func dashboardContext() throws -> String {
-        if InsightFixtures.enabled { return "fixture" }
+        if InsightFixtures.enabled || MetricCatalogFixtures.enabled { return "fixture" }
         guard !SyncRuntime.isTestMode else { throw ServerError.missingConfig }
         return try config().fingerprint + "|" + (cachedLang ?? "") + "|" + Date.now.formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month().day())
     }
@@ -265,9 +265,7 @@ final class ServerClient {
 
     func readinessHistory(days: Int = 30) async throws -> [ReadinessPoint] {
         if InsightFixtures.enabled {
-            return InsightFixtures.sleepNights(days: days).enumerated().map {
-                ReadinessPoint(date: $0.element.date, score: 55 + $0.offset % 35)
-            }
+            return InsightFixtures.readinessHistory(days: days)
         }
         struct Wrap: Decodable { let points: [ReadinessPoint] }
         let w = try await get(Wrap.self,
@@ -285,6 +283,7 @@ final class ServerClient {
     }
 
     func listMetrics() async throws -> [MetricSummary] {
+        if MetricCatalogFixtures.enabled { return try MetricCatalogFixtures.metrics() }
         let lang = await serverLang()
         return try await get([MetricSummary].self,
                              path: "/api/metrics",
@@ -296,6 +295,7 @@ final class ServerClient {
                     to: String? = nil,
                     bucket: String? = nil,
                     bySource: Bool = false) async throws -> MetricDataResponse {
+        if MetricCatalogFixtures.enabled { return MetricCatalogFixtures.data(name: name, from: from, to: to) }
         if InsightFixtures.enabled { return InsightFixtures.metricData(name: name, from: from) }
         var q: [URLQueryItem] = [URLQueryItem(name: "metric", value: name)]
         if let from { q.append(URLQueryItem(name: "from", value: from)) }
@@ -306,7 +306,8 @@ final class ServerClient {
     }
 
     func metricRange(name: String) async throws -> MetricDateRange {
-        try await get(MetricDateRange.self,
+        if MetricCatalogFixtures.enabled { return try MetricCatalogFixtures.loadRange() }
+        return try await get(MetricDateRange.self,
                       path: "/api/metrics/range",
                       query: [URLQueryItem(name: "metric", value: name)])
     }
@@ -356,9 +357,9 @@ final class ServerClient {
     func sections() async throws -> SectionsCatalogueResponse {
         if InsightFixtures.enabled {
             return SectionsCatalogueResponse(sections: [
-                SectionCatalogueEntry(key: "recovery", title: "Recovery", subtitle: "Synthetic charts", icon: "leaf"),
-                SectionCatalogueEntry(key: "activity", title: "Activity", subtitle: "Synthetic charts", icon: "figure.walk"),
-                SectionCatalogueEntry(key: "cardio", title: "Cardio", subtitle: "Synthetic charts", icon: "heart")
+                SectionCatalogueEntry(key: "recovery", title: String(localized: "Recovery"), subtitle: "Synthetic charts", icon: "leaf"),
+                SectionCatalogueEntry(key: "activity", title: String(localized: "Activity"), subtitle: "Synthetic charts", icon: "figure.walk"),
+                SectionCatalogueEntry(key: "cardio", title: String(localized: "Cardio"), subtitle: "Synthetic charts", icon: "heart")
             ])
         }
         let lang = await serverLang()

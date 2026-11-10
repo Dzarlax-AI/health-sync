@@ -104,7 +104,7 @@ struct EnergyView: View {
                     if bank.verdictLabel != nil || !bank.verdictReason.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             if let label = bank.verdictLabel { Text(label).font(.dsBody.weight(.semibold)) }
-                            if !bank.verdictReason.isEmpty { Text(bank.verdictReason).font(.dsBodySm).foregroundStyle(Color.dsTextSecondary) }
+                            if !bank.verdictReason.isEmpty { Text(bank.verdictReason).font(.dsBodySm).foregroundStyle(Color.dsHorizonTextSecondary) }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(16).domainSurface(appearance)
@@ -115,7 +115,7 @@ struct EnergyView: View {
                         DomainValueCard(title: "Stress", value: bank.stress.formatted(), icon: "waveform.path.ecg", appearance: appearance)
                     }
                 } else if data.briefingFailed || data.briefing != nil {
-                    Text("Current energy is unavailable").foregroundStyle(Color.dsTextSecondary)
+                    Text("Current energy is unavailable").foregroundStyle(Color.dsHorizonTextSecondary)
                 } else {
                     ProgressView().tint(appearance.accent).frame(maxWidth: .infinity)
                 }
@@ -124,14 +124,14 @@ struct EnergyView: View {
                     DomainInsightSection(controller: insights, slot: "energy", appearance: appearance)
                 }
                 if insights.unavailable, insights.response == nil {
-                    Text("Insights are unavailable. Pull to refresh.").foregroundStyle(Color.dsTextSecondary)
+                    Text("Insights are unavailable. Pull to refresh.").foregroundStyle(Color.dsHorizonTextSecondary)
                 }
                 if let flags = data.briefing?.energyBank?.flagDetails, !flags.isEmpty {
                     VStack(alignment: .leading, spacing: .dsSpacing) {
                         ForEach(flags) { flag in
                             VStack(alignment: .leading, spacing: .dsSpacingXs) {
                                 Text(flag.label).font(.dsBodySm.weight(.semibold))
-                                Text(flag.description).font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                                Text(flag.description).font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                             }
                         }
                     }
@@ -139,15 +139,16 @@ struct EnergyView: View {
                     .padding(.dsSpacing).domainSurface(appearance)
                 }
             }
-            .foregroundStyle(Color.dsText)
+            .foregroundStyle(Color.dsHorizonText)
             .padding(.dsSpacing)
             .padding(.bottom, .dsTabBarClearance)
         }
+        .domainScrollViewport(appearance)
+        .accessibilityIdentifier("energy-scroll")
         .background { DomainBackdrop(appearance: appearance) }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .insightLifecycle(insights)
         .task(id: scenePhase) {
             if scenePhase == .active {
@@ -184,8 +185,8 @@ struct EnergyView: View {
                     .chartXAxis(.hidden)
                     .chartYAxis {
                         AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                            AxisGridLine().foregroundStyle(Color.dsBorder)
-                            AxisValueLabel().foregroundStyle(Color.dsTextSecondary)
+                            AxisGridLine().foregroundStyle(Color.dsHorizonBorder)
+                            AxisValueLabel().foregroundStyle(Color.dsHorizonTextSecondary)
                         }
                     }
                     .frame(height: 180)
@@ -205,7 +206,7 @@ struct EnergyView: View {
                         Text("Daily energy snapshots")
                             .accessibilityIdentifier("energy-history-details")
                     }
-                    .tint(Color.dsTextSecondary)
+                    .tint(Color.dsHorizonTextSecondary)
                 }
             } else if data.historyFailed {
                 Text("Energy history could not be loaded").font(.dsBodySm)

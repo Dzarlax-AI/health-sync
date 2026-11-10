@@ -6,17 +6,17 @@ final class InsightParityUITests: XCTestCase {
     @MainActor
     func testAllInsightDestinationsAndEnergyHistory() throws {
         let app = launch()
-        reveal("ai-insight-overall", app).tap()
+        reveal("ai-insight-overall", app)
         XCTAssertTrue(element("ai-insight-details-overall", app).exists)
         capture("Today insights", app)
         reveal("insight-domain-sleep", app).tap()
         XCTAssertTrue(element("domain-hero-sleep", app).waitForExistence(timeout: 5))
         XCTAssertTrue(element("domain-hero-sleep", app).isHittable)
         capture("Sleep top", app)
+        reveal("ai-insight-sleep", app)
+        XCTAssertTrue(element("ai-insight-details-sleep", app).exists)
         reveal("server-insight-sleep", app).tap()
         XCTAssertTrue(element("server-insight-details-sleep", app).exists)
-        reveal("ai-insight-sleep", app).tap()
-        XCTAssertTrue(element("ai-insight-details-sleep", app).exists)
         capture("Sleep insights", app)
         app.tabBars.buttons["Today"].tap()
         reveal("insight-domain-recovery", app).tap()
@@ -30,12 +30,33 @@ final class InsightParityUITests: XCTestCase {
         XCTAssertTrue(element("energy-current", app).waitForExistence(timeout: 5))
         XCTAssertTrue(element("energy-current", app).isHittable)
         capture("Energy top", app)
+        reveal("ai-insight-energy", app)
+        XCTAssertTrue(element("ai-insight-details-energy", app).exists)
+        capture("Energy insights", app)
         reveal("energy-history-details", app).tap()
         reveal("energy-history-2026-09-24", app)
         XCTAssertTrue(element("energy-history-2026-09-24", app).label.contains("-12"))
         capture("Energy history", app)
-        reveal("ai-insight-energy", app)
-        capture("Energy insights", app)
+        app.terminate()
+    }
+
+    @MainActor
+    func testAIIsOpenAndServerIsCollapsedByDefault() throws {
+        let app = launch()
+        let ai = reveal("ai-insight-overall", app)
+        XCTAssertEqual(ai.value as? String, "Expanded")
+        XCTAssertTrue(element("ai-insight-details-overall", app).exists)
+        ai.tap()
+        XCTAssertFalse(element("ai-insight-details-overall", app).exists)
+        ai.tap()
+        XCTAssertTrue(element("ai-insight-details-overall", app).exists)
+        let server = reveal("server-insight-overall", app)
+        XCTAssertFalse(element("server-insight-details-overall", app).exists)
+        XCTAssertEqual(server.value as? String, "Collapsed")
+        XCTAssertLessThan(ai.frame.maxY, server.frame.minY)
+        capture("AI above collapsed server", app)
+        server.tap()
+        XCTAssertTrue(element("server-insight-details-overall", app).exists)
         app.terminate()
     }
 
@@ -49,17 +70,17 @@ final class InsightParityUITests: XCTestCase {
             capture("Today top \(dark ? "dark" : "light")", app)
             element("today-ring-sleep", app).tap()
             XCTAssertTrue(element("domain-hero-sleep", app).waitForExistence(timeout: 5))
-            XCTAssertTrue(element("server-insight-sleep", app).isHittable)
+            XCTAssertTrue(element("ai-insight-sleep", app).isHittable)
             capture("Sleep top \(dark ? "dark" : "light")", app)
             app.tabBars.buttons["Today"].tap()
             element("today-ring-recovery", app).tap()
             XCTAssertTrue(element("domain-hero-recovery", app).waitForExistence(timeout: 5))
-            XCTAssertTrue(element("server-insight-recovery", app).isHittable)
+            XCTAssertTrue(element("ai-insight-recovery", app).isHittable)
             capture("Recovery top \(dark ? "dark" : "light")", app)
             app.navigationBars.buttons.firstMatch.tap()
             element("today-ring-energy", app).tap()
             XCTAssertTrue(element("energy-current", app).waitForExistence(timeout: 5))
-            XCTAssertTrue(element("server-insight-energy", app).isHittable)
+            XCTAssertTrue(element("ai-insight-energy", app).isHittable)
             capture("Energy top \(dark ? "dark" : "light")", app)
             app.terminate()
         }
@@ -111,10 +132,10 @@ final class InsightParityUITests: XCTestCase {
         app.tabBars.buttons["Сон"].tap()
         XCTAssertTrue(element("domain-hero-sleep", app).waitForExistence(timeout: 5))
         capture("Sleep light large", app)
+        reveal("ai-insight-sleep", app)
+        XCTAssertTrue(element("ai-insight-details-sleep", app).exists)
         reveal("server-insight-sleep", app).tap()
         XCTAssertTrue(element("server-insight-details-sleep", app).exists)
-        reveal("ai-insight-sleep", app).tap()
-        XCTAssertTrue(element("ai-insight-details-sleep", app).exists)
         capture("Sleep expanded light large", app)
         app.terminate()
     }
@@ -163,9 +184,37 @@ final class InsightParityUITests: XCTestCase {
         let app = launch(extra: ["--insights-failed"])
         reveal("server-insight-overall", app)
         XCTAssertFalse(element("ai-insight-overall", app).exists)
-        XCTAssertTrue(app.staticTexts["AI insight is unavailable. Server insight is shown."].exists)
+        XCTAssertTrue(app.staticTexts["AI insight is unavailable."].exists)
+        XCTAssertTrue(element("server-insight-details-overall", app).exists)
         capture("AI fallback", app)
         app.terminate()
+    }
+
+    @MainActor
+    func testServerContentIsExpandedWithoutAIInOverallAndEveryDomain() throws {
+        for state in ["failed", "generating", "disabled"] {
+            let app = launch(extra: ["--insights-\(state)"])
+            let server = reveal("server-insight-overall", app)
+            XCTAssertEqual(server.value as? String, "Expanded")
+            XCTAssertTrue(element("server-insight-details-overall", app).exists)
+            server.tap()
+            XCTAssertFalse(element("server-insight-details-overall", app).exists)
+            server.tap()
+            XCTAssertTrue(element("server-insight-details-overall", app).exists)
+            for slot in ["sleep", "recovery", "energy"] {
+                app.tabBars.buttons["Today"].tap()
+                // Return to the top so domain cards above the long fallback remain reachable.
+                for _ in 0..<5 { app.swipeDown() }
+                reveal("insight-domain-\(slot)", app).tap()
+                let domainServer = reveal("server-insight-\(slot)", app)
+                XCTAssertEqual(domainServer.value as? String, "Expanded")
+                XCTAssertTrue(element("server-insight-details-\(slot)", app).exists)
+                XCTAssertFalse(element("ai-insight-\(slot)", app).exists)
+                capture("Server fallback \(state) \(slot)", app)
+                if slot != "sleep" { app.navigationBars.buttons.firstMatch.tap() }
+            }
+            app.terminate()
+        }
     }
 
     @MainActor
@@ -204,8 +253,14 @@ final class InsightParityUITests: XCTestCase {
         let value = element(id, app)
         XCTAssertTrue(value.waitForExistence(timeout: 8), "Missing \(id)")
         for _ in 0..<18 {
-            if value.isHittable && value.frame.midY < app.tabBars.firstMatch.frame.minY { return value }
-            app.swipeUp()
+            let top = app.frame.minY + 70
+            if value.isHittable && value.frame.midY > top && value.frame.midY < app.tabBars.firstMatch.frame.minY { return value }
+            // A preceding reveal may have scrolled this earlier element above the viewport.
+            if value.frame.midY < top {
+                app.swipeDown()
+            } else {
+                app.swipeUp()
+            }
         }
         XCTAssertTrue(value.isHittable, "Cannot reach \(id)")
         return value

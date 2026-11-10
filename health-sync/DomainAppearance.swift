@@ -16,21 +16,21 @@ enum DomainAppearance {
 
     var accent: Color {
         switch self {
-        case .sleep: .dsSleep
-        case .recovery: .dsRecovery
-        case .energy: .dsWarn
-        case .activity: .dsActivity
-        case .cardio: .dsHeart
+        case .sleep: .dsHorizonSleepStart
+        case .recovery: .dsHorizonRecoveryStart
+        case .energy: .dsHorizonEnergyStart
+        case .activity: .dsHorizonActivityStart
+        case .cardio: .dsHorizonCardioStart
         }
     }
 
     var ringColors: [Color] {
         switch self {
-        case .sleep: [.dsRingSleepStart, .dsRingSleepEnd]
-        case .recovery: [.dsRingRecoveryStart, .dsRingRecoveryEnd]
-        case .energy: [.dsRingEnergyStart, .dsRingEnergyEnd]
-        case .activity: [.dsRingActivityStart, .dsRingActivityEnd]
-        case .cardio: [.dsRingCardioStart, .dsRingCardioEnd]
+        case .sleep: [.dsHorizonSleepStart, .dsHorizonSleepEnd]
+        case .recovery: [.dsHorizonRecoveryStart, .dsHorizonRecoveryEnd]
+        case .energy: [.dsHorizonEnergyStart, .dsHorizonEnergyEnd]
+        case .activity: [.dsHorizonActivityStart, .dsHorizonActivityEnd]
+        case .cardio: [.dsHorizonCardioStart, .dsHorizonCardioEnd]
         }
     }
 
@@ -54,10 +54,17 @@ enum DomainAppearance {
 
 struct DomainBackdrop: View {
     let appearance: DomainAppearance
-    var body: some View { Color.dsDashboardBackground.ignoresSafeArea() }
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.dsHorizonBackground
+            DomainLandscape(appearance: appearance)
+                .frame(height: 550)
+        }
+        .ignoresSafeArea()
+    }
 }
 
-/// The image stays dark in both themes. Only its bottom edge fades into the page.
+/// Asset appearance and semantic veils adapt together to the system theme.
 struct DomainLandscape: View {
     let appearance: DomainAppearance
     @Environment(\.colorSchemeContrast) private var contrast
@@ -66,12 +73,13 @@ struct DomainLandscape: View {
         GeometryReader { proxy in
             Image(appearance.imageName).resizable().scaledToFill()
                 .frame(width: proxy.size.width, height: proxy.size.height).clipped()
-                .overlay(Color.dsRingGroove.opacity(contrast == .increased ? 0.70 : 0.54))
+                .overlay(Color.dsHorizonVeil)
+                .overlay(Color.dsHorizonBackground.opacity(contrast == .increased ? 0.65 : 0))
                 .overlay {
                     LinearGradient(stops: [
-                        .init(color: .dsRingGroove.opacity(0.45), location: 0),
-                        .init(color: .dsRingGroove.opacity(0), location: 0.70),
-                        .init(color: .dsDashboardBackground, location: 1)
+                        .init(color: .dsHorizonBackground.opacity(0), location: 0),
+                        .init(color: .dsHorizonBackground.opacity(0.10), location: 0.38),
+                        .init(color: .dsHorizonBackground, location: 1)
                     ], startPoint: .top, endPoint: .bottom)
                 }
         }
@@ -86,28 +94,23 @@ struct DomainHeroSurface: ViewModifier {
         content
             .padding(.top, 8).padding(.bottom, 12)
             .frame(maxWidth: .infinity)
-            .background {
-                GeometryReader { proxy in
-                    DomainLandscape(appearance: appearance)
-                        .frame(width: proxy.size.width + 32, height: proxy.size.height + 230)
-                        .offset(x: -16, y: -130)
-                }
-            }
     }
 }
 
 struct DomainSurface: ViewModifier {
     let appearance: DomainAppearance
-    @Environment(\.colorSchemeContrast) private var contrast
     func body(content: Content) -> some View {
-        content
-            .background(Color.dsSurface, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20)
-                .stroke(contrast == .increased ? Color.dsTextSecondary : .dsBorder, lineWidth: 1))
+        content.horizonSurface()
     }
 }
 
 extension View {
+    /// Keep foreground below the system inset. The stationary page backdrop
+    /// spans the whole window, avoiding a second, discontinuous landscape crop.
+    func domainScrollViewport(_ appearance: DomainAppearance) -> some View {
+        clipped()
+    }
+
     func domainSurface(_ appearance: DomainAppearance) -> some View {
         modifier(DomainSurface(appearance: appearance))
     }
@@ -122,10 +125,10 @@ struct DomainPageHeader: View {
     var body: some View {
         VStack(spacing: 4) {
             Text(title).font(.system(.title, design: .rounded).weight(.semibold))
-                .foregroundStyle(Color.dsRingText)
+                .foregroundStyle(Color.dsHorizonText)
             if let date, let parsed = try? Date(date, strategy: .iso8601.year().month().day()) {
                 Text(parsed, format: .dateTime.weekday(.wide).day().month(.wide))
-                    .font(.dsBodySm).foregroundStyle(Color.dsRingText)
+                    .font(.dsBodySm).foregroundStyle(Color.dsHorizonText)
             }
         }
         .multilineTextAlignment(.center)
@@ -145,43 +148,67 @@ struct DomainGauge: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle().fill(LinearGradient(colors: [.dsRingShellLight, .dsRingShellMid, .dsRingShellDark],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .overlay(Circle().stroke(Color.dsRingHighlight.opacity(0.65), lineWidth: 1))
-                    .shadow(color: .dsRingGroove.opacity(0.4), radius: 10, y: 6)
-                Circle().fill(Color.dsRingShellDark).padding(size * 0.11)
-                Circle().stroke(LinearGradient(colors: [.dsRingGroove, .dsRingHighlight.opacity(0.55)],
-                                               startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: size * 0.066)
-                    .padding(size * 0.075)
-                if let fraction, fraction.isFinite, fraction > 0 {
-                    Circle().trim(from: 0, to: min(1, fraction))
-                        .stroke(AngularGradient(colors: appearance.ringColors.reversed(),
-                                                center: .center, startAngle: .degrees(0), endAngle: .degrees(360)),
-                                style: StrokeStyle(lineWidth: size * 0.065, lineCap: .round))
-                        .rotationEffect(.degrees(-90)).padding(size * 0.075)
-                }
-                VStack(spacing: 2) {
-                    Text(value).font(.system(size: size * 0.24, weight: .semibold, design: .rounded))
-                        .monospacedDigit().foregroundStyle(Color.dsRingText)
-                        .lineLimit(1).minimumScaleFactor(0.5)
-                    if showsCaption && !dynamicTypeSize.isAccessibilitySize {
-                        Text(label).font(.system(size: compact ? 10 : 12, weight: .medium))
-                            .foregroundStyle(Color.dsRingTextSecondary).multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 16) {
+                        Text(label).font(.callout).fixedSize()
+                        Spacer(minLength: 0)
+                        accessibleValue.fixedSize()
                     }
-                }.padding(.horizontal, size * 0.22)
-            }
-            .frame(width: size, height: size)
-            if showsCaption && dynamicTypeSize.isAccessibilitySize {
-                Text(label).font(.dsCaption).foregroundStyle(Color.dsRingText)
-                    .multilineTextAlignment(.center)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(label).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        accessibleValue
+                    }
+                }
+                .foregroundStyle(Color.dsHorizonText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ring
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
         .accessibilityValue(value)
+    }
+
+    private var accessibleValue: some View {
+        Text(value).font(.system(.title2, design: .rounded).weight(.semibold))
+            .monospacedDigit().fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var ring: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Circle().fill(Color.dsHorizonGaugeCenter.opacity(0.94))
+                Circle().stroke(Color.dsHorizonGaugeTrack, lineWidth: size * 0.055)
+                    .padding(size * 0.04)
+                if let fraction, fraction.isFinite, fraction > 0 {
+                    Circle().trim(from: 0, to: min(1, fraction))
+                        .stroke(AngularGradient(colors: appearance.ringColors.reversed(),
+                                                center: .center, startAngle: .degrees(0), endAngle: .degrees(360)),
+                                style: StrokeStyle(lineWidth: size * 0.055, lineCap: .round))
+                        .rotationEffect(.degrees(-90)).padding(size * 0.04)
+                        .shadow(color: .dsHorizonGaugeGlow, radius: 5)
+                }
+                VStack(spacing: 2) {
+                    Text(value).font(.system(size: size * 0.24, weight: .semibold, design: .rounded))
+                        .monospacedDigit().foregroundStyle(Color.dsHorizonText)
+                        .lineLimit(1).minimumScaleFactor(0.5)
+                    if showsCaption && compact {
+                        Text(label).font(.caption2.weight(.medium))
+                            .foregroundStyle(Color.dsHorizonTextSecondary).multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }.padding(.horizontal, size * 0.15)
+            }
+            .frame(width: size, height: size)
+            if showsCaption && !compact {
+                Text(label).font(.body).foregroundStyle(Color.dsHorizonText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 
@@ -195,24 +222,22 @@ struct DomainValueCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Label(title, systemImage: icon)
-                .font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                .font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(appearance.accent.opacity(0.07))
             VStack(alignment: .leading, spacing: 4) {
                 Text(value).font(.system(.title2, design: .rounded).weight(.semibold))
-                    .foregroundStyle(Color.dsText).monospacedDigit()
+                    .foregroundStyle(Color.dsHorizonText).monospacedDigit()
                     .fixedSize(horizontal: false, vertical: true)
                 if let note, !note.isEmpty {
-                    Text(note).font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                    Text(note).font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
         }
-        .background(Color.dsSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.dsBorder, lineWidth: 1))
+        .horizonSurface(cornerRadius: 18)
     }
 }

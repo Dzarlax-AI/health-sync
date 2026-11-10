@@ -1,12 +1,24 @@
 import SwiftUI
 
+struct InsightDisclosureState {
+    private var serverOverride: Bool?
+    private(set) var aiExpanded = true
+
+    func serverExpanded(hasVisibleAI: Bool) -> Bool { serverOverride ?? !hasVisibleAI }
+    mutating func toggleServer(hasVisibleAI: Bool) { serverOverride = !serverExpanded(hasVisibleAI: hasVisibleAI) }
+    mutating func toggleAI() { aiExpanded.toggle() }
+}
+
 struct InsightPairView: View {
     let snapshot: TodayInsightsResponse
     var slot = "overall"
     var stale = false
     var appearance: DomainAppearance?
-    @State private var serverExpanded = false
-    @State private var aiExpanded = false
+    @State private var disclosure = InsightDisclosureState()
+
+    private var hasVisibleAI: Bool { snapshot.visibleAI(for: slot).map { !$0.text.isEmpty } ?? false }
+    private var serverExpanded: Bool { disclosure.serverExpanded(hasVisibleAI: hasVisibleAI) }
+    private var aiExpanded: Bool { disclosure.aiExpanded }
 
     private var insight: TodayInsight? { slot == "overall" ? snapshot.primary : snapshot.domain(slot)?.insight }
 
@@ -19,61 +31,16 @@ struct InsightPairView: View {
     var body: some View {
         if let insight {
             VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 10) {
-                    if stale {
-                        Label("Showing previous data. Pull to refresh.", systemImage: "clock.arrow.circlepath")
-                            .font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
-                    }
-                    Button { serverExpanded.toggle() } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Server Insight").font(.dsCaption.weight(.semibold))
-                                Spacer()
-                                Image(systemName: serverExpanded ? "chevron.up" : "arrow.up.left.and.arrow.down.right")
-                            }.foregroundStyle(Color.dsTextSecondary)
-                            Text(insight.title).font(.system(.headline, design: .rounded))
-                            if !serverExpanded, !insight.observation.isEmpty {
-                                Text(insight.observation).font(.dsBodySm)
-                                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("server-insight-\(slot)")
-                    .accessibilityValue(serverExpanded ? Text("Expanded") : Text("Collapsed"))
-                    if serverExpanded {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if !insight.observation.isEmpty {
-                                Text(insight.observation).fixedSize(horizontal: false, vertical: true)
-                            }
-                            if !insight.meaning.isEmpty, insight.meaning != insight.observation { Text(insight.meaning) }
-                            if let action = insight.nextStep, !action.text.isEmpty {
-                                Text(action.text).font(.dsBodySm.weight(.semibold))
-                            }
-                        }
-                        .font(.dsBodySm)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("server-insight-details-\(slot)")
-                    }
-                }
-                .padding(16).domainSurface(appearance ?? .recovery)
-
                 if let ai = snapshot.visibleAI(for: slot), !ai.text.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
-                        Button { aiExpanded.toggle() } label: {
+                        Button { disclosure.toggleAI() } label: {
                             HStack(spacing: 8) {
                                 Label("AI Insight", systemImage: "sparkles").font(.dsBodySm.weight(.semibold))
-                                if snapshot.generation.narrativeMode == "preview" {
-                                    Text("AI preview").font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
-                                }
                                 Spacer(minLength: 0)
                                 Image(systemName: aiExpanded ? "chevron.up" : "chevron.down")
-                                    .font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                                    .font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -89,7 +56,7 @@ struct InsightPairView: View {
                                 }
                                 Text(snapshot.state(for: slot) == "failed" ? "AI refresh failed" :
                                      ["cold", "generating"].contains(snapshot.state(for: slot)) ? "AI insight is updating" : "Previous context")
-                            }.font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                            }.font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                         }
                         if aiExpanded {
                             VStack(alignment: .leading, spacing: 12) {
@@ -104,22 +71,60 @@ struct InsightPairView: View {
                             .accessibilityIdentifier("ai-insight-details-\(slot)")
                         }
                     }
-                    .padding(16).domainSurface(appearance ?? .recovery)
+                    .padding(16).horizonSurface(tinted: true, cornerRadius: 20)
                 } else if !stale {
                     switch snapshot.state(for: slot) {
                     case "cold", "generating":
                         Label("AI insight is updating", systemImage: "sparkles")
-                            .font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
-                            .padding(16).domainSurface(appearance ?? .recovery)
+                            .font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
+                            .padding(16).horizonSurface(tinted: true, cornerRadius: 20)
                     case "failed":
-                        Text("AI insight is unavailable. Server insight is shown.")
-                            .font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
-                            .padding(16).domainSurface(appearance ?? .recovery)
+                        Text("AI insight is unavailable.")
+                            .font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
+                            .padding(16).horizonSurface(tinted: true, cornerRadius: 20)
                     default: EmptyView()
                     }
                 }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    if stale {
+                        Label("Showing previous data. Pull to refresh.", systemImage: "clock.arrow.circlepath")
+                            .font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
+                    }
+                    Button { disclosure.toggleServer(hasVisibleAI: hasVisibleAI) } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Server Insight").font(.dsCaption.weight(.semibold))
+                                Spacer()
+                                Image(systemName: serverExpanded ? "chevron.up" : "arrow.up.left.and.arrow.down.right")
+                            }.foregroundStyle(Color.dsHorizonTextSecondary)
+                        }
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("server-insight-\(slot)")
+                    .accessibilityValue(serverExpanded ? Text("Expanded") : Text("Collapsed"))
+                    if serverExpanded {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(insight.title).font(.system(.headline, design: .rounded))
+                            if !insight.observation.isEmpty {
+                                Text(insight.observation).fixedSize(horizontal: false, vertical: true)
+                            }
+                            if !insight.meaning.isEmpty, insight.meaning != insight.observation { Text(insight.meaning) }
+                            if let action = insight.nextStep, !action.text.isEmpty {
+                                Text(action.text).font(.dsBodySm.weight(.semibold))
+                            }
+                        }
+                        .font(.dsBodySm)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("server-insight-details-\(slot)")
+                    }
+                }
+                .padding(16).horizonSurface(cornerRadius: 20)
             }
-            .foregroundStyle(Color.dsText)
+            .foregroundStyle(Color.dsHorizonText)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -152,7 +157,7 @@ struct DomainInsightSection: View {
     let controller: TodayInsightsController
     let slot: String
     var appearance: DomainAppearance?
-    private var headerColor: Color { .dsTextSecondary }
+    private var headerColor: Color { .dsHorizonTextSecondary }
     var body: some View {
         if let snapshot = controller.response, snapshot.domain(slot) != nil {
             VStack(alignment: .leading, spacing: .dsSpacingSm) {
@@ -164,6 +169,7 @@ struct DomainInsightSection: View {
                     Text(snapshot.date).font(.dsCaption)
                 }.foregroundStyle(headerColor)
                 InsightPairView(snapshot: snapshot, slot: slot, stale: controller.isStale, appearance: appearance)
+                    .id("\(controller.contentIdentity)-\(snapshot.date)-\(slot)")
             }
         }
     }
