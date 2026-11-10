@@ -26,7 +26,7 @@ struct TodayView: View {
             GeometryReader { viewport in
                 let contentWidth = max(0, viewport.size.width - (2 * .dsSpacing))
                 ZStack(alignment: .top) {
-                    Color.dsDashboardBackground.ignoresSafeArea()
+                    DomainBackdrop(appearance: .recovery)
 
                     ScrollView {
                         VStack(spacing: .dsSpacingLg) {
@@ -42,11 +42,6 @@ struct TodayView: View {
                         .padding(.top, .dsSpacingXl)
                         .padding(.bottom, .dsTabBarClearance)
                         .frame(maxWidth: .infinity)
-                        .background(alignment: .top) {
-                            DomainLandscape(appearance: .recovery)
-                                .frame(width: viewport.size.width, height: 550)
-                                .offset(y: -130)
-                        }
                     }
                     .domainScrollViewport(.recovery)
                     .accessibilityIdentifier("today-scroll")
@@ -228,7 +223,7 @@ private struct TodayLoadingState: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.dsSpacing)
-            .dsCard()
+            .horizonSurface()
 
             HStack(spacing: .dsSpacingSm) {
                 skeletonCard()
@@ -242,7 +237,7 @@ private struct TodayLoadingState: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.dsSpacing)
-            .dsCard()
+            .horizonSurface()
         }
         .redacted(reason: .placeholder)
         .accessibilityElement(children: .ignore)
@@ -257,12 +252,12 @@ private struct TodayLoadingState: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.dsSpacing)
-        .dsCard()
+        .horizonSurface()
     }
 
     private func skeletonLine(width: CGFloat?, height: CGFloat) -> some View {
         RoundedRectangle(cornerRadius: 4)
-            .fill(Color.dsSurface2)
+            .fill(Color.dsHorizonSurfaceTint)
             .frame(width: width, height: height)
             .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
     }

@@ -14,15 +14,14 @@ struct TodayPageHeader: View {
         layout {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Today")
-                    .font(.system(.title, design: .rounded).weight(.semibold))
-                    .foregroundStyle(Color.dsRingText)
+                    .font(.dsTitle.weight(.semibold))
+                    .foregroundStyle(Color.dsHorizonText)
                 Text(verbatim: formattedDate)
                     .font(.dsBodySm)
-                    .foregroundStyle(Color.dsRingText)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
             }
             if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
             TodayHeaderSyncButton(status: syncStatus, action: openSyncStatus)
-                .environment(\.colorScheme, .dark)
         }
     }
 
@@ -36,7 +35,6 @@ struct TodayPageHeader: View {
 
 struct TodayHeroBlock: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let briefing: BriefingResponse
     let history: [ReadinessPoint]
     @Binding var expandedStressFlag: String?
@@ -68,10 +66,8 @@ struct TodayHeroBlock: View {
                 }.accessibilityIdentifier("today-ring-sleep")
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 12).padding(.vertical, 18)
+            .padding(.vertical, 4)
             .frame(maxWidth: .infinity)
-            .background(Color.dsRingGroove.opacity(reduceTransparency || dynamicTypeSize.isAccessibilitySize ? 1 : 0.32), in: RoundedRectangle(cornerRadius: 24))
-            .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.dsRingHighlight.opacity(0.45), lineWidth: 1))
 
             if let todayInsights {
                 InsightPairView(snapshot: todayInsights, stale: insightsStale)
@@ -106,12 +102,14 @@ struct TodayHeroBlock: View {
                         size: max(76, (contentWidth - 48) / 3), compact: true, showsCaption: appearance == .energy)
             if dynamicTypeSize.isAccessibilitySize {
                 if appearance == .energy {
-                    Text(label).font(.caption).foregroundStyle(Color.dsRingText)
+                    Text(label).font(.caption).foregroundStyle(Color.dsHorizonTextSecondary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             } else {
-                Text(title).font(.system(.caption).weight(.semibold)).foregroundStyle(Color.dsRingText)
+                Text(appearance == .sleep ? LocalizedStringKey("Today sleep ring title") : title)
+                    .font(.system(.caption).weight(.semibold)).foregroundStyle(Color.dsHorizonText)
                     .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("today-ring-caption-\(appearance)")
             }
         }
         .frame(maxWidth: .infinity)
@@ -151,7 +149,7 @@ struct TodayInsightsDomainsBlock: View {
                     Text("Changes today").font(.system(.headline, design: .rounded))
                     ForEach(snapshot.changes) { change in
                         Text(change.title).font(.dsBodySm.weight(.semibold))
-                        Text(change.detail).font(.dsBodySm).foregroundStyle(Color.dsTextSecondary)
+                        Text(change.detail).font(.dsBodySm).foregroundStyle(Color.dsHorizonTextSecondary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -199,19 +197,19 @@ private struct TodayInsightDomainLink: View {
             HStack(alignment: .firstTextBaseline, spacing: .dsSpacingSm) {
                 Text(domain.summary)
                     .font(.system(.headline, design: .rounded))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Image(systemName: isNavigable ? "chevron.right" : "circle.fill")
                     .font(.system(size: isNavigable ? 13 : 7, weight: .semibold))
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
             }
-            Text(dataStateLabel).font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+            Text(dataStateLabel).font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
 
         }
         .padding(.dsSpacing)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .domainSurface(.recovery)
+        .horizonSurface()
         .accessibilityElement(children: .combine)
     }
 }
@@ -223,16 +221,16 @@ private struct TodayReadinessRing: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(Color.dsSurface.opacity(0.82))
+                .fill(Color.dsHorizonGaugeCenter)
                 .shadow(color: Color.dsElevatedShadow.opacity(0.08), radius: 14, y: 7)
             Circle()
-                .stroke(Color.dsReadiness.opacity(0.13), lineWidth: 18)
+                .stroke(Color.dsHorizonGaugeTrack, lineWidth: 18)
                 .padding(9)
             Circle()
                 .trim(from: 0, to: readinessProgress)
                 .stroke(
                     AngularGradient(
-                        colors: [Color.dsReadiness.opacity(0.62), Color.dsReadiness],
+                        colors: [Color.dsHorizonAccent.opacity(0.62), Color.dsHorizonAccent],
                         center: .center
                     ),
                     style: StrokeStyle(lineWidth: 18, lineCap: .round)
@@ -245,13 +243,13 @@ private struct TodayReadinessRing: View {
                     .font(.system(size: 48, weight: .semibold, design: .rounded))
                     .minimumScaleFactor(0.72)
                     .lineLimit(1)
-                    .foregroundStyle(Color.dsReadiness)
+                    .foregroundStyle(Color.dsHorizonAccent)
                 Text("Readiness")
                     .font(.dsCaption.weight(.semibold))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 label
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
             }
         }
         .frame(width: 164, height: 164)
@@ -273,14 +271,16 @@ private struct TodayHeaderSyncButton: View {
             HStack(spacing: 6) {
                 Image(systemName: icon)
                     .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(tint)
                 Text(label)
                     .font(.dsCaption.weight(.semibold))
             }
-            .foregroundStyle(tint)
+            .foregroundStyle(Color.dsHorizonText)
             .padding(.horizontal, 11)
             .frame(minHeight: 34)
             .background(backgroundTint, in: Capsule())
-            .overlay(Capsule().stroke(Color.dsElevatedBorder, lineWidth: 1))
+            .background(Color.dsHorizonSurface, in: Capsule())
+            .overlay(Capsule().stroke(Color.dsHorizonBorder, lineWidth: 1))
             .frame(minWidth: 44, minHeight: 44)
             .contentShape(Rectangle())
         }
@@ -303,7 +303,7 @@ private struct TodayHeaderSyncButton: View {
         case .accepted: return .dsGood
         case .error: return .dsDanger
         case .sending, .partial, .retryPending: return .dsWarn
-        case .notConfigured, .noData, .disabled: return .dsTextSecondary
+        case .notConfigured, .noData, .disabled: return .dsHorizonTextSecondary
         }
     }
 
@@ -321,7 +321,7 @@ private struct TodayHeaderSyncButton: View {
     }
 
     private var backgroundTint: Color {
-        status == .error ? .dsDangerBg.opacity(0.92) : .dsSurface.opacity(0.72)
+        status == .error ? .dsDangerBg.opacity(0.92) : .dsHorizonSurface
     }
 }
 
@@ -351,17 +351,17 @@ private struct TodayEnergyPill: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Energy")
                     .font(.dsCaption.weight(.semibold))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 Text("\(energyBank.current) / \(energyBank.capacity)")
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .monospacedDigit()
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.dsSurface.opacity(0.72), in: Capsule())
-        .overlay(Capsule().stroke(Color.dsElevatedBorder, lineWidth: 1))
+        .background(Color.dsHorizonSurface.opacity(0.72), in: Capsule())
+        .overlay(Capsule().stroke(Color.dsHorizonBorder, lineWidth: 1))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Energy")
         .accessibilityValue("\(energyBank.current) of \(energyBank.capacity)")
@@ -424,18 +424,18 @@ private struct TodaySupportingMetricContent: View {
                     .background(color.opacity(0.12), in: Circle())
                 Text(card.name)
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .lineLimit(1)
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(card.value)
                     .font(.system(size: 25, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                     .minimumScaleFactor(0.78)
                     .lineLimit(1)
                 Text(card.unit)
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .lineLimit(1)
             }
             if let trend = card.trend7dLabel, !trend.isEmpty {
@@ -474,7 +474,7 @@ private struct TodayHeroNarrativeCard: View {
                     if let title = briefing.headline?.title, !title.isEmpty {
                         Text(title)
                             .font(.system(.title3, design: .default).weight(.semibold))
-                            .foregroundStyle(Color.dsText)
+                            .foregroundStyle(Color.dsHorizonText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -483,7 +483,7 @@ private struct TodayHeroNarrativeCard: View {
             if briefing.dailyDecision == nil, let tip = briefing.readinessTip, !tip.isEmpty {
                 Text(tip)
                     .font(.dsBodySm)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -542,28 +542,28 @@ private struct TodayDailyPlanCard: View {
             Label(hasFreshPlan ? "AI plan" : "Daily guidance",
                   systemImage: hasFreshPlan ? "sparkles" : "scope")
                 .font(.dsBody.weight(.semibold))
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
             Text(planTitle)
                 .font(.system(.title3, design: .default).weight(.semibold))
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
                 .fixedSize(horizontal: false, vertical: true)
             if let planBody, !planBody.isEmpty {
                 Text(planBody)
                     .font(.dsBodySm)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let headline, !headline.title.isEmpty {
                 Divider()
-                    .overlay(Color.dsElevatedBorder)
+                    .overlay(Color.dsHorizonBorder)
                 Label(headline.title, systemImage: "waveform.path.ecg")
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if hasFreshPlan, let aiResponse {
                 Divider()
-                    .overlay(Color.dsElevatedBorder)
+                    .overlay(Color.dsHorizonBorder)
                 NavigationLink {
                     TodayAIPlanDetail(response: aiResponse)
                 } label: {
@@ -586,7 +586,7 @@ private struct TodayDailyPlanCard: View {
                     Text("Previous AI insight").font(.dsCaption)
                     Text(previous.sourceDate).font(.dsCaption)
                     Text(previous.text).font(.dsBodySm)
-                }.foregroundStyle(Color.dsTextSecondary)
+                }.foregroundStyle(Color.dsHorizonTextSecondary)
             }
             if !hasFreshPlan && (aiGenerating || aiResponse?.generating == true || aiResponse?.freshForDecision == false) {
                 Label("Detailed plan is updating", systemImage: "arrow.trianglehead.2.clockwise")
@@ -604,43 +604,19 @@ private struct TodayDailyPlanCard: View {
 
 private struct TodayFocusSurface: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            .background(Color.dsSurface.opacity(0.78))
-            .background(.thinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .stroke(Color.dsElevatedBorder, lineWidth: 1)
-            }
-            .shadow(color: Color.dsElevatedShadow.opacity(0.42), radius: 12, y: 4)
+        content.horizonSurface(cornerRadius: 26)
     }
 }
 
 private struct TodayMetricSurface: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            .background(Color.dsSurface.opacity(0.70))
-            .background(.thinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(Color.dsElevatedBorder, lineWidth: 1)
-            }
-            .shadow(color: Color.dsElevatedShadow.opacity(0.22), radius: 8, y: 3)
+        content.horizonSurface(cornerRadius: 22)
     }
 }
 
 private struct TodayRecommendationSurface: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            .background(Color.dsSurface.opacity(0.68))
-            .background(.thinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(Color.dsElevatedBorder, lineWidth: 1)
-            }
-            .shadow(color: Color.dsElevatedShadow.opacity(0.16), radius: 7, y: 3)
+        content.horizonSurface(cornerRadius: 18)
     }
 }
 
@@ -660,7 +636,7 @@ private struct TodayHeroDetails: View {
             if let headline = briefing.headline, !headline.detail.isEmpty {
                 Text(headline.detail)
                     .font(.dsBodySm)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .multilineTextAlignment(.leading)
             }
 
@@ -711,7 +687,7 @@ private struct TodayEnergyBankDetailView: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.dsTextTertiary.opacity(0.15))
+                        .fill(Color.dsHorizonTextSecondary.opacity(0.15))
                     RoundedRectangle(cornerRadius: 4)
                         .fill(todayVerdictColor(energyBank.actionVerdict))
                         .frame(width: geo.size.width * CGFloat(max(0, min(energyBank.capacity, energyBank.current))) / CGFloat(max(energyBank.capacity, 1)))
@@ -721,7 +697,7 @@ private struct TodayEnergyBankDetailView: View {
             if !energyBank.verdictReason.isEmpty {
                 Text(energyBank.verdictReason)
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
             }
             HStack(spacing: .dsSpacingSm) {
                 TodayEnergyDetail(label: "Drain so far", value: "\(energyBank.drainSoFar)")
@@ -745,15 +721,15 @@ private struct TodayEnergyDetail: View {
         HStack {
             Text(label)
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextTertiary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
             Spacer(minLength: 4)
             Text(value)
                 .font(.dsMono)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color.dsSurface2.opacity(0.6))
+        .background(Color.dsHorizonSurfaceTint.opacity(0.6))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
@@ -785,7 +761,7 @@ private struct TodayStressFlagChips: View {
                    let match = visibleDetails.first(where: { $0.key == expanded }) {
                     Text(match.description)
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .transition(.opacity)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -837,7 +813,7 @@ struct TodayAlertsBlock: View {
                         .foregroundStyle(Color.dsDanger)
                     Text(alert.text)
                         .font(.dsBodySm)
-                        .foregroundStyle(Color.dsText)
+                        .foregroundStyle(Color.dsHorizonText)
                     Spacer(minLength: 0)
                 }
                 .padding(.dsSpacingSm)
@@ -875,7 +851,7 @@ private struct TodayWatchAlert: View {
         VStack(alignment: .leading, spacing: .dsSpacingXs) {
             Text(alert.text)
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .lineLimit(expanded ? nil : 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if !expanded {
@@ -926,12 +902,12 @@ private struct TodayAIInsightExpanded: View {
             HStack(alignment: .firstTextBaseline, spacing: .dsSpacingSm) {
                 Label("Recommendation", systemImage: "sparkles")
                     .font(.dsBody.weight(.semibold))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 Spacer(minLength: 0)
                 if topicChips.count > 1 {
                     Text("\(topicChips.count) signals")
                         .font(.dsCaption.weight(.medium))
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
 
@@ -940,12 +916,12 @@ private struct TodayAIInsightExpanded: View {
                     Text("Previous AI insight")
                     Text(previous.sourceDate)
                     Text(response.generating ? "AI insight is updating" : "Previous context")
-                }.font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                }.font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
             }
 
             Text(primaryText)
                 .font(.dsBodySm)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1035,7 +1011,7 @@ private struct TodayAIInsightDetail: View {
                    !sections.fallback.isEmpty {
                     Text(sections.fallback)
                         .font(.dsBodySm)
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .multilineTextAlignment(.leading)
                 }
             }
@@ -1043,7 +1019,7 @@ private struct TodayAIInsightDetail: View {
         }
         .navigationTitle("Recommendation")
         .navigationBarTitleDisplayMode(.inline)
-        .background(Color.dsBackground)
+        .background(Color.dsHorizonBackground)
     }
 }
 
@@ -1063,12 +1039,12 @@ private struct TodayAIPlanDetail: View {
                     if let title = plan?.title, !title.isEmpty {
                         Text(title)
                             .font(.system(.title, design: .default).weight(.bold))
-                            .foregroundStyle(Color.dsText)
+                            .foregroundStyle(Color.dsHorizonText)
                     }
                     if let body = plan?.body, !body.isEmpty {
                         Text(body)
                             .font(.dsBody)
-                            .foregroundStyle(Color.dsTextSecondary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -1078,7 +1054,7 @@ private struct TodayAIPlanDetail: View {
                     Divider()
                     Text("Why this fits today")
                         .font(.dsSubhead)
-                        .foregroundStyle(Color.dsText)
+                        .foregroundStyle(Color.dsHorizonText)
                     VStack(spacing: 0) {
                         if !sections.recovery.isEmpty {
                             TodayAIInsightReason(icon: "leaf.fill", title: "Recovery", tint: .dsCardio, text: sections.recovery)
@@ -1092,19 +1068,19 @@ private struct TodayAIPlanDetail: View {
                             TodayAIInsightReason(icon: "clock.arrow.circlepath", title: "Yesterday", tint: .dsActivity, text: sections.yesterday)
                         }
                     }
-                    .dsElevatedCard()
+                    .horizonSurface()
                 }
 
                 if !sections.fallback.isEmpty, !hasReasons {
                     Text(sections.fallback)
                         .font(.dsBodySm)
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(.dsSpacing)
         }
-        .background(Color.dsBackground)
+        .background(Color.dsHorizonBackground)
         .navigationTitle("AI insight")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -1134,17 +1110,17 @@ private struct TodayAIInsightReason: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(.dsBodySm.weight(.semibold))
-                        .foregroundStyle(Color.dsText)
+                        .foregroundStyle(Color.dsHorizonText)
                     Text(text)
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .lineLimit(expanded ? nil : 2)
                         .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: expanded ? "chevron.up" : "chevron.down")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .padding(.top, 4)
             }
             .padding(.dsSpacing)
@@ -1245,12 +1221,12 @@ private struct TodayAIBlock: View {
                     .frame(width: 18)
                 Text(title)
                     .font(.dsBodySm.weight(.semibold))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                     .textCase(.uppercase)
             }
             Text(text)
                 .font(.dsBodySm)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 26)
@@ -1272,7 +1248,7 @@ struct TodayOverviewBlock: View {
                     TodayOverviewSectionLink(section: section, selection: $selection)
                 }
             }
-            .dsElevatedCard()
+            .horizonSurface()
         }
     }
 }
@@ -1306,18 +1282,18 @@ private struct TodayOverviewSectionRow: View {
             HStack(spacing: .dsSpacingSm) {
                 Text(section.title)
                     .font(.dsSubhead)
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 todaySectionStatusBadge(section)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .font(.system(size: 13, weight: .semibold))
             }
 
             if !section.summary.isEmpty {
                 Text(section.summary)
                     .font(.dsBodySm)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
             }
@@ -1335,10 +1311,10 @@ struct TodayEmptyState: View {
         VStack(spacing: .dsSpacingSm) {
             Image(systemName: isError ? "exclamationmark.triangle" : "tray")
                 .font(.system(size: 40))
-                .foregroundStyle(isError ? Color.dsDanger : Color.dsTextTertiary)
+                .foregroundStyle(isError ? Color.dsDanger : Color.dsHorizonTextSecondary)
             Text(message)
                 .font(.dsBodySm)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, minHeight: 240)
@@ -1360,9 +1336,9 @@ private func todayStressFlagStyle(_ key: String) -> TodayStressFlagStyle {
     case "parasympathetic_rebound":
         return .init(foreground: .dsCardio, background: .dsCardio.opacity(0.12), isDashed: false)
     case "stale_stress", "calibration_warmup":
-        return .init(foreground: .dsTextTertiary, background: Color.clear, isDashed: true)
+        return .init(foreground: .dsHorizonTextSecondary, background: Color.clear, isDashed: true)
     default:
-        return .init(foreground: .dsTextSecondary, background: Color.dsSurface2.opacity(0.6), isDashed: false)
+        return .init(foreground: .dsHorizonTextSecondary, background: Color.dsHorizonSurfaceTint.opacity(0.6), isDashed: false)
     }
 }
 
@@ -1388,7 +1364,7 @@ private func todayTrendColor(_ status: String?) -> Color {
     case "good":    return .dsGood
     case "warn":    return .dsWarn
     case "danger":  return .dsDanger
-    default:        return .dsTextSecondary
+    default:        return .dsHorizonTextSecondary
     }
 }
 
@@ -1436,6 +1412,6 @@ private func todayVerdictColor(_ verdict: String) -> Color {
     case "moderate":        return .dsAccent
     case "active_recovery": return .dsWarn
     case "rest":            return .dsDanger
-    default:                return .dsTextSecondary
+    default:                return .dsHorizonTextSecondary
     }
 }

@@ -35,7 +35,7 @@ struct MetricsView: View {
         NavigationStack {
             ZStack {
                 LinearGradient(
-                    colors: [Color.dsReadiness.opacity(0.10), Color.dsBackground],
+                    colors: [Color.dsHorizonAccent.opacity(0.10), Color.dsHorizonBackground],
                     startPoint: .top,
                     endPoint: .center
                 )
@@ -46,10 +46,10 @@ struct MetricsView: View {
                 } else if let err = loadError, metrics.isEmpty {
                     VStack(spacing: .dsSpacing) {
                         Image(systemName: missingConfiguration ? "server.rack" : "exclamationmark.triangle")
-                            .font(.largeTitle).foregroundStyle(Color.dsTextSecondary)
+                            .font(.largeTitle).foregroundStyle(Color.dsHorizonTextSecondary)
                         Text(missingConfiguration ? "Connect your server to browse metrics." : "Couldn't load metrics")
                             .font(.dsBody).multilineTextAlignment(.center)
-                        if !missingConfiguration { Text(verbatim: err).font(.dsCaption).foregroundStyle(Color.dsTextSecondary) }
+                        if !missingConfiguration { Text(verbatim: err).font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary) }
                         if missingConfiguration {
                             Button("Connect server", action: openConnection)
                                 .buttonStyle(DSSecondaryButtonStyle())
@@ -67,7 +67,7 @@ struct MetricsView: View {
                         LazyVStack(alignment: .leading, spacing: .dsSpacingLg) {
                             Text("Browse all available health data")
                                 .font(.dsBodySm)
-                                .foregroundStyle(Color.dsTextSecondary)
+                                .foregroundStyle(Color.dsHorizonTextSecondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             if let loadError {
                                 SyncRefreshBanner(message: loadError, lastLoadedAt: lastLoadedAt) {
@@ -100,10 +100,10 @@ struct MetricsView: View {
         VStack(spacing: .dsSpacingSm) {
             Image(systemName: metrics.isEmpty ? "waveform.path.ecg" : "magnifyingglass")
                 .font(.system(size: 40))
-                .foregroundStyle(Color.dsTextTertiary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
             Text(metrics.isEmpty ? "No metrics yet." : "No matching metrics.")
                 .font(.dsBodySm)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -127,31 +127,31 @@ struct MetricsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(metric.title)
                         .font(.dsBody.weight(.semibold))
-                        .foregroundStyle(Color.dsText)
+                        .foregroundStyle(Color.dsHorizonText)
                     if let variant = metric.variantDescription(hasNameCollision: hasNameCollision) {
                         Text(verbatim: variant)
                             .font(.dsCaption)
-                            .foregroundStyle(Color.dsTextSecondary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let date = MetricDateWindow.date(metric.max) {
                         Text("Last record: \(date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: .gmt)))")
                             .font(.dsCaption)
-                            .foregroundStyle(Color.dsTextTertiary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                     }
                     HStack(spacing: 6) {
                         Text(verbatim: metric.unitMetadata.displayUnit ?? metric.unitMetadata.notice ?? "")
                             .font(.dsCaption)
-                            .foregroundStyle(Color.dsTextSecondary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                         Text("\(metric.count) records")
                             .font(.dsCaption)
-                            .foregroundStyle(Color.dsTextTertiary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                     }
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
             }
             .padding(.horizontal, .dsSpacing)
             .padding(.vertical, 14)

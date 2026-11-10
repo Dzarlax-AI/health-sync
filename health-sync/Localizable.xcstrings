@@ -1,6 +1,14 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Today sleep ring title" : {
+      "comment" : "Compact visible caption on Today's sleep ring; accessibility keeps the full metric name.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sleep efficiency" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сон" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Efikasnost sna" } }
+      }
+    },
     "Date unavailable" : {
       "localizations" : {
         "en" : {

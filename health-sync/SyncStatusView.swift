@@ -31,7 +31,7 @@ struct SyncStatusView: View {
             }
             .padding(.dsSpacing)
         }
-        .background(Color.dsBackground)
+        .background(Color.dsHorizonBackground)
         .navigationTitle("Data & sync")
         .navigationBarTitleDisplayMode(.inline)
         .task { engine.refreshConfiguration() }
@@ -48,13 +48,13 @@ struct SyncStatusView: View {
 
             Text(statusDetail(visibleState.status))
                 .font(.dsBodySm)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if engine.isSyncing && engine.isBuildingInitialSleepHistory {
                 Label("Building your recent sleep history. This runs once and does not block today's sync.",
                       systemImage: "moon.zzz.fill")
                     .font(.dsBodySm)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let failure = visibleState.metrics.failure ?? visibleState.workouts.failure {
@@ -87,7 +87,7 @@ struct SyncStatusView: View {
         VStack(alignment: .leading, spacing: .dsSpacingXs) {
             Text("Latest sync attempt")
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextTertiary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
             Text(statusTitle(visibleState.status))
                 .font(.dsHeading)
                 .foregroundStyle(statusColor(visibleState.status))
@@ -133,7 +133,7 @@ struct SyncStatusView: View {
                     .frame(width: 24, height: 24)
                 Text(title)
                     .font(.dsSubhead)
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 Spacer(minLength: 0)
                 DSStatusBadge(text: statusBadge(channel.status),
                               status: badgeStatus(channel.status))
@@ -144,13 +144,13 @@ struct SyncStatusView: View {
                     LabeledContent("Last accepted") {
                         Text(accepted, style: .relative)
                             .font(.dsBodySm)
-                            .foregroundStyle(Color.dsTextSecondary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                     }
                 } else {
                     LabeledContent("Last accepted") {
                         Text("Never")
                             .font(.dsBodySm)
-                            .foregroundStyle(Color.dsTextTertiary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                     }
                 }
 
@@ -158,7 +158,7 @@ struct SyncStatusView: View {
                     LabeledContent("Last upload size") {
                         Text(uploadCount(channel.acceptedCount, isWorkout: isWorkout))
                             .font(.dsBodySm)
-                            .foregroundStyle(Color.dsTextSecondary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                     }
                 }
 
@@ -194,14 +194,14 @@ struct SyncStatusView: View {
                     if engine.history.isEmpty && engine.legacyHistory.isEmpty {
                         Text("No sync history yet.")
                             .font(.dsBodySm)
-                            .foregroundStyle(Color.dsTextTertiary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, .dsSpacingSm)
                     } else {
                         if !engine.history.isEmpty {
                             Text("This account")
                                 .font(.dsCaption.weight(.medium))
-                                .foregroundStyle(Color.dsTextTertiary)
+                                .foregroundStyle(Color.dsHorizonTextSecondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             historyRows(engine.history)
                         }
@@ -210,10 +210,10 @@ struct SyncStatusView: View {
                             VStack(alignment: .leading, spacing: .dsSpacingXs) {
                                 Text("Older attempts (account unknown)")
                                     .font(.dsCaption.weight(.medium))
-                                    .foregroundStyle(Color.dsTextTertiary)
+                                    .foregroundStyle(Color.dsHorizonTextSecondary)
                                 Text("These attempts are retained without account attribution.")
                                     .font(.dsCaption)
-                                    .foregroundStyle(Color.dsTextTertiary)
+                                    .foregroundStyle(Color.dsHorizonTextSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -231,7 +231,7 @@ struct SyncStatusView: View {
             } label: {
                 Label("History & re-sync", systemImage: "clock.arrow.circlepath")
                     .font(.dsSubhead)
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
             }
             .padding(.dsSpacing)
             .accessibilityIdentifier("sync-history-disclosure")
@@ -257,7 +257,7 @@ struct SyncStatusView: View {
             VStack(alignment: .leading, spacing: .dsSpacingXs) {
                 Text(entry.date, style: .relative)
                     .font(.dsBodySm)
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 if let error = entry.error {
                     Text(verbatim: error)
                         .font(.dsCaption)
@@ -270,11 +270,11 @@ struct SyncStatusView: View {
                         entry.points
                     ))
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 } else {
                     Text("Attempt")
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             Spacer(minLength: 0)
@@ -290,7 +290,7 @@ struct SyncStatusView: View {
     private func historyColor(_ entry: SyncEntry) -> Color {
         if entry.success && entry.points > 0 { return .dsGood }
         if entry.error != nil { return .dsDanger }
-        return .dsTextTertiary
+        return .dsHorizonTextSecondary
     }
 
     private var customResyncSheet: some View {
@@ -299,7 +299,7 @@ struct SyncStatusView: View {
                 VStack(alignment: .leading, spacing: .dsSpacingSm) {
                     Text("Date range")
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                     // The server-side availability audit spans 108 days. Keep the
                     // manual control above that boundary so a user can establish
                     // the required coverage in one explicit re-sync, while the
@@ -307,11 +307,11 @@ struct SyncStatusView: View {
                     Stepper(value: $customDays, in: 1...120) {
                         Text("Last \(customDays) days")
                             .font(.dsHeading)
-                            .foregroundStyle(Color.dsText)
+                            .foregroundStyle(Color.dsHorizonText)
                     }
                     Text("Re-reads Health data for this range and retries any incomplete channel delivery.")
                         .font(.dsBodySm)
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.dsSpacing)
@@ -327,7 +327,7 @@ struct SyncStatusView: View {
                 Spacer()
             }
             .padding(.dsSpacing)
-            .background(Color.dsBackground)
+            .background(Color.dsHorizonBackground)
             .navigationTitle("Re-sync")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -346,7 +346,7 @@ struct SyncStatusView: View {
                     .foregroundStyle(Color.dsDanger)
                 Text(verbatim: failure.message)
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } icon: {
@@ -457,7 +457,7 @@ struct SyncStatusView: View {
         case .good: return .dsGood
         case .warn: return .dsWarn
         case .danger: return .dsDanger
-        case .neutral: return .dsTextSecondary
+        case .neutral: return .dsHorizonTextSecondary
         }
     }
 }
@@ -476,15 +476,15 @@ struct SyncRefreshBanner: View {
             VStack(alignment: .leading, spacing: .dsSpacingXs) {
                 Text("Refresh failed")
                     .font(.dsBodySm.weight(.medium))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 Text(verbatim: message)
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let lastLoadedAt {
                     Text("Last updated \(lastLoadedAt, style: .relative)")
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextTertiary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             Spacer(minLength: 0)

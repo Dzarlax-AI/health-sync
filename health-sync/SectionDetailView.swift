@@ -59,7 +59,7 @@ struct SectionDetailView: View {
                 }
                 if let section, !section.explains.isEmpty { explainsBlock(section.explains) }
             }
-            .foregroundStyle(Color.dsText)
+            .foregroundStyle(Color.dsHorizonText)
             .padding(.dsSpacing)
             .padding(.bottom, .dsTabBarClearance)
         }
@@ -69,7 +69,6 @@ struct SectionDetailView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .refreshable {
             async let charts: Void = load()
             if sectionKey == "recovery" { await todayInsights.refresh() }
@@ -112,10 +111,10 @@ struct SectionDetailView: View {
         VStack(alignment: .leading, spacing: .dsSpacingSm) {
             Text("Overview")
                 .font(.dsCaption.weight(.semibold))
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
             Text(text)
                 .font(.dsBody)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -140,7 +139,7 @@ struct SectionDetailView: View {
         VStack(alignment: .leading, spacing: .dsSpacingSm) {
             Text(c.label)
                 .font(.system(.title3, design: .rounded).weight(.semibold))
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
 
             if c.virtual == true {
                 readinessChartView(color: parseColor(c.color))
@@ -177,16 +176,16 @@ struct SectionDetailView: View {
             .chartYScale(domain: 0...100)
             .chartYAxis {
                 AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                    AxisGridLine().foregroundStyle(Color.dsBorder)
-                    AxisValueLabel().foregroundStyle(Color.dsTextSecondary)
+                    AxisGridLine().foregroundStyle(Color.dsHorizonBorder)
+                    AxisValueLabel().foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             .chartXAxis {
                 AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { _ in
                     AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                        .foregroundStyle(Color.dsBorder)
+                        .foregroundStyle(Color.dsHorizonBorder)
                     AxisValueLabel(format: dynamicTypeSize.isAccessibilitySize ? .dateTime.day().month(.twoDigits) : .dateTime.day().month(.abbreviated))
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             .frame(height: 160)
@@ -214,16 +213,16 @@ struct SectionDetailView: View {
             .chartLegend(.hidden)
             .chartYAxis {
                 AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                    AxisGridLine().foregroundStyle(Color.dsBorder)
-                    AxisValueLabel().foregroundStyle(Color.dsTextSecondary)
+                    AxisGridLine().foregroundStyle(Color.dsHorizonBorder)
+                    AxisValueLabel().foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             .chartXAxis {
                 AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { _ in
                     AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                        .foregroundStyle(Color.dsBorder)
+                        .foregroundStyle(Color.dsHorizonBorder)
                     AxisValueLabel(format: dynamicTypeSize.isAccessibilitySize ? .dateTime.day().month(.twoDigits) : .dateTime.day().month(.abbreviated))
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             .frame(height: 180)
@@ -258,16 +257,16 @@ struct SectionDetailView: View {
             }
             .chartYAxis {
                 AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                    AxisGridLine().foregroundStyle(Color.dsBorder)
-                    AxisValueLabel().foregroundStyle(Color.dsTextSecondary)
+                    AxisGridLine().foregroundStyle(Color.dsHorizonBorder)
+                    AxisValueLabel().foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             .chartXAxis {
                 AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { _ in
                     AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                        .foregroundStyle(Color.dsBorder)
+                        .foregroundStyle(Color.dsHorizonBorder)
                     AxisValueLabel(format: dynamicTypeSize.isAccessibilitySize ? .dateTime.day().month(.twoDigits) : .dateTime.day().month(.abbreviated))
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             .chartPlotStyle { plot in plot.clipped() }
@@ -283,7 +282,7 @@ struct SectionDetailView: View {
     private var chartPlaceholder: some View {
         Text("No data in this range.")
             .font(.dsCaption)
-            .foregroundStyle(Color.dsTextSecondary)
+            .foregroundStyle(Color.dsHorizonTextSecondary)
             .frame(maxWidth: .infinity, minHeight: 100)
     }
 
@@ -306,16 +305,16 @@ struct SectionDetailView: View {
     // "How it works" — server-curated educational text. Real value of this view.
     private func explainsBlock(_ explains: [SectionExplain]) -> some View {
         VStack(alignment: .leading, spacing: .dsSpacingSm) {
-            Text("How it works").font(.dsBody.weight(.semibold)).foregroundStyle(Color.dsText)
+            Text("How it works").font(.dsBody.weight(.semibold)).foregroundStyle(Color.dsHorizonText)
             VStack(spacing: .dsSpacingSm) {
                 ForEach(explains, id: \.self) { e in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(e.title)
                             .font(.system(.title3, design: .rounded).weight(.semibold))
-                            .foregroundStyle(Color.dsText)
+                            .foregroundStyle(Color.dsHorizonText)
                         Text(e.body)
                             .font(.dsBodySm)
-                            .foregroundStyle(Color.dsTextSecondary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -508,8 +507,8 @@ struct SectionDetailView: View {
         switch trend {
         case "up", "positive": return .dsGood
         case "down", "negative": return .dsDanger
-        case "stable": return .dsTextSecondary
-        default: return .dsTextSecondary
+        case "stable": return .dsHorizonTextSecondary
+        default: return .dsHorizonTextSecondary
         }
     }
 

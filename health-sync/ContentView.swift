@@ -35,7 +35,7 @@ struct ContentView: View {
                     .id(connectionRequest)
             }
         }
-        .tint(.dsAccent)
+        .tint(.dsHorizonAccent)
     }
 }
 

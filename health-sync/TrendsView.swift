@@ -21,8 +21,11 @@ struct TrendsView: View {
             GeometryReader { viewport in
                 let contentWidth = max(0, viewport.size.width - (2 * .dsSpacing))
                 ZStack(alignment: .top) {
-                    TrendsBackdrop()
-                        .ignoresSafeArea()
+                    Color.dsHorizonBackground.ignoresSafeArea()
+                    DomainLandscape(appearance: .recovery)
+                        .frame(height: 300)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .ignoresSafeArea(edges: .top)
 
                     ScrollView {
                         VStack(alignment: .leading, spacing: .dsSpacingLg) {
@@ -59,7 +62,7 @@ struct TrendsView: View {
             } else if history.isEmpty {
                 Text("No readiness data yet.")
                     .font(.dsBodySm)
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .frame(maxWidth: .infinity, minHeight: 160)
             } else {
                 readinessSummary
@@ -68,10 +71,10 @@ struct TrendsView: View {
                     VStack(alignment: .leading, spacing: .dsSpacingXs) {
                         Text("Readiness history")
                             .font(.dsSubhead)
-                            .foregroundStyle(Color.dsText)
+                            .foregroundStyle(Color.dsHorizonText)
                         Text("Last \(days) days")
                             .font(.dsCaption)
-                            .foregroundStyle(Color.dsTextSecondary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                     }
                     Picker("Readiness range", selection: $days) {
                         Text("7d").tag(7)
@@ -79,7 +82,7 @@ struct TrendsView: View {
                         Text("90d").tag(90)
                     }
                     .pickerStyle(.segmented)
-                    .tint(Color.dsReadiness)
+                    .tint(Color.dsHorizonAccent)
                     .onChange(of: days) { _, _ in
                         Task { await load() }
                     }
@@ -90,22 +93,22 @@ struct TrendsView: View {
                         x: .value("Date", p.date),
                         y: .value("Score", p.score)
                     )
-                    .foregroundStyle(Color.dsReadiness)
+                    .foregroundStyle(Color.dsHorizonAccent)
                     .interpolationMethod(.catmullRom)
                     AreaMark(
                         x: .value("Date", p.date),
                         y: .value("Score", p.score)
                     )
-                    .foregroundStyle(Color.dsReadiness.opacity(0.16))
+                    .foregroundStyle(Color.dsHorizonAccent.opacity(0.16))
                 }
                 .chartYScale(domain: 0...100)
                 .chartXAxis(.hidden)
                 .chartYAxis {
                     AxisMarks(position: .leading, values: [0, 50, 100]) { value in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                            .foregroundStyle(Color.dsBorderHover)
+                            .foregroundStyle(Color.dsHorizonBorder)
                         AxisValueLabel()
-                            .foregroundStyle(Color.dsTextTertiary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                     }
                 }
                 .frame(height: 218)
@@ -116,11 +119,11 @@ struct TrendsView: View {
                     Text(rangeEndLabel)
                 }
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextTertiary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
             }
         }
         .padding(.dsSpacing)
-        .dsElevatedCard()
+        .horizonSurface()
     }
 
     private var readinessSummary: some View {
@@ -130,22 +133,22 @@ struct TrendsView: View {
         return layout {
             Text("\(latestReadinessScore)")
                 .font(.system(size: scoreSize, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.dsReadiness)
+                .foregroundStyle(Color.dsHorizonAccent)
                 .accessibilityLabel("Readiness")
                 .accessibilityValue("\(latestReadinessScore)")
             VStack(alignment: .leading, spacing: 2) {
                 Text(ReadinessPresentation.title(date: history.last?.date ?? "", today: MetricDateWindow.iso(Date(), timeZone: .current)))
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .accessibilityIdentifier("readiness-summary-title")
                 if let date = history.last?.date {
                     Text(ReadinessPresentation.dateCaption(date))
-                        .font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                        .font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                         .accessibilityIdentifier("readiness-summary-date")
                 }
                 Text(readinessChangeExplanation)
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("readiness-comparison")
             }
@@ -158,7 +161,7 @@ struct TrendsView: View {
         .padding(.vertical, 12)
         .background(
             LinearGradient(
-                colors: [Color.dsReadiness.opacity(0.15), Color.dsReadiness.opacity(0.05)],
+                colors: [Color.dsHorizonAccent.opacity(0.15), Color.dsHorizonAccent.opacity(0.05)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -221,7 +224,7 @@ struct TrendsView: View {
         VStack(alignment: .leading, spacing: .dsSpacingSm) {
             Text("Explore your data")
                 .font(.dsHeading.weight(.semibold))
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
                 .padding(.horizontal, .dsSpacing)
                 .padding(.top, .dsSpacing)
 
@@ -234,7 +237,7 @@ struct TrendsView: View {
                 }
             }
         }
-        .dsElevatedCard()
+        .horizonSurface()
     }
 
     /// Push to SectionDetailView — same view used from Today's Health
@@ -247,12 +250,12 @@ struct TrendsView: View {
                     .frame(width: 24)
                     .foregroundStyle(tint(for: entry.key))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.title).font(.dsSubhead).foregroundStyle(Color.dsText)
-                    Text(entry.subtitle).font(.dsCaption).foregroundStyle(Color.dsTextTertiary)
+                    Text(entry.title).font(.dsSubhead).foregroundStyle(Color.dsHorizonText)
+                    Text(entry.subtitle).font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .font(.system(size: 13, weight: .semibold))
             }
             .padding(.dsSpacing)
@@ -321,34 +324,15 @@ struct TrendsView: View {
     }
 }
 
-private struct TrendsBackdrop: View {
-    var body: some View {
-        ZStack {
-            Color.dsBackground
-            RadialGradient(
-                colors: [Color.dsReadiness.opacity(0.14), .clear],
-                center: .topTrailing,
-                startRadius: 20,
-                endRadius: 340
-            )
-            LinearGradient(
-                colors: [Color.dsReadiness.opacity(0.05), .clear],
-                startPoint: .top,
-                endPoint: .center
-            )
-        }
-    }
-}
-
 private struct TrendsPageHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: .dsSpacingXs) {
             Text("Trends")
-                .font(.system(size: 36, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.dsText)
+                .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                .foregroundStyle(Color.dsHorizonText)
             Text("Your health over time")
                 .font(.dsBody)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
         }
     }
 }

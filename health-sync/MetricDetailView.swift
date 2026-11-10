@@ -47,14 +47,14 @@ struct MetricDetailView: View {
                 if let variantLabel, !variantLabel.isEmpty {
                     Text(verbatim: variantLabel)
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("metric-detail-variant")
                 }
                 if let notice = unitMetadata.notice {
                     Text(verbatim: notice)
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("metric-unit-notice")
                 }
@@ -69,7 +69,7 @@ struct MetricDetailView: View {
                         Text(verbatim: loadError)
                         Button("Retry") { Task { await load() } }
                     }
-                    .font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                    .font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                     .accessibilityIdentifier("metric-refresh-error")
                 }
                 if isLoading && points.isEmpty {
@@ -80,11 +80,11 @@ struct MetricDetailView: View {
                     VStack(spacing: .dsSpacingSm) {
                         emptyState(historicalRange == nil ? "No data in this range." : "No records are available for these dates.", isError: false)
                         if let window = controller.displayedWindow {
-                            Text(window.caption).font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                            Text(window.caption).font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                         }
                         if historicalRange == nil, let range = controller.availableRange {
                             Text("Available records: \(range.caption)")
-                                .font(.dsCaption).foregroundStyle(Color.dsTextSecondary)
+                                .font(.dsCaption).foregroundStyle(Color.dsHorizonTextSecondary)
                             Button("Show latest records") { historicalRange = range }
                                 .buttonStyle(DSSecondaryButtonStyle())
                                 .accessibilityIdentifier("metric-latest-records")
@@ -98,7 +98,7 @@ struct MetricDetailView: View {
             .padding(.dsSpacing)
             .padding(.bottom, .dsTabBarClearance)
         }
-        .background(Color.dsBackground)
+        .background(Color.dsHorizonBackground)
         .navigationTitle(LocalizedStringKey(displayName ?? metric))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("metric-detail-\(metric)")
@@ -130,18 +130,18 @@ struct MetricDetailView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Daily values")
                     .font(.dsBody.weight(.semibold))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 Spacer()
                 if !displayUnit.isEmpty {
                     Text(displayUnit)
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .accessibilityIdentifier("metric-chart-unit")
                 }
             }
             Text(selectedRangeCaption)
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextTertiary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .accessibilityIdentifier("metric-chart-dates")
 
             Chart(chartPoints, id: \.id) { p in
@@ -170,9 +170,9 @@ struct MetricDetailView: View {
             .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                    .foregroundStyle(Color.dsBorderHover)
+                    .foregroundStyle(Color.dsHorizonBorder)
                 AxisValueLabel(format: Date.FormatStyle(date: .omitted, time: .omitted, timeZone: .gmt).day().month(.abbreviated))
-                    .foregroundStyle(Color.dsTextTertiary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
             }
             }
             .chartPlotStyle { plot in plot.clipped() }
@@ -195,7 +195,7 @@ struct MetricDetailView: View {
             if let notice = unitMetadata.notice {
                 Text(verbatim: notice)
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.dsSpacing)
             }
@@ -218,11 +218,11 @@ struct MetricDetailView: View {
         HStack {
             Text(label)
                 .font(.dsBody)
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
             Spacer()
             Text(value)
                 .font(.dsMono)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
         }
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, 12)
@@ -234,10 +234,10 @@ struct MetricDetailView: View {
         VStack(spacing: .dsSpacingSm) {
             Image(systemName: isError ? "exclamationmark.triangle" : "chart.xyaxis.line")
                 .font(.system(size: 40))
-                .foregroundStyle(isError ? Color.dsDanger : Color.dsTextTertiary)
+                .foregroundStyle(isError ? Color.dsDanger : Color.dsHorizonTextSecondary)
             Text(message)
                 .font(.dsBodySm)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .multilineTextAlignment(.center)
             if isError {
                 Button("Retry") { Task { await load() } }

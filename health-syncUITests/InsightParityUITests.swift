@@ -253,8 +253,14 @@ final class InsightParityUITests: XCTestCase {
         let value = element(id, app)
         XCTAssertTrue(value.waitForExistence(timeout: 8), "Missing \(id)")
         for _ in 0..<18 {
-            if value.isHittable && value.frame.midY < app.tabBars.firstMatch.frame.minY { return value }
-            app.swipeUp()
+            let top = app.frame.minY + 70
+            if value.isHittable && value.frame.midY > top && value.frame.midY < app.tabBars.firstMatch.frame.minY { return value }
+            // A preceding reveal may have scrolled this earlier element above the viewport.
+            if value.frame.midY < top {
+                app.swipeDown()
+            } else {
+                app.swipeUp()
+            }
         }
         XCTAssertTrue(value.isHittable, "Cannot reach \(id)")
         return value

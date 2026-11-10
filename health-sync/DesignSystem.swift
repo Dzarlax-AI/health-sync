@@ -171,14 +171,48 @@ extension Color {
     static let dsRecovery = dsDynamic(lightHex: "#5C741E", darkHex: "#DAF675")
 }
 
+// MARK: - Horizon colors (generated canonical declarations)
+
+extension Color {
+    // Horizon
+    static let dsHorizonBackground = dsDynamic(lightHex: "#FCFAF7", darkHex: "#1D222B")
+    static let dsHorizonSurface = dsDynamic(lightHex: "#FFFFFF", darkHex: "#2B3141")
+    static let dsHorizonSurfaceTint = dsDynamic(lightHex: "#F3EEF9", darkHex: "#343A50")
+    static let dsHorizonText = dsDynamic(lightHex: "#232633", darkHex: "#F5F3FC")
+    static let dsHorizonTextSecondary = dsDynamic(lightHex: "#5A6170", darkHex: "#C2C6D5")
+    static let dsHorizonAccent = dsDynamic(lightHex: "#7754C9", darkHex: "#B5A6FF")
+    static let dsHorizonGaugeCenter = dsDynamic(lightHex: "#F6F3FA", darkHex: "#242B3C")
+    static let dsHorizonGaugeTrack = dsDynamic(lightHex: "#ECE8F2", darkHex: "#444B62")
+    static let dsHorizonBorder = dsDynamic(lightHex: "#D8D3E1", darkHex: "#697187")
+    static let dsHorizonVeil = dsDynamic(
+        light: UIColor(hex: "#FCFAF7").withAlphaComponent(0.72),
+        dark:  UIColor(hex: "#1D222B").withAlphaComponent(0.68)
+    )
+    static let dsHorizonGaugeGlow = dsDynamic(
+        light: UIColor(hex: "#7754C9").withAlphaComponent(0.0),
+        dark:  UIColor(hex: "#B5A6FF").withAlphaComponent(0.15)
+    )
+    static let dsHorizonEnergyStart = dsDynamic(lightHex: "#986413", darkHex: "#D7AE55")
+    static let dsHorizonEnergyEnd = dsDynamic(lightHex: "#AE751C", darkHex: "#F4D88E")
+    static let dsHorizonRecoveryStart = dsDynamic(lightHex: "#52732B", darkHex: "#ACC954")
+    static let dsHorizonRecoveryEnd = dsDynamic(lightHex: "#6A8434", darkHex: "#D2E89B")
+    static let dsHorizonSleepStart = dsDynamic(lightHex: "#7042C2", darkHex: "#A38AF1")
+    static let dsHorizonSleepEnd = dsDynamic(lightHex: "#8A65D0", darkHex: "#C7BEFF")
+    static let dsHorizonActivityStart = dsDynamic(lightHex: "#1C7963", darkHex: "#61C7A9")
+    static let dsHorizonActivityEnd = dsDynamic(lightHex: "#318C75", darkHex: "#95E2CC")
+    static let dsHorizonCardioStart = dsDynamic(lightHex: "#AB4465", darkHex: "#E58BA7")
+    static let dsHorizonCardioEnd = dsDynamic(lightHex: "#C05475", darkHex: "#FFB4CA")
+
+}
+
 // MARK: - Typography
 
 extension Font {
-    // Headings — system serif text styles keep the visual language while
+    // Headings — one rounded system family keeps the visual language while
     // allowing Dynamic Type to scale the hierarchy.
-    static let dsTitle    = Font.system(.largeTitle, design: .serif)
-    static let dsHeading  = Font.system(.title2, design: .serif)
-    static let dsSubhead  = Font.system(.headline, design: .serif)
+    static let dsTitle    = Font.system(.largeTitle, design: .rounded)
+    static let dsHeading  = Font.system(.title2, design: .rounded)
+    static let dsSubhead  = Font.system(.headline, design: .rounded)
 
     // Body — SF Pro text styles, scaled by the user's accessibility setting.
     static let dsBody     = Font.system(.body)
@@ -325,19 +359,44 @@ struct DSHeroContainer: ViewModifier {
 /// Keep `dsCard()` for regular, flat dashboard cards.
 struct DSElevatedCard: ViewModifier {
     func body(content: Content) -> some View {
+        content.horizonSurface()
+    }
+}
+
+/// Opaque tonal materials stay legible over scenery without a live blur pass.
+struct DSHorizonSurface: ViewModifier {
+    var tinted = false
+    var cornerRadius: CGFloat = 20
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
         content
-            .background(Color.dsElevatedSurface)
-            .background(.regularMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: .dsRadiusElevatedCard, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: .dsRadiusElevatedCard, style: .continuous)
-                    .stroke(Color.dsElevatedBorder, lineWidth: 1)
+            .background {
+                if reduceTransparency {
+                    Color.dsHorizonSurface
+                } else {
+                    LinearGradient(
+                        colors: [tinted ? .dsHorizonSurfaceTint : .dsHorizonSurface,
+                                 .dsHorizonSurface],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                }
             }
-            .shadow(color: .dsElevatedShadow, radius: .dsElevationCard, y: .dsElevationOffset)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                if contrast == .increased {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(Color.dsHorizonTextSecondary, lineWidth: 1)
+                }
+            }
     }
 }
 
 extension View {
+    func horizonSurface(tinted: Bool = false, cornerRadius: CGFloat = 20) -> some View {
+        modifier(DSHorizonSurface(tinted: tinted, cornerRadius: cornerRadius))
+    }
     /// Wrap readiness/headline content in the primary Quiet Bevel hero treatment.
     func dsHeroContainer(backdrop: DSHeroBackdrop = .gradient) -> some View {
         modifier(DSHeroContainer(backdrop: backdrop))
@@ -409,13 +468,7 @@ enum DashboardChartScale {
 
 struct DSCard: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            .background(Color.dsSurface)
-            .clipShape(RoundedRectangle(cornerRadius: .dsRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: .dsRadius)
-                    .stroke(Color.dsBorder, lineWidth: 1)
-            )
+        content.horizonSurface()
     }
 }
 
@@ -424,13 +477,7 @@ struct DSCard: ViewModifier {
 /// with the data drawn inside it.
 struct DSDetailCard: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            .background(Color.dsSurface)
-            .clipShape(RoundedRectangle(cornerRadius: .dsRadiusElevatedCard, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: .dsRadiusElevatedCard, style: .continuous)
-                    .stroke(Color.dsBorder, lineWidth: 1)
-            }
+        content.horizonSurface()
     }
 }
 

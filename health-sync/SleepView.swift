@@ -35,27 +35,6 @@ private struct SleepStagePoint: Identifiable {
     let hours: Double
 }
 
-private struct SleepSurface: ViewModifier {
-    let cornerRadius: CGFloat
-
-    func body(content: Content) -> some View {
-        content
-            .background(Color.dsSurface)
-            .background(.thinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.dsBorder, lineWidth: 1)
-            }
-    }
-}
-
-private extension View {
-    func sleepSurface(cornerRadius: CGFloat = 22) -> some View {
-        modifier(SleepSurface(cornerRadius: cornerRadius))
-    }
-}
-
 struct SleepView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var todayInsights = TodayInsightsController()
@@ -147,12 +126,11 @@ struct SleepView: View {
         VStack(alignment: .leading, spacing: .dsSpacing) {
             Label("Sleep structure", systemImage: "chart.bar.fill")
                 .font(.dsBody.weight(.semibold))
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
 
             GeometryReader { geometry in
-                let segmentCount = n.unspecified > 0 ? 5 : 4
-                let availableWidth = max(0, geometry.size.width - CGFloat(segmentCount - 1) * 2)
-                HStack(spacing: 2) {
+                let availableWidth = max(0, geometry.size.width)
+                HStack(spacing: 0) {
                     sleepBand(n.deep, duration: n.total + n.awake, availableWidth: availableWidth, color: .dsSleep)
                     sleepBand(n.rem, duration: n.total + n.awake, availableWidth: availableWidth, color: .dsCardio)
                     sleepBand(n.core, duration: n.total + n.awake, availableWidth: availableWidth, color: .dsSleepStageCore)
@@ -161,10 +139,10 @@ struct SleepView: View {
                     }
                     sleepBand(n.awake, duration: n.total + n.awake, availableWidth: availableWidth, color: .dsSleepStageAwake)
                 }
-                .frame(width: geometry.size.width, height: 12)
+                .frame(width: geometry.size.width, height: 24)
                 .clipShape(Capsule())
             }
-            .frame(height: 12)
+            .frame(height: 24)
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), alignment: .leading), count: dynamicTypeSize >= .xxxLarge ? 1 : 2), alignment: .leading, spacing: .dsSpacingSm) {
                 sleepStageLabel("Deep", value: n.deep, color: .dsSleep)
@@ -177,8 +155,7 @@ struct SleepView: View {
             }
         }
         .padding(.dsSpacing)
-        .background(Color.dsSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.dsBorder, lineWidth: 1))
+        .horizonSurface()
     }
 
     private func sleepBand(_ value: Double, duration: Double, availableWidth: CGFloat, color: Color) -> some View {
@@ -195,9 +172,9 @@ struct SleepView: View {
             }
             Text(formatHours(value))
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
         }
-        .foregroundStyle(Color.dsText)
+        .foregroundStyle(Color.dsHorizonText)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -208,7 +185,7 @@ struct SleepView: View {
                 .foregroundStyle(color)
             Text(formatHours(value))
                 .font(.dsBodySm.weight(.medium))
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, .dsSpacingSm)
@@ -222,7 +199,7 @@ struct SleepView: View {
                 Text("Trend")
                     .accessibilityIdentifier("sleep-trend-title")
                     .font(.dsBody.weight(.semibold))
-                    .foregroundStyle(Color.dsText)
+                    .foregroundStyle(Color.dsHorizonText)
                 SleepRangePicker(days: $days) {
                     Task { await load() }
                 }
@@ -248,18 +225,18 @@ struct SleepView: View {
                 if !dynamicTypeSize.isAccessibilitySize {
                     AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                            .foregroundStyle(Color.dsBorder)
+                            .foregroundStyle(Color.dsHorizonBorder)
                         AxisValueLabel(format: .dateTime.day().month(.abbreviated))
-                            .foregroundStyle(Color.dsTextSecondary)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
                     }
                 }
             }
             .chartYAxis {
                 AxisMarks(position: .leading, values: [0, 4, 8, 12]) { _ in
                     AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                        .foregroundStyle(Color.dsBorder)
+                        .foregroundStyle(Color.dsHorizonBorder)
                     AxisValueLabel()
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                 }
             }
             .frame(height: 220)
@@ -269,18 +246,18 @@ struct SleepView: View {
                    let first = stagePoints.first?.date, let last = stagePoints.last?.date {
                     Text("\(first, format: .dateTime.day().month(.abbreviated)) – \(last, format: .dateTime.day().month(.abbreviated))")
                         .font(.dsCaption)
-                        .foregroundStyle(Color.dsTextSecondary)
+                        .foregroundStyle(Color.dsHorizonTextSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Text("Last \(days) days")
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
 
                 SleepStageLegend(hasUnspecified: nights.contains { $0.unspecified > 0 }, nightStyle: false)
             }
         }
         .padding(.dsSpacing)
-        .sleepSurface()
+        .horizonSurface()
     }
 
     private var stagePoints: [SleepStagePoint] {
@@ -320,25 +297,25 @@ struct SleepView: View {
             && (night?.core ?? 0) == 0
         return HStack(spacing: 8) {
             Image(systemName: sourceIcon(for: source))
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .frame(width: 18)
             Text("Source")
                 .font(.dsCaption)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
             Text(source)
                 .font(.dsCaption.weight(.medium))
-                .foregroundStyle(Color.dsText)
+                .foregroundStyle(Color.dsHorizonText)
             if noStages {
                 Text("· stages not measured")
                     .font(.dsCaption)
-                    .foregroundStyle(Color.dsTextSecondary)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, .dsSpacing)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .sleepSurface(cornerRadius: 14)
+        .horizonSurface(cornerRadius: 14)
     }
 
     private func sourceIcon(for source: String) -> String {
@@ -353,10 +330,10 @@ struct SleepView: View {
         VStack(spacing: .dsSpacingSm) {
             Image(systemName: isError ? "exclamationmark.triangle" : "moon.zzz")
                 .font(.system(size: 40))
-                .foregroundStyle(isError ? Color.dsDanger : Color.dsTextSecondary)
+                .foregroundStyle(isError ? Color.dsDanger : Color.dsHorizonTextSecondary)
             Text(message)
                 .font(.dsBodySm)
-                .foregroundStyle(Color.dsTextSecondary)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, minHeight: 240)
@@ -503,14 +480,14 @@ private struct SleepRangePicker: View {
                 Button("\(range)d") { days = range }
                     .accessibilityIdentifier("sleep-range-\(range)")
                     .font(.dsCaption.weight(.semibold))
-                    .foregroundStyle(range == days ? Color.dsBackground : Color.dsTextSecondary)
+                    .foregroundStyle(range == days ? Color.dsHorizonBackground : Color.dsHorizonTextSecondary)
                     .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(range == days ? Color.dsSleep : Color.dsSurface2, in: Capsule())
+                    .background(range == days ? Color.dsSleep : Color.dsHorizonSurfaceTint, in: Capsule())
             }
         }
         .padding(3)
-        .background(Color.dsSurface2, in: RoundedRectangle(cornerRadius: 24))
-        .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.dsBorder, lineWidth: 1))
+        .background(Color.dsHorizonSurfaceTint, in: RoundedRectangle(cornerRadius: 24))
+        .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.dsHorizonBorder, lineWidth: 1))
         .onChange(of: days) { _, _ in didChange() }
     }
 }

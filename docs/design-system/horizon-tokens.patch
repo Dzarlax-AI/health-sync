@@ -1,0 +1,105 @@
+diff --git a/bin/gen-tokens.py b/bin/gen-tokens.py
+index 1f52e4b..c9654e4 100755
+--- a/bin/gen-tokens.py
++++ b/bin/gen-tokens.py
+@@ -160,6 +160,28 @@ def emit_dark_css() -> str:
+
+ # (Swift name, JSON key, optional section header to emit before this entry)
+ SWIFT_ENTRIES = [
++    ("dsHorizonBackground", "horizon-background", "Horizon"),
++    ("dsHorizonSurface", "horizon-surface", None),
++    ("dsHorizonSurfaceTint", "horizon-surface-tint", None),
++    ("dsHorizonText", "horizon-text", None),
++    ("dsHorizonTextSecondary", "horizon-text-secondary", None),
++    ("dsHorizonAccent", "horizon-accent", None),
++    ("dsHorizonGaugeCenter", "horizon-gauge-center", None),
++    ("dsHorizonGaugeTrack", "horizon-gauge-track", None),
++    ("dsHorizonBorder", "horizon-border", None),
++    ("dsHorizonVeil", "horizon-veil", None),
++    ("dsHorizonGaugeGlow", "horizon-gauge-glow", None),
++    ("dsHorizonEnergyStart", "horizon-energy-start", None),
++    ("dsHorizonEnergyEnd", "horizon-energy-end", None),
++    ("dsHorizonRecoveryStart", "horizon-recovery-start", None),
++    ("dsHorizonRecoveryEnd", "horizon-recovery-end", None),
++    ("dsHorizonSleepStart", "horizon-sleep-start", None),
++    ("dsHorizonSleepEnd", "horizon-sleep-end", None),
++    ("dsHorizonActivityStart", "horizon-activity-start", None),
++    ("dsHorizonActivityEnd", "horizon-activity-end", None),
++    ("dsHorizonCardioStart", "horizon-cardio-start", None),
++    ("dsHorizonCardioEnd", "horizon-cardio-end", None),
++
+     ("dsBackground",        "bg",                 "Backgrounds"),
+     ("dsSurface",           "surface",            None),
+     ("dsSurface2",          "surface-2",          None),
+diff --git a/tokens/ios/DesignSystemColors.swift b/tokens/ios/DesignSystemColors.swift
+index 750a96c..576e189 100644
+--- a/tokens/ios/DesignSystemColors.swift
++++ b/tokens/ios/DesignSystemColors.swift
+@@ -41,6 +41,35 @@ private func dsDynamic(lightHex: String, darkHex: String) -> Color {
+ }
+
+ extension Color {
++    // Horizon
++    static let dsHorizonBackground = dsDynamic(lightHex: "#FCFAF7", darkHex: "#1D222B")
++    static let dsHorizonSurface = dsDynamic(lightHex: "#FFFFFF", darkHex: "#2B3141")
++    static let dsHorizonSurfaceTint = dsDynamic(lightHex: "#F3EEF9", darkHex: "#343A50")
++    static let dsHorizonText = dsDynamic(lightHex: "#232633", darkHex: "#F5F3FC")
++    static let dsHorizonTextSecondary = dsDynamic(lightHex: "#5A6170", darkHex: "#C2C6D5")
++    static let dsHorizonAccent = dsDynamic(lightHex: "#7754C9", darkHex: "#B5A6FF")
++    static let dsHorizonGaugeCenter = dsDynamic(lightHex: "#F6F3FA", darkHex: "#242B3C")
++    static let dsHorizonGaugeTrack = dsDynamic(lightHex: "#ECE8F2", darkHex: "#444B62")
++    static let dsHorizonBorder = dsDynamic(lightHex: "#D8D3E1", darkHex: "#697187")
++    static let dsHorizonVeil = dsDynamic(
++        light: UIColor(hex: "#FCFAF7").withAlphaComponent(0.72),
++        dark:  UIColor(hex: "#1D222B").withAlphaComponent(0.68)
++    )
++    static let dsHorizonGaugeGlow = dsDynamic(
++        light: UIColor(hex: "#7754C9").withAlphaComponent(0.0),
++        dark:  UIColor(hex: "#B5A6FF").withAlphaComponent(0.15)
++    )
++    static let dsHorizonEnergyStart = dsDynamic(lightHex: "#986413", darkHex: "#D7AE55")
++    static let dsHorizonEnergyEnd = dsDynamic(lightHex: "#AE751C", darkHex: "#F4D88E")
++    static let dsHorizonRecoveryStart = dsDynamic(lightHex: "#52732B", darkHex: "#ACC954")
++    static let dsHorizonRecoveryEnd = dsDynamic(lightHex: "#6A8434", darkHex: "#D2E89B")
++    static let dsHorizonSleepStart = dsDynamic(lightHex: "#7042C2", darkHex: "#A38AF1")
++    static let dsHorizonSleepEnd = dsDynamic(lightHex: "#8A65D0", darkHex: "#C7BEFF")
++    static let dsHorizonActivityStart = dsDynamic(lightHex: "#1C7963", darkHex: "#61C7A9")
++    static let dsHorizonActivityEnd = dsDynamic(lightHex: "#318C75", darkHex: "#95E2CC")
++    static let dsHorizonCardioStart = dsDynamic(lightHex: "#AB4465", darkHex: "#E58BA7")
++    static let dsHorizonCardioEnd = dsDynamic(lightHex: "#C05475", darkHex: "#FFB4CA")
++
+     // Backgrounds
+     static let dsBackground = dsDynamic(lightHex: "#FCFAF7", darkHex: "#1A1D21")
+     static let dsSurface = dsDynamic(lightHex: "#FFFFFF", darkHex: "#22252A")
+diff --git a/tokens/tokens.json b/tokens/tokens.json
+index 75163fd..1650ab7 100644
+--- a/tokens/tokens.json
++++ b/tokens/tokens.json
+@@ -2,6 +2,27 @@
+   "$schema": "https://dzarlax.dev/design-system/tokens.schema.json",
+   "description": "Canonical source for dzarlax design system tokens. Edit this file, then run `python3 bin/gen-tokens.py` (or `./build.sh`, which calls it). The generator emits tokens/colors.css, themes/dark.css, and tokens/ios/DesignSystemColors.swift — do not hand-edit those.",
+   "color": {
++    "horizon-background": {"light": "#FCFAF7", "dark": "#1D222B"},
++    "horizon-surface": {"light": "#FFFFFF", "dark": "#2B3141"},
++    "horizon-surface-tint": {"light": "#F3EEF9", "dark": "#343A50"},
++    "horizon-text": {"light": "#232633", "dark": "#F5F3FC"},
++    "horizon-text-secondary": {"light": "#5A6170", "dark": "#C2C6D5"},
++    "horizon-accent": {"light": "#7754C9", "dark": "#B5A6FF"},
++    "horizon-gauge-center": {"light": "#F6F3FA", "dark": "#242B3C"},
++    "horizon-gauge-track": {"light": "#ECE8F2", "dark": "#444B62"},
++    "horizon-border": {"light": "#D8D3E1", "dark": "#697187"},
++    "horizon-veil": {"light": "rgba(252, 250, 247, 0.72)", "dark": "rgba(29, 34, 43, 0.68)"},
++    "horizon-gauge-glow": {"light": "rgba(119, 84, 201, 0.0)", "dark": "rgba(181, 166, 255, 0.15)"},
++    "horizon-energy-start": {"light": "#986413", "dark": "#D7AE55"},
++    "horizon-energy-end": {"light": "#AE751C", "dark": "#F4D88E"},
++    "horizon-recovery-start": {"light": "#52732B", "dark": "#ACC954"},
++    "horizon-recovery-end": {"light": "#6A8434", "dark": "#D2E89B"},
++    "horizon-sleep-start": {"light": "#7042C2", "dark": "#A38AF1"},
++    "horizon-sleep-end": {"light": "#8A65D0", "dark": "#C7BEFF"},
++    "horizon-activity-start": {"light": "#1C7963", "dark": "#61C7A9"},
++    "horizon-activity-end": {"light": "#318C75", "dark": "#95E2CC"},
++    "horizon-cardio-start": {"light": "#AB4465", "dark": "#E58BA7"},
++    "horizon-cardio-end": {"light": "#C05475", "dark": "#FFB4CA"},
+     "recovery": {"light": "#5C741E", "dark": "#DAF675"},
+     "ring-cardio-end": {"light": "#FFB4CA", "dark": "#FFB4CA"},
+     "ring-cardio-start": {"light": "#B75E79", "dark": "#B75E79"},
