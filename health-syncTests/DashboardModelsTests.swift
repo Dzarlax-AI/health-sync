@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import health_sync
 
+@MainActor
 struct DashboardModelsTests {
     @Test
     func sleepEfficiencyUsesTheFullInBedWindow() {

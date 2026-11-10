@@ -158,10 +158,7 @@ final class InsightParityUITests: XCTestCase {
             app.tabBars.buttons["Trends"].tap()
             for (key, title) in [("recovery", "Recovery"), ("activity", "Activity"), ("cardio", "Cardio")] {
                 let row = app.staticTexts[title].firstMatch
-                for _ in 0..<8 {
-                    if row.exists && row.isHittable { break }
-                    app.swipeUp()
-                }
+                scrollToElement(row, in: app, scrollView: app.scrollViews["trends-scroll"])
                 XCTAssertTrue(row.isHittable)
                 row.tap()
                 XCTAssertTrue(element("domain-hero-\(key)", app).waitForExistence(timeout: 5))
@@ -203,8 +200,6 @@ final class InsightParityUITests: XCTestCase {
             XCTAssertTrue(element("server-insight-details-overall", app).exists)
             for slot in ["sleep", "recovery", "energy"] {
                 app.tabBars.buttons["Today"].tap()
-                // Return to the top so domain cards above the long fallback remain reachable.
-                for _ in 0..<5 { app.swipeDown() }
                 reveal("insight-domain-\(slot)", app).tap()
                 let domainServer = reveal("server-insight-\(slot)", app)
                 XCTAssertEqual(domainServer.value as? String, "Expanded")
@@ -239,7 +234,7 @@ final class InsightParityUITests: XCTestCase {
     private func launch(locale: String = "en", extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-test-mode", "--insights-fixture", "--ui-test-force-light-mode", "-AppleLanguages", "(\(locale))", "-AppleLocale", locale] + extra
-        app.launch()
+        launchTestApplication(app)
         return app
     }
 
@@ -250,20 +245,7 @@ final class InsightParityUITests: XCTestCase {
 
     @MainActor @discardableResult
     private func reveal(_ id: String, _ app: XCUIApplication) -> XCUIElement {
-        let value = element(id, app)
-        XCTAssertTrue(value.waitForExistence(timeout: 8), "Missing \(id)")
-        for _ in 0..<18 {
-            let top = app.frame.minY + 70
-            if value.isHittable && value.frame.midY > top && value.frame.midY < app.tabBars.firstMatch.frame.minY { return value }
-            // A preceding reveal may have scrolled this earlier element above the viewport.
-            if value.frame.midY < top {
-                app.swipeDown()
-            } else {
-                app.swipeUp()
-            }
-        }
-        XCTAssertTrue(value.isHittable, "Cannot reach \(id)")
-        return value
+        scrollToElement(element(id, app), in: app)
     }
 
     @MainActor
