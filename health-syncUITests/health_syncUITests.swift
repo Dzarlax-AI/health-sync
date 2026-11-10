@@ -26,7 +26,7 @@ final class health_syncUITests: XCTestCase {
     func testExample() throws {
         // UI tests must launch the application that they test.
         let app = XCUIApplication()
-        app.launch()
+        launchTestApplication(app)
 
         // Use XCTAssert and related functions to verify your tests produce the correct results.
         // XCUIAutomation Documentation
@@ -36,13 +36,14 @@ final class health_syncUITests: XCTestCase {
     @MainActor
     func testBackgroundSyncToggleIsActionable() throws {
         let app = XCUIApplication()
-        app.launchArguments.append("--ui-test-mode")
-        app.launch()
+        app.launchArguments = ["--ui-test-mode", "-AppleLanguages", "(en)", "-AppleLocale", "en"]
+        launchTestApplication(app)
 
         app.tabBars.buttons["Settings"].tap()
 
         let toggle = app.switches["Background sync"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        scrollToElement(toggle, in: app)
 
         let initialValue = toggle.value as? String
         toggle.tap()
@@ -57,13 +58,14 @@ final class health_syncUITests: XCTestCase {
     @MainActor
     func testBackgroundSyncToggleRemainsLegibleInDarkMode() throws {
         let app = XCUIApplication()
-        app.launchArguments += ["--ui-test-mode", "--ui-test-force-dark-mode"]
-        app.launch()
+        app.launchArguments = ["--ui-test-mode", "--ui-test-force-dark-mode", "-AppleLanguages", "(en)", "-AppleLocale", "en"]
+        launchTestApplication(app)
 
         app.tabBars.buttons["Settings"].tap()
 
         let toggle = app.switches["Background sync"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        scrollToElement(toggle, in: app)
         if isSwitchOn(toggle) {
             toggle.tap()
         }
@@ -84,10 +86,11 @@ final class health_syncUITests: XCTestCase {
         for (locale, settings, label, values) in locales {
             let app = XCUIApplication()
             app.launchArguments = ["--ui-test-mode", "-AppleLanguages", "(\(locale))", "-AppleLocale", locale]
-            app.launch()
+            launchTestApplication(app)
             app.tabBars.buttons[settings].tap()
             let toggle = app.switches[label]
             XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+            scrollToElement(toggle, in: app)
             let initial = try XCTUnwrap(toggle.value as? String)
             XCTAssertTrue(values.contains(initial), "Unexpected switch value: \(initial)")
             toggle.tap()
@@ -112,7 +115,7 @@ final class health_syncUITests: XCTestCase {
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
+            launchTestApplication(XCUIApplication())
         }
     }
 }

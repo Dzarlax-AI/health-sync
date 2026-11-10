@@ -3,6 +3,7 @@ import Testing
 @testable import health_sync
 
 @Suite(.serialized)
+@MainActor
 struct HealthSyncTransportTests {
     @Test func metricsAcceptsStrictNumericAcknowledgement() async throws {
         StubURLProtocol.set(status: 200, headers: ["Content-Type": "application/json"],

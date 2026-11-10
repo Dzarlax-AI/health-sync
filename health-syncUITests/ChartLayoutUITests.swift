@@ -13,7 +13,7 @@ final class ChartLayoutUITests: XCTestCase {
     func testTrendsAndSectionCharts() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-test-mode", "--insights-fixture", "--charts-fixture", "-AppleLanguages", "(en)", "-AppleLocale", "en"]
-        app.launch()
+        launchTestApplication(app)
         app.tabBars.buttons["Trends"].tap()
         XCTAssertTrue(app.buttons["90d"].waitForExistence(timeout: 5))
         app.buttons["90d"].tap()
@@ -36,16 +36,13 @@ final class ChartLayoutUITests: XCTestCase {
         app.launchArguments = ["--ui-test-mode", "--insights-fixture", "--charts-fixture", "--ui-test-force-dark-mode",
                                "-AppleLanguages", "(ru)", "-AppleLocale", "ru"]
         if large { app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"] }
-        app.launch()
+        launchTestApplication(app)
         app.tabBars.buttons["Сон"].tap()
         let structure = app.staticTexts["Структура сна"]
         reveal(structure, in: app)
         capture("Sleep structure \(large ? "large" : "normal")", app)
         let picker = app.buttons["sleep-range-90"]
-        for _ in 0..<24 {
-            if picker.isHittable && picker.frame.midY < app.tabBars.firstMatch.frame.minY { break }
-            app.swipeUp()
-        }
+        scrollToElement(picker, in: app, scrollView: app.scrollViews["sleep-scroll"])
         XCTAssertTrue(picker.isHittable)
         reveal(app.staticTexts["sleep-trend-title"], in: app)
         for days in [90, 7, 30] {
@@ -66,10 +63,7 @@ final class ChartLayoutUITests: XCTestCase {
 
     @MainActor
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
-        for _ in 0..<24 {
-            if element.exists && element.isHittable { break }
-            app.swipeUp()
-        }
+        scrollToElement(element, in: app)
         XCTAssertTrue(element.isHittable)
         let offset = element.frame.minY - 140
         if offset > 40 {

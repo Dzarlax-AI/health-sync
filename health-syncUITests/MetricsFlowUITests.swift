@@ -177,19 +177,14 @@ final class MetricsFlowUITests: XCTestCase {
     private func launch(locale: String = "en", tab: String = "Metrics", extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-test-mode", "--metrics-fixture", "--ui-test-force-light-mode", "-AppleLanguages", "(\(locale))", "-AppleLocale", locale] + extra
-        app.launch()
+        launchTestApplication(app)
         app.tabBars.buttons[tab].tap()
         return app
     }
 
     @MainActor
     private func reveal(_ element: XCUIElement, _ app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 5))
-        for _ in 0..<10 {
-            if element.isHittable { return }
-            app.swipeUp()
-        }
-        XCTAssertTrue(element.isHittable)
+        scrollToElement(element, in: app)
     }
 
     @MainActor

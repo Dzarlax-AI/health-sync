@@ -130,7 +130,7 @@ final class ReadabilityUITests: XCTestCase {
     private func launch(locale: String = "en", extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-test-mode", "--insights-fixture", "-AppleLanguages", "(\(locale))", "-AppleLocale", locale] + extra
-        app.launch()
+        launchTestApplication(app)
         XCTAssertTrue(app.scrollViews["today-scroll"].waitForExistence(timeout: 5))
         let status = XCUIApplication(bundleIdentifier: "com.apple.springboard").statusBars.firstMatch
         XCTAssertTrue(status.waitForExistence(timeout: 5), "System status bar must be queried from SpringBoard")
@@ -192,8 +192,18 @@ final class ReadabilityUITests: XCTestCase {
 
     @MainActor
     private func top(_ id: String, _ app: XCUIApplication) {
-        let scroll = app.scrollViews[id]
-        for _ in 0..<3 { scroll.swipeDown(velocity: .fast) }
+        let anchor: String
+        switch id {
+        case "today-scroll": anchor = "today-sync-status"
+        case "sleep-scroll": anchor = "domain-hero-sleep"
+        case "section-scroll-recovery": anchor = "domain-hero-recovery"
+        case "energy-scroll": anchor = "energy-current"
+        case "trends-scroll": anchor = "readiness-summary-title"
+        default:
+            XCTFail("Missing top anchor for \(id)")
+            return
+        }
+        scrollToElement(element(anchor, app), in: app, scrollView: app.scrollViews[id])
     }
 
     @MainActor
@@ -203,14 +213,7 @@ final class ReadabilityUITests: XCTestCase {
 
     @MainActor @discardableResult
     private func reveal(_ id: String, _ app: XCUIApplication) -> XCUIElement {
-        let value = element(id, app)
-        XCTAssertTrue(value.waitForExistence(timeout: 5), "Missing \(id)")
-        for _ in 0..<14 {
-            if value.isHittable && value.frame.midY < app.tabBars.firstMatch.frame.minY { return value }
-            app.swipeUp()
-        }
-        XCTAssertTrue(value.isHittable, "Cannot reach \(id)")
-        return value
+        scrollToElement(element(id, app), in: app)
     }
 
     @MainActor

@@ -10,7 +10,7 @@ final class HorizonAppearanceUITests: XCTestCase {
             app.launchArguments = ["--ui-test-mode", "--insights-fixture", "--charts-fixture",
                                    dark ? "--ui-test-force-dark-mode" : "--ui-test-force-light-mode",
                                    "-AppleLanguages", "(ru)", "-AppleLocale", "ru"]
-            app.launch()
+            launchTestApplication(app)
             XCTAssertTrue(app.scrollViews["today-scroll"].waitForExistence(timeout: 5))
             let sleepGauge = app.buttons["today-ring-sleep"]
             XCTAssertTrue(sleepGauge.label.contains("Эффективность сна"))
@@ -20,10 +20,7 @@ final class HorizonAppearanceUITests: XCTestCase {
             XCTAssertTrue(app.descendants(matching: .any)["domain-hero-sleep"].firstMatch.waitForExistence(timeout: 5))
             capture("Horizon Sleep \(dark ? "dark" : "light")", app)
             let structure = app.staticTexts["Структура сна"].firstMatch
-            for _ in 0..<6 {
-                if structure.isHittable && structure.frame.minY < app.frame.midY { break }
-                app.swipeUp()
-            }
+            scrollToElement(structure, in: app, scrollView: app.scrollViews["sleep-scroll"])
             XCTAssertTrue(structure.isHittable)
             capture("Horizon Sleep structure \(dark ? "dark" : "light")", app)
             app.tabBars.buttons["Тренды"].tap()
@@ -31,10 +28,7 @@ final class HorizonAppearanceUITests: XCTestCase {
             XCTAssertTrue(summary.waitForExistence(timeout: 5))
             capture("Horizon Trends \(dark ? "dark" : "light")", app)
             let lastRow = app.staticTexts["Кардио"].firstMatch
-            for _ in 0..<6 {
-                if lastRow.isHittable && lastRow.frame.maxY <= app.tabBars.firstMatch.frame.minY { break }
-                app.swipeUp()
-            }
+            scrollToElement(lastRow, in: app, scrollView: app.scrollViews["trends-scroll"], fullyVisible: true)
             XCTAssertTrue(lastRow.isHittable)
             XCTAssertLessThanOrEqual(lastRow.frame.maxY, app.tabBars.firstMatch.frame.minY)
             capture("Horizon Trends bottom \(dark ? "dark" : "light")", app)

@@ -74,10 +74,10 @@ final class InMemoryTestSyncState: SyncStateStoring {
 enum TestStateError: Error { case write }
 
 @MainActor
-func makeTestSyncEngine(state: InMemoryTestSyncState = .init(), health: EmptyTestHealthData = .init(), transport: SuccessTestTransport = .init(), workoutsEnabled: Bool = false, groups: Set<MetricGroup> = [.vitals], provider: TestSyncConfiguration? = nil) throws -> SyncEngine {
+func makeTestSyncEngine(state: InMemoryTestSyncState? = nil, health: EmptyTestHealthData = .init(), transport: SuccessTestTransport = .init(), workoutsEnabled: Bool = false, groups: Set<MetricGroup> = [.vitals], provider: TestSyncConfiguration? = nil) throws -> SyncEngine {
     let defaults = UserDefaults(suiteName: "health-sync-engine-tests-\(UUID().uuidString)")!
     let container = try ModelContainer(for: SyncHistoryRecord.self, configurations: .init(isStoredInMemoryOnly: true))
     let config = provider ?? TestSyncConfiguration()
     config.value = SyncConfiguration(endpoint: URL(string: "https://example.test")!, apiKey: "test-key", fingerprint: "test-account", metricGroups: groups, workoutsEnabled: workoutsEnabled, backgroundEnabled: true, syncOnLaunch: false, interval: 60, workoutHRTimeline: false)
-    return SyncEngine(configuration: config, health: health, transport: transport, stateStore: state, defaults: defaults, historyStore: SyncHistoryStore(defaults: defaults, container: container), clock: { Date(timeIntervalSince1970: 1_000) })
+    return SyncEngine(configuration: config, health: health, transport: transport, stateStore: state ?? InMemoryTestSyncState(), defaults: defaults, historyStore: SyncHistoryStore(defaults: defaults, container: container), clock: { Date(timeIntervalSince1970: 1_000) })
 }

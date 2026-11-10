@@ -12,6 +12,7 @@ import Foundation
 import HealthKit
 @testable import health_sync
 
+@MainActor
 struct WorkoutSyncTests {
 
     // MARK: - workoutDisplayName
