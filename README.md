@@ -2,6 +2,8 @@
 
 Native iOS app for the self-hosted [health_dashboard](https://github.com/Dzarlax-AI/health_dashboard) server. It uploads selected Apple Health data and displays a read-only dashboard built from the server's JSON API.
 
+[Download Sync for Health Dash on the App Store](https://apps.apple.com/us/app/sync-for-health-dash/id6762629294).
+
 ## Dashboard
 
 - **Today:** daily overview, domain score rings, server insights and optional AI insights.
