@@ -20,6 +20,8 @@ final class EmptyTestHealthData: HealthDataFetching, @unchecked Sendable {
     var sleepPeriodCoverage: [SleepPeriodCoverage] = []
     var completedSleepEpisodes: [CompletedSleepEpisode] = []
     var workouts: [WorkoutItem] = []
+    var candidateCapture: SleepCandidateCapture?
+    var candidateFetchCount = 0
     var workoutFetches: [(Date, Date?)] = []
     var onWorkoutFetch: ((Int) async -> Void)?
     func requestAuthorization() async throws {}
@@ -34,6 +36,16 @@ final class EmptyTestHealthData: HealthDataFetching, @unchecked Sendable {
             completedSleepEpisodes: completedSleepEpisodes
         )
     }
+    func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?,
+                      candidateBundles: Set<String>) async throws -> HealthPayload {
+        candidateFetchCount += 1
+        let legacy = try await fetchMetrics(groups: groups, since: since, until: until)
+        return HealthPayload(metrics: legacy.data.metrics, nightSleepCoverage: legacy.data.nightSleepCoverage ?? [],
+                             sleepPeriodCoverage: legacy.data.sleepPeriodCoverage ?? [],
+                             completedSleepEpisodes: legacy.data.completedSleepEpisodes ?? [],
+                             sleepCandidateCapture: candidateCapture)
+    }
+
     func fetchWorkouts(since: Date, until: Date?, includeHRTimeline: Bool) async throws -> [WorkoutItem] {
         workoutFetches.append((since, until))
         if let onWorkoutFetch { await onWorkoutFetch(workoutFetches.count) }
@@ -74,10 +86,10 @@ final class InMemoryTestSyncState: SyncStateStoring {
 enum TestStateError: Error { case write }
 
 @MainActor
-func makeTestSyncEngine(state: InMemoryTestSyncState? = nil, health: EmptyTestHealthData = .init(), transport: SuccessTestTransport = .init(), workoutsEnabled: Bool = false, groups: Set<MetricGroup> = [.vitals], provider: TestSyncConfiguration? = nil) throws -> SyncEngine {
+func makeTestSyncEngine(state: InMemoryTestSyncState? = nil, health: EmptyTestHealthData = .init(), transport: SuccessTestTransport = .init(), workoutsEnabled: Bool = false, groups: Set<MetricGroup> = [.vitals], provider: TestSyncConfiguration? = nil, backgroundEnabled: Bool = true, candidateDelivery: SleepCandidateDelivery? = nil) throws -> SyncEngine {
     let defaults = UserDefaults(suiteName: "health-sync-engine-tests-\(UUID().uuidString)")!
     let container = try ModelContainer(for: SyncHistoryRecord.self, configurations: .init(isStoredInMemoryOnly: true))
     let config = provider ?? TestSyncConfiguration()
-    config.value = SyncConfiguration(endpoint: URL(string: "https://example.test")!, apiKey: "test-key", fingerprint: "test-account", metricGroups: groups, workoutsEnabled: workoutsEnabled, backgroundEnabled: true, syncOnLaunch: false, interval: 60, workoutHRTimeline: false)
-    return SyncEngine(configuration: config, health: health, transport: transport, stateStore: state ?? InMemoryTestSyncState(), defaults: defaults, historyStore: SyncHistoryStore(defaults: defaults, container: container), clock: { Date(timeIntervalSince1970: 1_000) })
+    config.value = SyncConfiguration(endpoint: URL(string: "https://example.test")!, apiKey: "test-key", fingerprint: "test-account", metricGroups: groups, workoutsEnabled: workoutsEnabled, backgroundEnabled: backgroundEnabled, syncOnLaunch: false, interval: 60, workoutHRTimeline: false)
+    return SyncEngine(configuration: config, health: health, transport: transport, stateStore: state ?? InMemoryTestSyncState(), defaults: defaults, historyStore: SyncHistoryStore(defaults: defaults, container: container), clock: { Date(timeIntervalSince1970: 1_000) }, candidateDelivery: candidateDelivery)
 }

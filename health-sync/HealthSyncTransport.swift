@@ -3,7 +3,7 @@ import Foundation
 /// Strict writer for the ingest endpoints. Dashboard reads keep using
 /// `ServerClient`; uploads need stronger acknowledgement validation before a
 /// local checkpoint can advance.
-final class URLSessionSyncTransport: @unchecked Sendable, SyncTransport {
+final class URLSessionSyncTransport: @unchecked Sendable, SyncTransport, SleepCandidateUploading {
     private let session: URLSession
 
     init(session: URLSession? = nil) {
@@ -21,12 +21,32 @@ final class URLSessionSyncTransport: @unchecked Sendable, SyncTransport {
     func uploadMetrics(_ payload: HealthPayload,
                        configuration: SyncConfiguration,
                        session: SyncUploadSession? = nil) async throws -> TransportReceipt {
-        let data = try JSONEncoder().encode(payload)
-        let object = try await post(path: "/health", body: data, configuration: configuration, session: session)
+        let version2 = try await probe(configuration: configuration)
+        let encoder = JSONEncoder()
+        encoder.userInfo[healthMetricsContractCodingKey] = version2
+        let response = try await postResponse(path: "/health", body: encoder.encode(payload),
+                                              configuration: configuration, session: session,
+                                              metricsContract: version2 ? "2" : nil)
+        let object = response.object
         guard object.string("status") == "ok", !object.hasMeaningfulError,
               let id = object.validID else {
             throw SyncTransportError.invalidAcknowledgement
         }
+        return TransportReceipt(id: id)
+    }
+
+    func uploadSleepCandidates(_ packet: SleepCandidatePacket,
+                               configuration: SyncConfiguration) async throws -> TransportReceipt {
+        let response = try await postResponse(path: "/health", body: packet.body, configuration: configuration)
+        guard response.object.string("status") == "ok", !response.object.hasMeaningfulError,
+              let id = response.object.validID else {
+            throw SyncTransportError.invalidAcknowledgement
+        }
+        let headers = response.http
+        guard let ack = headers.value(forHTTPHeaderField: "X-Health-Sleep-Candidates-Ack") else {
+            throw SleepCandidateAcknowledgementError.missing
+        }
+        guard ack == packet.id else { throw SleepCandidateAcknowledgementError.mismatched }
         return TransportReceipt(id: id)
     }
 
@@ -51,8 +71,15 @@ final class URLSessionSyncTransport: @unchecked Sendable, SyncTransport {
     /// A deliberate, user-initiated configuration probe. The normal sync path
     /// never uses it as a substitute for a strict upload acknowledgement.
     func validate(configuration: SyncConfiguration) async throws {
+        _ = try await probe(configuration: configuration)
+    }
+
+    /// Probe the authenticated read route before selecting the upload format.
+    private func probe(configuration: SyncConfiguration) async throws -> Bool {
         var request = try makeRequest(path: "/health", configuration: configuration)
         request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("2", forHTTPHeaderField: healthMetricsContractHeader)
         let (data, response) = try await data(for: request)
         guard let http = response as? HTTPURLResponse else { throw SyncTransportError.network }
         guard !(300..<400).contains(http.statusCode) else { throw SyncTransportError.redirected }
@@ -66,13 +93,21 @@ final class URLSessionSyncTransport: @unchecked Sendable, SyncTransport {
               !JSONObject(object).hasMeaningfulError else {
             throw SyncTransportError.invalidAcknowledgement
         }
+        return http.value(forHTTPHeaderField: healthMetricsContractHeader) == "2"
     }
 
     private func post(path: String, body: Data, configuration: SyncConfiguration,
                       session: SyncUploadSession? = nil) async throws -> JSONObject {
+        try await postResponse(path: path, body: body, configuration: configuration, session: session).object
+    }
+
+    private func postResponse(path: String, body: Data, configuration: SyncConfiguration,
+                              session: SyncUploadSession? = nil,
+                              metricsContract: String? = nil) async throws -> (object: JSONObject, http: HTTPURLResponse) {
         var request = try makeRequest(path: path, configuration: configuration)
         request.httpMethod = "POST"
         request.httpBody = body
+        request.setValue(metricsContract, forHTTPHeaderField: healthMetricsContractHeader)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let session {
             request.setValue(session.id, forHTTPHeaderField: "X-Sync-Session")
@@ -92,7 +127,7 @@ final class URLSessionSyncTransport: @unchecked Sendable, SyncTransport {
               let object = raw as? [String: Any] else {
             throw SyncTransportError.invalidAcknowledgement
         }
-        return JSONObject(object)
+        return (JSONObject(object), http)
     }
 
     private func makeRequest(path: String, configuration: SyncConfiguration) throws -> URLRequest {

@@ -78,6 +78,31 @@ final class APIKeyStore {
 @MainActor
 enum KeychainStore {
     static let shared = APIKeyStore(access: SystemKeychainAccess())
+    /// The separate, device-only marker makes a lost journal fail closed.
+    /// A different enrollment requires explicit reconciliation.
+    static func confirmSleepCandidateEnrollment(partition: String, enrollment: UUID, create: Bool) throws -> Bool {
+        let access = SystemKeychainAccess()
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrAccount: "health-sync.sleep-writer." + partition
+        ]
+        let (status, result) = access.copy(query.merging([kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne]) { $1 })
+        let expected = Data(enrollment.uuidString.utf8)
+        switch status {
+        case errSecSuccess:
+            return !create && result as? Data == expected
+        case errSecItemNotFound where create:
+            let added = access.add(query.merging([
+                kSecValueData: expected,
+                kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            ]) { $1 })
+            guard added == errSecSuccess else { throw APIKeyError.failure(added) }
+            return true
+        case errSecItemNotFound: return false
+        default: throw APIKeyError.failure(status)
+        }
+    }
+
     /// Convenience for foreground display. Sync uses the throwing accessor.
     static var apiKey: String? { try? shared.read() }
 }

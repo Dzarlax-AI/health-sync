@@ -28,6 +28,13 @@ final class SyncEngine {
     private let health: HealthDataFetching
     private let transport: SyncTransport
     private let stateStore: SyncStateStoring
+    private let candidateDelivery: SleepCandidateDelivery?
+    private struct DeferredSleepCapture {
+        let input: SleepCandidateCapture
+        let authorization: SleepCandidateAuthorization
+        let startedAt: Date
+    }
+    private var deferredSleepCaptures: [DeferredSleepCapture] = []
     private let defaults: UserDefaults
     private let historyStore: SyncHistoryStore
     private let clock: () -> Date
@@ -60,7 +67,19 @@ final class SyncEngine {
     private init() {
         configuration = UserDefaultsSyncConfiguration.shared
         health = HealthKitManager.shared
-        transport = URLSessionSyncTransport()
+        let uploader = URLSessionSyncTransport()
+        transport = uploader
+        candidateDelivery = SleepCandidateDelivery(journal: SleepCandidateJournal(), transport: uploader,
+                                                   readChanges: { start, anchor in
+            try await HealthKitManager.shared.sleepChangePage(start: start, savedAnchor: anchor)
+        }) {
+            let managed = SleepCandidateAuthorization.managed(for: $0, defaults: .standard)
+#if DEBUG
+            return managed ?? SleepCandidateAuthorization.development(for: $0, defaults: .standard)
+#else
+            return managed
+#endif
+        }
         stateStore = SyncStateStore()
         defaults = .standard
         historyStore = SyncHistoryStore()
@@ -75,7 +94,8 @@ final class SyncEngine {
     init(configuration: SyncConfigurationProviding, health: HealthDataFetching,
          transport: SyncTransport, stateStore: SyncStateStoring,
          defaults: UserDefaults, historyStore: SyncHistoryStore,
-         clock: @escaping () -> Date = Date.init) {
+         clock: @escaping () -> Date = Date.init, candidateDelivery: SleepCandidateDelivery? = nil) {
+        self.candidateDelivery = candidateDelivery
         self.configuration = configuration; self.health = health; self.transport = transport
         self.stateStore = stateStore; self.defaults = defaults; self.historyStore = historyStore; self.clock = clock
         self.productionComposition = false
@@ -148,6 +168,9 @@ final class SyncEngine {
         // exercising the same state machine with fakes.
         if productionComposition && SyncRuntime.isTestMode { return .disabled }
         guard let config = try? configuration.snapshot() else { return configurationFailure() }
+        if (reason == .backgroundTask || reason == .observer || reason == .dailyResync) && !config.backgroundEnabled {
+            return .disabled
+        }
         if let task {
             guard activeFingerprint == config.fingerprint else { return configurationFailure() }
             do { try scheduleFollowUp(config) }
@@ -233,6 +256,7 @@ final class SyncEngine {
     }
 
     private func run(config: SyncConfiguration, reason: SyncReason) async -> SyncOutcome {
+        defer { deferredSleepCaptures.removeAll() }
         var result: SyncOutcome = .acceptedNoData
         while !Task.isCancelled {
             guard var current = state, current.fingerprint == config.fingerprint else { return configurationFailure() }
@@ -254,16 +278,30 @@ final class SyncEngine {
                 var completed = after
                 completed.completedGeneration = generation
                 guard save(completed, config) else { return stateFailureOutcome() }
-                return result
+                // Candidate delivery runs after the legacy checkpoint. A
+                // background expiry here must leave that checkpoint accepted.
+                if let candidateDelivery, isCurrent(config), !Task.isCancelled {
+                    let captures = deferredSleepCaptures
+                    deferredSleepCaptures.removeAll()
+                    for captured in captures {
+                        guard isCurrent(config), !Task.isCancelled else { break }
+                        await candidateDelivery.captureWithDeletionEvidence(captured.input, configuration: config,
+                            authorization: captured.authorization, sampleReadStartedAt: captured.startedAt) {
+                            self.isCurrent(config)
+                        }
+                    }
+                    if Task.isCancelled || !isCurrent(config) { return result }
+                    await readInitialSleepCandidates(config, cutoff)
+                    await candidateDelivery.deliver(configuration: config, clock: clock) { self.isCurrent(config) }
+                }
+                guard !Task.isCancelled, isCurrent(config),
+                      let latest = state, latest.requestedGeneration > generation else { return result }
             }
         }
         return await cancelled(config)
     }
 
     private func runOne(config: SyncConfiguration, cutoff: Date, reason: SyncReason) async -> SyncOutcome {
-        if (reason == .backgroundTask || reason == .observer || reason == .dailyResync) && !config.backgroundEnabled {
-            return .disabled
-        }
         if reason.mayRequestAuthorization {
             do { try await health.requestAuthorization() }
             catch { return await failBoth(config, cutoff, error) }
@@ -275,6 +313,52 @@ final class SyncEngine {
         if Task.isCancelled { return await cancelled(config) }
         let workouts = await sendWorkouts(config, cutoff, reason)
         return finish(metric, workouts, config)
+    }
+
+    private func readInitialSleepCandidates(_ config: SyncConfiguration, _ cutoff: Date) async {
+        guard let candidateDelivery, let authorization = candidateDelivery.authorized(for: config),
+              candidateDelivery.needsInitialRead(config, authorization: authorization) else { return }
+        let calendar = Calendar.current
+        guard let start = calendar.date(byAdding: .day, value: -30, to: cutoff) else { return }
+        do {
+            let sampleReadStartedAt = Date()
+            let payload = try await health.fetchMetrics(groups: [.sleep], since: start, until: cutoff,
+                                                        candidateBundles: authorization.verifiedBundleOnly)
+            guard isCurrent(config), !Task.isCancelled else { return }
+#if DEBUG
+            let initialLimit: Date? = start
+#else
+            let initialLimit: Date? = nil
+#endif
+            await candidateDelivery.captureWithDeletionEvidence(payload.sleepCandidateCapture, configuration: config,
+                authorization: authorization, sampleReadStartedAt: sampleReadStartedAt,
+                initial: true, notBefore: initialLimit) { self.isCurrent(config) }
+        } catch {
+            // Keep the candidate-only history scan pending independently of legacy sync.
+        }
+    }
+
+    private func fetchMetricsWithCandidates(_ groups: Set<MetricGroup>, since: Date, until: Date,
+                                            configuration config: SyncConfiguration) async throws -> HealthPayload {
+        guard groups.contains(.sleep), let candidateDelivery,
+              let authorization = candidateDelivery.authorized(for: config) else {
+            return try await health.fetchMetrics(groups: groups, since: since, until: until)
+        }
+        let sampleReadStartedAt = Date()
+        let payload = try await health.fetchMetrics(groups: groups, since: since, until: until,
+                                                    candidateBundles: authorization.verifiedBundleOnly)
+        if isCurrent(config), !Task.isCancelled, let capture = payload.sleepCandidateCapture {
+            if authorization.revisionBound && authorization.observeConfirmedDeletions {
+                // Retain at most the history and last ordinary read. Anchored
+                // I/O runs only after the legacy checkpoint has been saved.
+                if deferredSleepCaptures.count == 2 { deferredSleepCaptures.removeFirst() }
+                deferredSleepCaptures.append(.init(input: capture, authorization: authorization,
+                                                    startedAt: sampleReadStartedAt))
+            } else {
+                candidateDelivery.capture(capture, configuration: config, authorization: authorization)
+            }
+        }
+        return payload
     }
 
     /// Seeds the personal sleep reference without making a new user manually
@@ -298,7 +382,7 @@ final class SyncEngine {
         let today = calendar.startOfDay(for: cutoff)
         let start = calendar.date(byAdding: .day, value: -(initialSleepHistoryDays - 1), to: today) ?? today
         do {
-            let payload = try await health.fetchMetrics(groups: [.sleep], since: start, until: cutoff)
+            let payload = try await fetchMetricsWithCandidates([.sleep], since: start, until: cutoff, configuration: config)
             guard isCurrent(config), !Task.isCancelled else { return }
             // Completion means the server actually received a complete period
             // snapshot, including the meaningful empty-period case. A query
@@ -332,7 +416,7 @@ final class SyncEngine {
         current.metrics.pendingSince = earlier(current.metrics.pendingSince, since)
         guard save(current, config) else { return .deferred(stateFailureValue) }
         do {
-            let payload = try await health.fetchMetrics(groups: config.metricGroups, since: since, until: cutoff)
+            let payload = try await fetchMetricsWithCandidates(config.metricGroups, since: since, until: cutoff, configuration: config)
             guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
             var updated = state!
             if !payload.hasUploadableContent {
@@ -361,7 +445,7 @@ final class SyncEngine {
         var count = 0
         do {
             if sleepSelected {
-                let sleep = try await health.fetchMetrics(groups: [.sleep], since: start, until: end)
+                let sleep = try await fetchMetricsWithCandidates([.sleep], since: start, until: end, configuration: config)
                 guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
                 _ = try await transport.uploadMetrics(sleep, configuration: config, session: session)
                 guard isCurrent(config), !Task.isCancelled else { return .deferred(Task.isCancelled ? cancelledFailure : configurationAccessFailure) }
