@@ -11,6 +11,18 @@ struct MetricDef: Sendable {
     let serverUnits: String
     let isSUM: Bool
     let useAvgField: Bool
+
+    init(identifier: HKQuantityTypeIdentifier, unit: HKUnit, useAvgField: Bool) {
+        guard let definition = HealthKitIngress.quantities[identifier.rawValue] else {
+            preconditionFailure("Missing HealthKit ingress definition for \(identifier.rawValue)")
+        }
+        self.identifier = identifier
+        self.name = definition.name
+        self.unit = unit
+        self.serverUnits = definition.unit
+        self.isSUM = definition.hourlySum
+        self.useAvgField = useAvgField
+    }
 }
 
 
@@ -79,362 +91,252 @@ actor HealthKitManager: HealthDataFetching {
 
     static let sumMetrics: [MetricDef] = activitySumMetrics + distanceSumMetrics
 
-    nonisolated static let categoryEvents: [CategoryEventDef] = [
-        .init(identifierRaw: HKCategoryTypeIdentifier.mindfulSession.rawValue,
-              name: "mindful_minutes", kind: .durationMinutes),
-        .init(identifierRaw: HKCategoryTypeIdentifier.highHeartRateEvent.rawValue,
-              name: "high_heart_rate_event", kind: .count),
-        .init(identifierRaw: HKCategoryTypeIdentifier.lowHeartRateEvent.rawValue,
-              name: "low_heart_rate_event", kind: .count),
-        .init(identifierRaw: HKCategoryTypeIdentifier.irregularHeartRhythmEvent.rawValue,
-              name: "irregular_heart_rhythm_event", kind: .count),
-        .init(identifierRaw: HKCategoryTypeIdentifier.lowCardioFitnessEvent.rawValue,
-              name: "low_cardio_fitness_event", kind: .count),
-    ]
+    nonisolated static let categoryEvents = HealthKitIngress.categoryEvents
 
     // MARK: Vitals
 
     private static let vitalsMetrics: [MetricDef] = [
         .init(identifier: .heartRate,
-              name: "heart_rate", unit: .count().unitDivided(by: .minute()),
-              serverUnits: "bpm", isSUM: false, useAvgField: true),
+              unit: .count().unitDivided(by: .minute()), useAvgField: true),
         .init(identifier: .heartRateVariabilitySDNN,
-              name: "heart_rate_variability", unit: .secondUnit(with: .milli),
-              serverUnits: "ms", isSUM: false, useAvgField: false),
+              unit: .secondUnit(with: .milli), useAvgField: false),
         .init(identifier: .oxygenSaturation,
-              name: "blood_oxygen_saturation", unit: .percent(),
-              serverUnits: "%", isSUM: false, useAvgField: false),
+              unit: .percent(), useAvgField: false),
         .init(identifier: .respiratoryRate,
-              name: "respiratory_rate", unit: .count().unitDivided(by: .minute()),
-              serverUnits: "count/min", isSUM: false, useAvgField: false),
+              unit: .count().unitDivided(by: .minute()), useAvgField: false),
         .init(identifier: .restingHeartRate,
-              name: "resting_heart_rate", unit: .count().unitDivided(by: .minute()),
-              serverUnits: "bpm", isSUM: false, useAvgField: false),
+              unit: .count().unitDivided(by: .minute()), useAvgField: false),
         .init(identifier: .walkingHeartRateAverage,
-              name: "walking_heart_rate_average", unit: .count().unitDivided(by: .minute()),
-              serverUnits: "bpm", isSUM: false, useAvgField: false),
+              unit: .count().unitDivided(by: .minute()), useAvgField: false),
         .init(identifier: .heartRateRecoveryOneMinute,
-              name: "heart_rate_recovery", unit: .count().unitDivided(by: .minute()),
-              serverUnits: "bpm", isSUM: false, useAvgField: false),
+              unit: .count().unitDivided(by: .minute()), useAvgField: false),
         .init(identifier: .bloodPressureSystolic,
-              name: "blood_pressure_systolic", unit: .millimeterOfMercury(),
-              serverUnits: "mmHg", isSUM: false, useAvgField: false),
+              unit: .millimeterOfMercury(), useAvgField: false),
         .init(identifier: .bloodPressureDiastolic,
-              name: "blood_pressure_diastolic", unit: .millimeterOfMercury(),
-              serverUnits: "mmHg", isSUM: false, useAvgField: false),
+              unit: .millimeterOfMercury(), useAvgField: false),
         .init(identifier: .vo2Max,
-              name: "vo2_max", unit: HKUnit(from: "ml/kg·min"),
-              serverUnits: "mL/kg/min", isSUM: false, useAvgField: false),
+              unit: HKUnit(from: "ml/kg·min"), useAvgField: false),
         .init(identifier: .appleSleepingWristTemperature,
-              name: "wrist_temperature", unit: .degreeCelsius(),
-              serverUnits: "degC", isSUM: false, useAvgField: false),
+              unit: .degreeCelsius(), useAvgField: false),
         .init(identifier: .bloodGlucose,
-              name: "blood_glucose", unit: HKUnit(from: "mg/dL"),
-              serverUnits: "mg/dL", isSUM: false, useAvgField: false),
+              unit: HKUnit(from: "mg/dL"), useAvgField: false),
         .init(identifier: .bodyTemperature,
-              name: "body_temperature", unit: .degreeCelsius(),
-              serverUnits: "degC", isSUM: false, useAvgField: false),
+              unit: .degreeCelsius(), useAvgField: false),
         .init(identifier: .peripheralPerfusionIndex,
-              name: "peripheral_perfusion_index", unit: .percent(),
-              serverUnits: "%", isSUM: false, useAvgField: false),
+              unit: .percent(), useAvgField: false),
         .init(identifier: .bloodAlcoholContent,
-              name: "blood_alcohol_content", unit: .percent(),
-              serverUnits: "%", isSUM: false, useAvgField: false),
+              unit: .percent(), useAvgField: false),
         .init(identifier: .insulinDelivery,
-              name: "insulin_delivery", unit: .internationalUnit(),
-              serverUnits: "IU", isSUM: false, useAvgField: false),
+              unit: .internationalUnit(), useAvgField: false),
         .init(identifier: .peakExpiratoryFlowRate,
-              name: "peak_expiratory_flow_rate",
-              unit: .liter().unitDivided(by: .minute()),
-              serverUnits: "L/min", isSUM: false, useAvgField: false),
+              unit: .liter().unitDivided(by: .minute()), useAvgField: false),
         .init(identifier: .forcedVitalCapacity,
-              name: "forced_vital_capacity", unit: .liter(),
-              serverUnits: "L", isSUM: false, useAvgField: false),
+              unit: .liter(), useAvgField: false),
         .init(identifier: .forcedExpiratoryVolume1,
-              name: "forced_expiratory_volume1", unit: .liter(),
-              serverUnits: "L", isSUM: false, useAvgField: false),
+              unit: .liter(), useAvgField: false),
     ]
 
     // MARK: Body composition
 
     private static let bodyMetrics: [MetricDef] = [
         .init(identifier: .bodyMass,
-              name: "body_mass", unit: .gramUnit(with: .kilo),
-              serverUnits: "kg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .kilo), useAvgField: false),
         .init(identifier: .bodyFatPercentage,
-              name: "body_fat_percentage", unit: .percent(),
-              serverUnits: "%", isSUM: false, useAvgField: false),
+              unit: .percent(), useAvgField: false),
         .init(identifier: .bodyMassIndex,
-              name: "body_mass_index", unit: .count(),
-              serverUnits: "count", isSUM: false, useAvgField: false),
+              unit: .count(), useAvgField: false),
         .init(identifier: .leanBodyMass,
-              name: "lean_body_mass", unit: .gramUnit(with: .kilo),
-              serverUnits: "kg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .kilo), useAvgField: false),
         .init(identifier: .height,
-              name: "height", unit: .meter(),
-              serverUnits: "m", isSUM: false, useAvgField: false),
+              unit: .meter(), useAvgField: false),
         .init(identifier: .waistCircumference,
-              name: "waist_circumference", unit: .meterUnit(with: .centi),
-              serverUnits: "cm", isSUM: false, useAvgField: false),
+              unit: .meterUnit(with: .centi), useAvgField: false),
     ]
 
     // MARK: Gait & mobility
 
     private static let gaitMetrics: [MetricDef] = [
         .init(identifier: .walkingSpeed,
-              name: "walking_speed", unit: .meter().unitDivided(by: .second()),
-              serverUnits: "m/s", isSUM: false, useAvgField: false),
+              unit: .meter().unitDivided(by: .second()), useAvgField: false),
         .init(identifier: .walkingStepLength,
-              name: "walking_step_length", unit: .meter(),
-              serverUnits: "m", isSUM: false, useAvgField: false),
+              unit: .meter(), useAvgField: false),
         .init(identifier: .walkingDoubleSupportPercentage,
-              name: "walking_double_support_percentage", unit: .percent(),
-              serverUnits: "%", isSUM: false, useAvgField: false),
+              unit: .percent(), useAvgField: false),
         .init(identifier: .walkingAsymmetryPercentage,
-              name: "walking_asymmetry_percentage", unit: .percent(),
-              serverUnits: "%", isSUM: false, useAvgField: false),
+              unit: .percent(), useAvgField: false),
         .init(identifier: .stairAscentSpeed,
-              name: "stair_ascent_speed", unit: .meter().unitDivided(by: .second()),
-              serverUnits: "m/s", isSUM: false, useAvgField: false),
+              unit: .meter().unitDivided(by: .second()), useAvgField: false),
         .init(identifier: .stairDescentSpeed,
-              name: "stair_descent_speed", unit: .meter().unitDivided(by: .second()),
-              serverUnits: "m/s", isSUM: false, useAvgField: false),
+              unit: .meter().unitDivided(by: .second()), useAvgField: false),
         .init(identifier: .appleWalkingSteadiness,
-              name: "walking_steadiness", unit: .percent(),
-              serverUnits: "%", isSUM: false, useAvgField: false),
+              unit: .percent(), useAvgField: false),
         .init(identifier: .sixMinuteWalkTestDistance,
-              name: "six_minute_walking_test_distance", unit: .meter(),
-              serverUnits: "m", isSUM: false, useAvgField: false),
+              unit: .meter(), useAvgField: false),
         .init(identifier: .numberOfTimesFallen,
-              name: "number_of_times_fallen", unit: .count(),
-              serverUnits: "count", isSUM: false, useAvgField: false),
+              unit: .count(), useAvgField: false),
     ]
 
     // MARK: Running metrics
 
     private static let runningMetrics: [MetricDef] = [
         .init(identifier: .runningPower,
-              name: "running_power", unit: .watt(),
-              serverUnits: "W", isSUM: false, useAvgField: false),
+              unit: .watt(), useAvgField: false),
         .init(identifier: .runningSpeed,
-              name: "running_speed", unit: .meter().unitDivided(by: .second()),
-              serverUnits: "m/s", isSUM: false, useAvgField: false),
+              unit: .meter().unitDivided(by: .second()), useAvgField: false),
         .init(identifier: .runningStrideLength,
-              name: "running_stride_length", unit: .meter(),
-              serverUnits: "m", isSUM: false, useAvgField: false),
+              unit: .meter(), useAvgField: false),
         .init(identifier: .runningVerticalOscillation,
-              name: "running_vertical_oscillation", unit: .meterUnit(with: .centi),
-              serverUnits: "cm", isSUM: false, useAvgField: false),
+              unit: .meterUnit(with: .centi), useAvgField: false),
         .init(identifier: .runningGroundContactTime,
-              name: "running_ground_contact_time", unit: .secondUnit(with: .milli),
-              serverUnits: "ms", isSUM: false, useAvgField: false),
+              unit: .secondUnit(with: .milli), useAvgField: false),
     ]
 
     // MARK: Cycling metrics
 
     private static let cyclingMetrics: [MetricDef] = [
         .init(identifier: .cyclingPower,
-              name: "cycling_power", unit: .watt(),
-              serverUnits: "W", isSUM: false, useAvgField: false),
+              unit: .watt(), useAvgField: false),
         .init(identifier: .cyclingSpeed,
-              name: "cycling_speed", unit: .meter().unitDivided(by: .second()),
-              serverUnits: "m/s", isSUM: false, useAvgField: false),
+              unit: .meter().unitDivided(by: .second()), useAvgField: false),
         .init(identifier: .cyclingCadence,
-              name: "cycling_cadence", unit: .count().unitDivided(by: .minute()),
-              serverUnits: "rpm", isSUM: false, useAvgField: false),
+              unit: .count().unitDivided(by: .minute()), useAvgField: false),
         .init(identifier: .cyclingFunctionalThresholdPower,
-              name: "cycling_ftp", unit: .watt(),
-              serverUnits: "W", isSUM: false, useAvgField: false),
+              unit: .watt(), useAvgField: false),
     ]
 
     // MARK: Cardio & fitness
 
     private static let cardioMetrics: [MetricDef] = [
         .init(identifier: .physicalEffort,
-              name: "physical_effort", unit: HKUnit(from: "kcal/hr·kg"),
-              serverUnits: "kcal/hr·kg", isSUM: false, useAvgField: false),
+              unit: HKUnit(from: "kcal/hr·kg"), useAvgField: false),
         .init(identifier: .underwaterDepth,
-              name: "underwater_depth", unit: .meter(),
-              serverUnits: "m", isSUM: false, useAvgField: false),
+              unit: .meter(), useAvgField: false),
         .init(identifier: .waterTemperature,
-              name: "water_temperature", unit: .degreeCelsius(),
-              serverUnits: "degC", isSUM: false, useAvgField: false),
+              unit: .degreeCelsius(), useAvgField: false),
     ]
 
     // MARK: Environment & sensors
 
     private static let environmentMetrics: [MetricDef] = [
         .init(identifier: .environmentalAudioExposure,
-              name: "environmental_audio_exposure", unit: .decibelAWeightedSoundPressureLevel(),
-              serverUnits: "dBASPL", isSUM: false, useAvgField: false),
+              unit: .decibelAWeightedSoundPressureLevel(), useAvgField: false),
         .init(identifier: .headphoneAudioExposure,
-              name: "headphone_audio_exposure", unit: .decibelAWeightedSoundPressureLevel(),
-              serverUnits: "dBASPL", isSUM: false, useAvgField: false),
+              unit: .decibelAWeightedSoundPressureLevel(), useAvgField: false),
         .init(identifier: .uvExposure,
-              name: "uv_exposure", unit: .count(),
-              serverUnits: "count", isSUM: false, useAvgField: false),
+              unit: .count(), useAvgField: false),
     ]
 
     // MARK: Dietary — individual meal samples
 
     private static let dietaryMetrics: [MetricDef] = [
         .init(identifier: .dietaryEnergyConsumed,
-              name: "dietary_energy", unit: .kilocalorie(),
-              serverUnits: "kcal", isSUM: false, useAvgField: false),
+              unit: .kilocalorie(), useAvgField: false),
         .init(identifier: .dietaryProtein,
-              name: "dietary_protein", unit: .gram(),
-              serverUnits: "g", isSUM: false, useAvgField: false),
+              unit: .gram(), useAvgField: false),
         .init(identifier: .dietaryFatTotal,
-              name: "dietary_fat", unit: .gram(),
-              serverUnits: "g", isSUM: false, useAvgField: false),
+              unit: .gram(), useAvgField: false),
         .init(identifier: .dietaryFatSaturated,
-              name: "dietary_fat_saturated", unit: .gram(),
-              serverUnits: "g", isSUM: false, useAvgField: false),
+              unit: .gram(), useAvgField: false),
         .init(identifier: .dietaryFatPolyunsaturated,
-              name: "dietary_fat_polyunsaturated", unit: .gram(),
-              serverUnits: "g", isSUM: false, useAvgField: false),
+              unit: .gram(), useAvgField: false),
         .init(identifier: .dietaryFatMonounsaturated,
-              name: "dietary_fat_monounsaturated", unit: .gram(),
-              serverUnits: "g", isSUM: false, useAvgField: false),
+              unit: .gram(), useAvgField: false),
         .init(identifier: .dietaryCarbohydrates,
-              name: "dietary_carbs", unit: .gram(),
-              serverUnits: "g", isSUM: false, useAvgField: false),
+              unit: .gram(), useAvgField: false),
         .init(identifier: .dietarySugar,
-              name: "dietary_sugar", unit: .gram(),
-              serverUnits: "g", isSUM: false, useAvgField: false),
+              unit: .gram(), useAvgField: false),
         .init(identifier: .dietaryFiber,
-              name: "dietary_fiber", unit: .gram(),
-              serverUnits: "g", isSUM: false, useAvgField: false),
+              unit: .gram(), useAvgField: false),
         .init(identifier: .dietaryCholesterol,
-              name: "dietary_cholesterol", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietarySodium,
-              name: "dietary_sodium", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryPotassium,
-              name: "dietary_potassium", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryCalcium,
-              name: "dietary_calcium", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryIron,
-              name: "dietary_iron", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryPhosphorus,
-              name: "dietary_phosphorus", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryMagnesium,
-              name: "dietary_magnesium", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryZinc,
-              name: "dietary_zinc", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryCopper,
-              name: "dietary_copper", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryManganese,
-              name: "dietary_manganese", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietarySelenium,
-              name: "dietary_selenium", unit: .gramUnit(with: .micro),
-              serverUnits: "mcg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .micro), useAvgField: false),
         .init(identifier: .dietaryIodine,
-              name: "dietary_iodine", unit: .gramUnit(with: .micro),
-              serverUnits: "mcg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .micro), useAvgField: false),
         .init(identifier: .dietaryVitaminA,
-              name: "dietary_vitamin_a", unit: .gramUnit(with: .micro),
-              serverUnits: "mcg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .micro), useAvgField: false),
         .init(identifier: .dietaryVitaminB6,
-              name: "dietary_vitamin_b6", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryVitaminB12,
-              name: "dietary_vitamin_b12", unit: .gramUnit(with: .micro),
-              serverUnits: "mcg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .micro), useAvgField: false),
         .init(identifier: .dietaryVitaminC,
-              name: "dietary_vitamin_c", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryVitaminD,
-              name: "dietary_vitamin_d", unit: .gramUnit(with: .micro),
-              serverUnits: "mcg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .micro), useAvgField: false),
         .init(identifier: .dietaryVitaminE,
-              name: "dietary_vitamin_e", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryVitaminK,
-              name: "dietary_vitamin_k", unit: .gramUnit(with: .micro),
-              serverUnits: "mcg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .micro), useAvgField: false),
         .init(identifier: .dietaryThiamin,
-              name: "dietary_thiamin", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryRiboflavin,
-              name: "dietary_riboflavin", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryNiacin,
-              name: "dietary_niacin", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryPantothenicAcid,
-              name: "dietary_pantothenic_acid", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryFolate,
-              name: "dietary_folate", unit: .gramUnit(with: .micro),
-              serverUnits: "mcg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .micro), useAvgField: false),
         .init(identifier: .dietaryBiotin,
-              name: "dietary_biotin", unit: .gramUnit(with: .micro),
-              serverUnits: "mcg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .micro), useAvgField: false),
         .init(identifier: .dietaryMolybdenum,
-              name: "dietary_molybdenum", unit: .gramUnit(with: .micro),
-              serverUnits: "mcg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .micro), useAvgField: false),
         .init(identifier: .dietaryCaffeine,
-              name: "dietary_caffeine", unit: .gramUnit(with: .milli),
-              serverUnits: "mg", isSUM: false, useAvgField: false),
+              unit: .gramUnit(with: .milli), useAvgField: false),
         .init(identifier: .dietaryWater,
-              name: "dietary_water", unit: .literUnit(with: .milli),
-              serverUnits: "mL", isSUM: false, useAvgField: false),
+              unit: .literUnit(with: .milli), useAvgField: false),
         .init(identifier: .numberOfAlcoholicBeverages,
-              name: "alcoholic_beverages", unit: .count(),
-              serverUnits: "count", isSUM: false, useAvgField: false),
+              unit: .count(), useAvgField: false),
     ]
 
     // MARK: Activity SUM (hourly aggregates)
 
     private static let activitySumMetrics: [MetricDef] = [
         .init(identifier: .stepCount,
-              name: "step_count", unit: .count(),
-              serverUnits: "count", isSUM: true, useAvgField: false),
+              unit: .count(), useAvgField: false),
         .init(identifier: .activeEnergyBurned,
-              name: "active_energy", unit: .kilocalorie(),
-              serverUnits: "kcal", isSUM: true, useAvgField: false),
+              unit: .kilocalorie(), useAvgField: false),
         .init(identifier: .basalEnergyBurned,
-              name: "basal_energy_burned", unit: .kilocalorie(),
-              serverUnits: "kcal", isSUM: true, useAvgField: false),
+              unit: .kilocalorie(), useAvgField: false),
         .init(identifier: .appleExerciseTime,
-              name: "apple_exercise_time", unit: .minute(),
-              serverUnits: "min", isSUM: true, useAvgField: false),
+              unit: .minute(), useAvgField: false),
         .init(identifier: .appleStandTime,
-              name: "apple_stand_time", unit: .minute(),
-              serverUnits: "min", isSUM: true, useAvgField: false),
+              unit: .minute(), useAvgField: false),
         .init(identifier: .flightsClimbed,
-              name: "flights_climbed", unit: .count(),
-              serverUnits: "count", isSUM: true, useAvgField: false),
+              unit: .count(), useAvgField: false),
         .init(identifier: .timeInDaylight,
-              name: "time_in_daylight", unit: .minute(),
-              serverUnits: "min", isSUM: true, useAvgField: false),
+              unit: .minute(), useAvgField: false),
         .init(identifier: .swimmingStrokeCount,
-              name: "swimming_stroke_count", unit: .count(),
-              serverUnits: "count", isSUM: true, useAvgField: false),
+              unit: .count(), useAvgField: false),
     ]
 
     // MARK: Distance SUM
 
     private static let distanceSumMetrics: [MetricDef] = [
         .init(identifier: .distanceWalkingRunning,
-              name: "walking_running_distance", unit: .meterUnit(with: .kilo),
-              serverUnits: "km", isSUM: true, useAvgField: false),
+              unit: .meterUnit(with: .kilo), useAvgField: false),
         .init(identifier: .distanceCycling,
-              name: "distance_cycling", unit: .meterUnit(with: .kilo),
-              serverUnits: "km", isSUM: true, useAvgField: false),
+              unit: .meterUnit(with: .kilo), useAvgField: false),
         .init(identifier: .distanceSwimming,
-              name: "distance_swimming", unit: .meterUnit(with: .kilo),
-              serverUnits: "km", isSUM: true, useAvgField: false),
+              unit: .meterUnit(with: .kilo), useAvgField: false),
     ]
 
     // MARK: - Read types
@@ -493,7 +395,18 @@ actor HealthKitManager: HealthDataFetching {
     /// accompanying `night_sleep_total` records and must never be dropped on
     /// its way to the uploader.
     func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?) async throws -> HealthPayload {
+        try await fetchMetrics(groups: groups, since: since, until: until, candidateBundles: nil)
+    }
+
+    func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?,
+                      candidateBundles: Set<String>) async throws -> HealthPayload {
+        try await fetchMetrics(groups: groups, since: since, until: until, candidateBundles: Optional(candidateBundles))
+    }
+
+    private func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?,
+                              candidateBundles: Set<String>?) async throws -> HealthPayload {
         var metrics: [MetricData] = []
+        var sleepCandidateCapture: SleepCandidateCapture?
         var nightSleepCoverage: [NightSleepCoverage] = []
         var sleepPeriodCoverage: [SleepPeriodCoverage] = []
         var completedSleepEpisodes: [CompletedSleepEpisode] = []
@@ -509,7 +422,8 @@ actor HealthKitManager: HealthDataFetching {
             metrics += try await fetchSUMMetrics(definitions: Self.sumMetrics, since: since, until: until)
         }
         if groups.contains(.sleep) {
-            let sleep = try await fetchSleep(since: since, until: until)
+            let sleep = try await fetchSleep(since: since, until: until, candidateBundles: candidateBundles)
+            sleepCandidateCapture = sleep.candidateCapture
             metrics += sleep.metrics
             nightSleepCoverage = sleep.nightSleepCoverage
             sleepPeriodCoverage = sleep.sleepPeriodCoverage
@@ -526,7 +440,8 @@ actor HealthKitManager: HealthDataFetching {
             metrics: metrics.filter { !$0.data.isEmpty },
             nightSleepCoverage: nightSleepCoverage,
             sleepPeriodCoverage: sleepPeriodCoverage,
-            completedSleepEpisodes: completedSleepEpisodes
+            completedSleepEpisodes: completedSleepEpisodes,
+            sleepCandidateCapture: sleepCandidateCapture
         )
     }
 
@@ -762,9 +677,11 @@ actor HealthKitManager: HealthDataFetching {
         let nightSleepCoverage: [NightSleepCoverage]
         let sleepPeriodCoverage: [SleepPeriodCoverage]
         let completedSleepEpisodes: [CompletedSleepEpisode]
+        let candidateCapture: SleepCandidateCapture?
     }
 
-    private func fetchSleep(since: Date, until: Date? = nil) async throws -> SleepFetch {
+    private func fetchSleep(since: Date, until: Date? = nil,
+                            candidateBundles: Set<String>? = nil) async throws -> SleepFetch {
         let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis)!
         // Always look back at least 7 days so any "live" sync (regular
         // foreground / background / HKObserverQuery wake) sees full sleep
@@ -794,6 +711,9 @@ actor HealthKitManager: HealthDataFetching {
                 if let err { completion(.failure(err)); return }
                 completion(.success((raw as? [HKCategorySample]) ?? []))
             }
+        }
+        let candidateCapture = candidateBundles.map {
+            Self.captureSleepCandidates(samples, from: sleepWindowStart, to: queryEnd, verifiedBundles: $0)
         }
         struct NightKey: Hashable, Sendable { let source: String; let date: String }
         struct SleepInterval: Sendable {
@@ -856,7 +776,7 @@ actor HealthKitManager: HealthDataFetching {
             }
             return SleepFetch(
                 metrics: [], nightSleepCoverage: [],
-                sleepPeriodCoverage: coverage, completedSleepEpisodes: []
+                sleepPeriodCoverage: coverage, completedSleepEpisodes: [], candidateCapture: candidateCapture
             )
         }
 
@@ -955,7 +875,7 @@ actor HealthKitManager: HealthDataFetching {
         func sourceRank(_ source: String) -> Int {
             if isAppleWatch(source) { return 3 }
             if source.localizedCaseInsensitiveContains("iPhone") { return 2 }
-            if Self.isKnownDuplicateName(source) { return 1 }
+            if source.localizedCaseInsensitiveContains("Ring") { return 1 }
             return 0
         }
 
@@ -1059,20 +979,9 @@ actor HealthKitManager: HealthDataFetching {
         var napTotals:  [DayKey: Double] = [:]
 		var mainGenerations: [DayKey: String] = [:]
 
-        // Per-segment emission: one MetricSample per HKCategorySample, attributed
-        // to the wake-up DayKey of its containing session so the dropKnownDup
-        // filter (Apple Watch wins over RingConn for the same night) applies
-        // uniformly across aggregate AND fragment data. Required by the
-        // server-side v2.2 stress methodology (STRESS_MEASUREMENT.md) which
-        // needs per-segment timestamps to derive awake-window, overnight RHR
-        // baselines, and sustained-HR-load hourly z-series. The Health Auto
-        // Export iOS app used to deliver this shape natively; our client
-        // aggregated it away when we replaced HAE. The server's existing
-        // sleepDedupClause excludes the midnight-summary rows whenever
-        // per-segment fragments exist, so shipping both is safe — fragments
-        // win where they exist, the nightly aggregate is kept as fallback for
-        // tools that don't dedup.
-        var perSegmentByPhase: [String: [(dk: DayKey, sample: HKCategorySample)]] = [
+        // Preserve source and timestamp for the server's awake-window,
+        // overnight RHR baseline, and hourly stress calculations.
+        var perSegmentByPhase: [String: [(source: String, sample: HKCategorySample)]] = [
             "sleep_deep":        [],
             "sleep_rem":         [],
             "sleep_core":        [],
@@ -1147,7 +1056,7 @@ actor HealthKitManager: HealthDataFetching {
                     let skipCoarseOverlap = hasSpecificStages &&
                         raw == .asleepUnspecified
                     if !skipCoarseOverlap, let phase = Self.sleepPhaseName(for: s.value) {
-                        perSegmentByPhase[phase]?.append((dk: dk, sample: s))
+                        perSegmentByPhase[phase]?.append((source: dk.source, sample: s))
                     }
                 }
                 if isMain {
@@ -1162,21 +1071,7 @@ actor HealthKitManager: HealthDataFetching {
             napTotals[dk]  = napHrs
         }
 
-        // Drop only known-duplicate sources (e.g. RingConn) when an Apple Watch
-        // record exists for the same night. Other sources (iPhone Sleep
-        // Schedule, third-party trackers without known duplication) are
-        // preserved — Apple Watch sometimes only logs a short fragment while
-        // the iPhone holds the rest of the night, and dropping it loses real
-        // sleep time.
-        let watchDates = grouped.keys.reduce(into: Set<String>()) { set, key in
-            if isAppleWatch(key.source) { set.insert(key.date) }
-        }
-        let dropKnownDup: (String, String) -> Bool = { source, date in
-            Self.isKnownDuplicateName(source) && watchDates.contains(date)
-        }
-
         let sleepAnalysisData = grouped
-            .filter { !dropKnownDup($0.key.source, $0.key.date) }
             .sorted { $0.key.date < $1.key.date }
             .map { (key, p) -> MetricSample in
                 .sleep(date: key.date, deep: p.deep, rem: p.rem,
@@ -1184,7 +1079,6 @@ actor HealthKitManager: HealthDataFetching {
             }
 
         let emittedMainTotals = mainTotals
-            .filter { !dropKnownDup($0.key.source, $0.key.date) }
             .sorted { $0.key.date < $1.key.date }
         let mainData = emittedMainTotals
             .map { dk, hrs in
@@ -1245,25 +1139,21 @@ actor HealthKitManager: HealthDataFetching {
             }
         }
         let napData = napTotals
-            .filter { !dropKnownDup($0.key.source, $0.key.date) }
             .sorted { $0.key.date < $1.key.date }
             .map { dk, hrs in
                 MetricSample.qty(date: dk.date, value: hrs, source: dk.source)
             }
 
         // Per-segment payloads — one MetricSample.qty per HKCategorySample.
-        // Same dropKnownDup filter as the aggregate path so Apple Watch
-        // dominates RingConn fragments on shared nights.
         func buildSegmentData(_ phase: String) -> [MetricSample] {
             (perSegmentByPhase[phase] ?? [])
-                .filter { !dropKnownDup($0.dk.source, $0.dk.date) }
                 .sorted { $0.sample.startDate < $1.sample.startDate }
                 .map { entry -> MetricSample in
                     let hrs = entry.sample.endDate.timeIntervalSince(entry.sample.startDate) / 3600.0
                     return MetricSample.qty(
                         date: formatForServer(entry.sample.startDate),
                         value: hrs,
-                        source: entry.dk.source
+                        source: entry.source
                     )
                 }
         }
@@ -1304,8 +1194,80 @@ actor HealthKitManager: HealthDataFetching {
         ],
         nightSleepCoverage: nightSleepCoverage,
         sleepPeriodCoverage: sleepPeriodCoverage,
-        completedSleepEpisodes: completedSleepEpisodes)
+        completedSleepEpisodes: completedSleepEpisodes,
+        candidateCapture: candidateCapture)
     }
+
+    private nonisolated static func captureSleepCandidates(
+        _ samples: [HKCategorySample], from start: Date, to end: Date, verifiedBundles: Set<String>
+    ) -> SleepCandidateCapture {
+        var unverified = Set<String>()
+        let grouped = Dictionary(grouping: samples, by: { $0.sourceRevision.source.bundleIdentifier })
+#if DEBUG
+        recordDevelopmentSleepSourceSummary(grouped)
+#endif
+        let conflictingBundles = Set(grouped.compactMap { bundle, rows in
+            let devices = Set(rows.compactMap { $0.device?.localIdentifier }.filter { !$0.isEmpty })
+            return verifiedBundles.contains(bundle) && devices.count > 1 ? bundle : nil
+        })
+        let intervals = samples.compactMap { sample -> SleepCandidateCapture.Sample? in
+            let kind: SleepCandidateStage.Kind
+            switch HKCategoryValueSleepAnalysis(rawValue: sample.value) {
+            case .asleepCore: kind = .core
+            case .asleepDeep: kind = .deep
+            case .asleepREM: kind = .rem
+            case .asleepUnspecified: kind = .asleepUnspecified
+            case .awake: kind = .awake
+            case .inBed: kind = .inBed
+            default: return nil
+            }
+            guard sample.startDate < sample.endDate else { return nil }
+            let source = sample.sourceRevision.source
+            let bundle = source.bundleIdentifier
+            let verifiedBundle = verifiedBundles.contains(bundle)
+            let device = verifiedBundle ? nil : sample.device?.localIdentifier
+            guard !conflictingBundles.contains(bundle),
+                  let sourceID = SleepCandidateCapture.sourceID(bundle: bundle, device: device,
+                                                               verifiedBundleOnly: verifiedBundle) else {
+                unverified.insert(bundle)
+                return nil
+            }
+            return .init(sourceID: sourceID, sourceName: source.name,
+                         stage: .init(id: sample.uuid.uuidString.lowercased(), kind: kind,
+                                      start: sample.startDate, end: sample.endDate),
+                         zone: sample.metadata?[HKMetadataKeyTimeZone] as? String)
+        }
+        return .init(queryStart: start, queryEnd: end, samples: intervals,
+                     ambiguousSourceCount: unverified.count)
+    }
+
+#if DEBUG
+    private nonisolated static func recordDevelopmentSleepSourceSummary(_ grouped: [String: [HKCategorySample]]) {
+        let directory = URL.applicationSupportDirectory.appending(path: "health-sync")
+        guard FileManager.default.fileExists(atPath: directory.appending(path: "development-sleep-candidate-pilot.json").path) else { return }
+        let summary = grouped.mapValues { rows in
+            let names = Set(rows.map { $0.sourceRevision.source.name })
+            let productTypes = Set(rows.compactMap { $0.sourceRevision.productType })
+            let localDevices = Set(rows.compactMap { $0.device?.localIdentifier }.filter { !$0.isEmpty })
+            let models = Set(rows.compactMap { $0.device?.model })
+            let zoneCount = rows.filter { SleepCandidateCapture.historicalZone($0.metadata?[HKMetadataKeyTimeZone] as? String) != nil }.count
+            return [
+                "samples": rows.count,
+                "sourceNames": names.count,
+                "productTypes": productTypes.count,
+                "deviceModels": models.count,
+                "deviceIDs": localDevices.count,
+                "knownZoneSamples": zoneCount,
+                "watchSources": names.filter { $0.localizedCaseInsensitiveContains("Watch") ||
+                    $0.localizedCaseInsensitiveContains("Ultra") }.count,
+                "ringSources": names.filter { $0.localizedCaseInsensitiveContains("RingConn") }.count
+            ]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: summary) else { return }
+        try? data.write(to: directory.appending(path: "development-sleep-source-summary.json"),
+                        options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+#endif
 
     // These are static so coverage semantics remain independently testable
     // from HealthKit queries. The end is the actual query boundary, never a
@@ -1381,18 +1343,6 @@ actor HealthKitManager: HealthDataFetching {
         source.localizedCaseInsensitiveContains("Ultra")       ||
         source.localizedCaseInsensitiveContains("Apple Watch") ||
         source.localizedCaseInsensitiveContains("Watch")
-    }
-
-    private func isKnownDuplicate(_ source: String) -> Bool {
-        Self.isKnownDuplicateName(source)
-    }
-
-    /// Static counterpart of isKnownDuplicate — usable from non-isolated
-    /// closures (e.g. inside the actor's local computations) without
-    /// triggering Swift 6 actor-isolation diagnostics on `self` capture.
-    nonisolated static func isKnownDuplicateName(_ source: String) -> Bool {
-        source.localizedCaseInsensitiveContains("RingConn") ||
-        source.localizedCaseInsensitiveContains("Ring")
     }
 
     /// True for HKCategoryValueSleepAnalysis values that represent actual

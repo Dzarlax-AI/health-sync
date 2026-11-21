@@ -112,6 +112,12 @@ final class ServerClient {
         req.httpMethod = "GET"
         req.setValue(key, forHTTPHeaderField: "X-API-Key")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
+        switch path {
+        case "/api/metrics", "/api/metrics/latest", "/api/metrics/data", "/api/metrics/range":
+            req.setValue("2", forHTTPHeaderField: healthMetricsContractHeader)
+        default:
+            break
+        }
         return req
     }
 

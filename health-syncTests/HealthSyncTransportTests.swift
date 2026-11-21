@@ -5,6 +5,60 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct HealthSyncTransportTests {
+    @Test func sleepCandidateTransportRequiresBothReceiptsAndSendsOnlyCandidateBytes() async throws {
+        let packet = try syntheticSleepCandidatePacket()
+        let header = "X-Health-Sleep-Candidates-Ack"
+        let ok = Data(#"{"status":"ok","id":123}"#.utf8)
+        let transport = makeTransport()
+        defer { StubURLProtocol.reset() }
+        StubURLProtocol.set(status: 200, headers: ["Content-Type": "application/json"], body: ok)
+        await #expect(throws: SleepCandidateAcknowledgementError.missing) {
+            try await transport.uploadSleepCandidates(packet, configuration: testConfiguration())
+        }
+        StubURLProtocol.set(status: 200, headers: ["Content-Type": "application/json", header: packet.id.uppercased()], body: ok)
+        await #expect(throws: SleepCandidateAcknowledgementError.mismatched) {
+            try await transport.uploadSleepCandidates(packet, configuration: testConfiguration())
+        }
+        StubURLProtocol.set(status: 200, headers: ["Content-Type": "application/json", header: packet.id],
+                            body: Data(#"{"status":"ok","id":true}"#.utf8))
+        await #expect(throws: SyncTransportError.invalidAcknowledgement) {
+            try await transport.uploadSleepCandidates(packet, configuration: testConfiguration())
+        }
+        StubURLProtocol.set(status: 200, headers: ["Content-Type": "application/json", header: packet.id], body: ok)
+        #expect(try await transport.uploadSleepCandidates(packet, configuration: testConfiguration()) == .init(id: 123))
+        let request = try #require(StubURLProtocol.lastRequest())
+        #expect(request.url?.path == "/health")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "X-Sync-Session") == nil)
+        #expect(request.value(forHTTPHeaderField: "X-Sync-Session-Total") == nil)
+        let wire = try #require(JSONSerialization.jsonObject(with: packet.body) as? [String: [String: Any]])
+        let payload = try #require(wire["data"])
+        #expect(Set(payload.keys) == ["metrics", "sleep_candidates_v1"])
+        #expect((payload["metrics"] as? [String]) == [])
+    }
+
+    @Test(arguments: [false, true])
+    func metricsProbesBeforeSelectingUploadContract(confirmsV2: Bool) async throws {
+        let header = "X-Health-Metrics-Contract"
+        var headers = ["Content-Type": "application/json"]
+        if confirmsV2 { headers[header] = "2" }
+        StubURLProtocol.set(status: 200, headers: headers, body: Data(#"{"status":"ok","id":123}"#.utf8))
+        defer { StubURLProtocol.reset() }
+        let payload = metricPayload()
+        let receipt = try await makeTransport().uploadMetrics(payload, configuration: testConfiguration())
+        #expect(receipt.id == 123)
+        let requests = StubURLProtocol.requests()
+        #expect(requests.map(\.httpMethod) == ["GET", "POST"])
+        #expect(requests.map { $0.url?.path } == ["/health", "/health"])
+        #expect(requests.map { $0.value(forHTTPHeaderField: header) } == ["2", confirmsV2 ? "2" : nil])
+
+        let encoder = JSONEncoder()
+        encoder.userInfo[healthMetricsContractCodingKey] = confirmsV2
+        let wire = try #require(JSONSerialization.jsonObject(with: encoder.encode(payload)) as? [String: [String: [[String: Any]]]])
+        let metric = try #require(wire["data"]?["metrics"]?.first)
+        #expect(metric["grain"] as? String == (confirmsV2 ? "sample_start" : nil))
+    }
+
     @Test func metricsAcceptsStrictNumericAcknowledgement() async throws {
         StubURLProtocol.set(status: 200, headers: ["Content-Type": "application/json"],
                             body: Data(#"{"status":"ok","id":123}"#.utf8))
@@ -220,7 +274,14 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         }
     }
 
+    nonisolated(unsafe) private static var history: [URLRequest] = []
+
+    static func lastRequest() -> URLRequest? { lock.withLock { history.last } }
+
+    static func requests() -> [URLRequest] { lock.withLock { history } }
+
     static func reset() {
+        lock.withLock { history.removeAll() }
         set(status: 500, headers: ["Content-Type": "application/json"], body: Data())
     }
 
@@ -228,7 +289,10 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        let value = Self.lock.withLock { Self.response }
+        let value = Self.lock.withLock {
+            Self.history.append(request)
+            return Self.response
+        }
         guard let url = request.url,
               let response = HTTPURLResponse(url: url,
                                               statusCode: value.status,

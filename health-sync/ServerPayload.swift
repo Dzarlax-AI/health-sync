@@ -1,5 +1,8 @@
 @preconcurrency import Foundation
 
+nonisolated let healthMetricsContractHeader = "X-Health-Metrics-Contract"
+nonisolated let healthMetricsContractCodingKey = CodingUserInfoKey(rawValue: "healthMetricsContract2")!
+
 // MARK: - Top-level payload
 
 nonisolated struct HealthPayload: Encodable, Sendable {
@@ -17,11 +20,18 @@ nonisolated struct HealthPayload: Encodable, Sendable {
         }
     }
     let data: DataWrapper
+    let sleepCandidateCapture: SleepCandidateCapture?
+
+    enum CodingKeys: String, CodingKey {
+        case data
+    }
 
     init(metrics: [MetricData],
          nightSleepCoverage: [NightSleepCoverage] = [],
          sleepPeriodCoverage: [SleepPeriodCoverage] = [],
-         completedSleepEpisodes: [CompletedSleepEpisode] = []) {
+         completedSleepEpisodes: [CompletedSleepEpisode] = [],
+         sleepCandidateCapture: SleepCandidateCapture? = nil) {
+        self.sleepCandidateCapture = sleepCandidateCapture
         self.data = DataWrapper(
             metrics: metrics,
             nightSleepCoverage: nightSleepCoverage.isEmpty ? nil : nightSleepCoverage,
@@ -110,6 +120,21 @@ nonisolated struct MetricData: Encodable, Sendable {
     let name: String
     let units: String
     let data: [MetricSample]
+
+    private enum CodingKeys: String, CodingKey {
+        case name, units, data, grain
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encode(units, forKey: .units)
+        try container.encode(data, forKey: .data)
+        if encoder.userInfo[healthMetricsContractCodingKey] as? Bool == true,
+           let grain = HealthKitIngress.liveGrains[name] {
+            try container.encode(grain, forKey: .grain)
+        }
+    }
 }
 
 // MARK: - Sample (flexible encoding for different server field names)

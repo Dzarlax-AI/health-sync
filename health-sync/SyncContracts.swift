@@ -138,8 +138,27 @@ protocol HealthDataFetching: Sendable {
     /// Returns the exact ingestion payload so source-owned annotations, such
     /// as night-sleep coverage, travel with the samples that justify them.
     func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?) async throws -> HealthPayload
+    func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?,
+                      candidateBundles: Set<String>) async throws -> HealthPayload
     func fetchWorkouts(since: Date, until: Date?, includeHRTimeline: Bool) async throws -> [WorkoutItem]
     func cancelActiveQueries() async
+}
+
+extension HealthDataFetching {
+    func fetchMetrics(groups: Set<MetricGroup>, since: Date, until: Date?,
+                      candidateBundles: Set<String>) async throws -> HealthPayload {
+        try await fetchMetrics(groups: groups, since: since, until: until)
+    }
+}
+
+protocol SleepCandidateUploading: Sendable {
+    func uploadSleepCandidates(_ packet: SleepCandidatePacket,
+                               configuration: SyncConfiguration) async throws -> TransportReceipt
+}
+
+enum SleepCandidateAcknowledgementError: Error, Equatable {
+    case missing
+    case mismatched
 }
 
 protocol SyncTransport: Sendable {
