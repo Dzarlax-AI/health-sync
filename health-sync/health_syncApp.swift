@@ -25,6 +25,10 @@ struct HealthSyncApp: App {
             switch phase {
             case .active:
                 SyncEngine.shared.handleAppBecameActive()
+                PushRegistrationManager.registerNotificationCategories()
+                if !SyncRuntime.isTestMode {
+                    Task { await PushRegistrationManager.shared.drainPendingDeregistrations() }
+                }
             case .background, .inactive:
                 SyncEngine.shared.stopForegroundTimer()
                 if phase == .background { BackgroundSyncManager.shared.scheduleNextSync() }

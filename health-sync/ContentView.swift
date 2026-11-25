@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var connectionRequest: UUID?
     @State private var selection: TabSelection = .today
     @AppStorage("health-sync.config-revision") private var configRevision = 0
+    private let pushRouter = PushNavigationRouter.shared
 
     var body: some View {
         TabView(selection: $selection) {
@@ -36,6 +37,16 @@ struct ContentView: View {
             }
         }
         .tint(.dsHorizonAccent)
+        .onChange(of: pushRouter.pendingDestination) { _, destination in
+            if destination != nil {
+                selection = .today
+            }
+        }
+        .task {
+            if pushRouter.pendingDestination != nil {
+                selection = .today
+            }
+        }
     }
 }
 

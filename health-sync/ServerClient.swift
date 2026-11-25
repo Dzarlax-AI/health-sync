@@ -399,6 +399,47 @@ final class ServerClient {
         )
     }
 
+    func registerPushDevice(_ body: PushDeviceRegisterRequest) async throws -> PushDeviceRegisterResponse {
+        try await post(
+            PushDeviceRegisterResponse.self,
+            path: "/api/push/devices",
+            body: body
+        )
+    }
+
+    func deletePushDeviceBinding(
+        deviceID: String,
+        bindingID: String,
+        endpoint: URL,
+        apiKey: String
+    ) async throws {
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+        let basePath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+        let route = "/api/push/devices/\(deviceID)"
+        components?.path = basePath.isEmpty ? route : "/\(basePath)\(route)"
+        components?.queryItems = [URLQueryItem(name: "binding_id", value: bindingID)]
+        guard let url = components?.url else {
+            throw ServerError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ServerError.http(0, "Invalid response")
+        }
+        if (300...399).contains(http.statusCode),
+           let location = http.value(forHTTPHeaderField: "Location") {
+            throw ServerError.redirected(to: location)
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw ServerError.http(http.statusCode, body)
+        }
+    }
+
     /// Fetches the rich per-section page (recovery / sleep / activity /
     /// cardio): summary + KPI details + curated chart list + "How it works"
     /// explainer cards. Mirrors the web's section page.
