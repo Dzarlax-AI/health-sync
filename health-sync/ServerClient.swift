@@ -160,6 +160,45 @@ final class ServerClient {
         }
     }
 
+    private func post<Body: Encodable, T: Decodable>(_ type: T.Type, path: String, body: Body) async throws -> T {
+        if SyncRuntime.isTestMode { throw ServerError.missingConfig }
+        let requestConfiguration = try config()
+        var req = try makeRequest(path: path, configuration: requestConfiguration)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await session.data(for: req)
+        guard let currentConfiguration = try? config(),
+              currentConfiguration.fingerprint == requestConfiguration.fingerprint else {
+            throw ServerError.configurationChanged
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ServerError.http(0, "no HTTP response")
+        }
+
+        let bodySample = sample(from: data)
+        if (300..<400).contains(http.statusCode) {
+            let location = http.value(forHTTPHeaderField: "Location") ?? "(unknown)"
+            throw ServerError.redirected(to: location)
+        }
+        if !(200..<300).contains(http.statusCode) {
+            throw ServerError.http(http.statusCode, bodySample)
+        }
+
+        let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        if !contentType.contains("json") {
+            throw ServerError.unexpectedContentType(contentType.isEmpty ? "(none)" : contentType,
+                                                    sample: bodySample)
+        }
+
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw ServerError.decode(prettyDecodeError(error), sample: bodySample)
+        }
+    }
+
     private func sample(from data: Data, max: Int = 200) -> String {
         guard let s = String(data: data, encoding: .utf8) else {
             return "<\(data.count) bytes, non-UTF8>"
@@ -320,6 +359,44 @@ final class ServerClient {
 
     func userSettings() async throws -> UserSettings {
         try await get(UserSettings.self, path: "/api/settings")
+    }
+
+    func inbox(limit: Int = 20, cursor: String? = nil) async throws -> InboxFeedResponse {
+        let lang = await serverLang()
+        var query = [
+            URLQueryItem(name: "lang", value: lang),
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+        if let cursor, !cursor.isEmpty {
+            query.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        return try await get(InboxFeedResponse.self, path: "/api/inbox", query: query)
+    }
+
+    func pendingInboxPrompts() async throws -> InboxPendingResponse {
+        let lang = await serverLang()
+        return try await get(
+            InboxPendingResponse.self,
+            path: "/api/inbox/pending",
+            query: [URLQueryItem(name: "lang", value: lang)]
+        )
+    }
+
+    func inboxItem(id: String) async throws -> InboxDetailResponse {
+        let lang = await serverLang()
+        return try await get(
+            InboxDetailResponse.self,
+            path: "/api/inbox/\(id)",
+            query: [URLQueryItem(name: "lang", value: lang)]
+        )
+    }
+
+    func answerInboxPrompt(promptID: String, answer: String) async throws -> PromptAnswerResponse {
+        try await post(
+            PromptAnswerResponse.self,
+            path: "/api/prompts/\(promptID)/answer",
+            body: PromptAnswerRequest(answer: answer, channel: "ios_app")
+        )
     }
 
     /// Fetches the rich per-section page (recovery / sleep / activity /

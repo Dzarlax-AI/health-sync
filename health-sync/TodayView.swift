@@ -14,6 +14,8 @@ struct TodayView: View {
     @State private var loadGeneration = UUID()
     @State private var aiBriefing = TodayAIBriefingController()
     @State private var todayInsights = TodayInsightsController()
+    @State private var inboxController = TodayInboxController()
+    @State private var showInbox = false
 
     // Which stress-flag chip is currently expanded (tap-to-reveal-description).
     // nil = no description shown. Tapping the same chip again collapses it;
@@ -53,7 +55,14 @@ struct TodayView: View {
             .refreshable {
                 async let core: Void = load()
                 async let insights: Void = todayInsights.refresh()
-                _ = await (core, insights)
+                async let inbox: Void = inboxController.refresh(clearResolved: true)
+                _ = await (core, insights, inbox)
+            }
+            .navigationDestination(isPresented: $showInbox) {
+                InboxView(onPromptAnswered: {
+                    await load()
+                    await inboxController.refresh()
+                })
             }
         }
         .task(id: todayInsights.response?.date) {
@@ -67,11 +76,17 @@ struct TodayView: View {
             if todayInsights.response != nil { aiBriefing.reset() }
         }
         .onChange(of: scenePhase) {
-            if scenePhase != .active { aiBriefing.cancelPolling() }
+            if scenePhase == .active {
+                Task { await inboxController.refresh(clearResolved: true) }
+            } else {
+                aiBriefing.cancelPolling()
+            }
         }
         .task {
             syncEngine.refreshConfiguration()
-            await load()
+            async let core: Void = load()
+            async let inbox: Void = inboxController.refresh()
+            _ = await (core, inbox)
         }
         .onChange(of: serverURL) {
             // A new endpoint must not inherit the previous account's cached
@@ -80,10 +95,15 @@ struct TodayView: View {
             history = []
             aiBriefing.reset()
             todayInsights.reset()
+            inboxController.reset()
             loadError = nil
             lastLoadedAt = nil
             syncEngine.refreshConfiguration()
-            Task { await load() }
+            Task {
+                async let core: Void = load()
+                async let inbox: Void = inboxController.refresh()
+                _ = await (core, inbox)
+            }
         }
         .onDisappear {
             aiBriefing.cancelPolling()
@@ -93,13 +113,33 @@ struct TodayView: View {
 
     @ViewBuilder
     private func content(width: CGFloat) -> some View {
+        let showStandaloneInbox = briefing == nil &&
+            inboxController.supported &&
+            visibleSyncStatus != .notConfigured &&
+            SyncUIFixtures.state == nil
+
+        if showStandaloneInbox {
+            TodayPageHeader(
+                date: todayInsights.response?.date ?? "",
+                syncStatus: visibleSyncStatus,
+                openSyncStatus: { selection = .settings },
+                showInbox: true,
+                openInbox: { showInbox = true }
+            )
+            .frame(width: width, alignment: .leading)
+            pendingCheckinSection(width: width)
+        }
+
         if let briefing {
             TodayPageHeader(
                 date: briefing.date,
                 syncStatus: visibleSyncStatus,
-                openSyncStatus: { selection = .settings }
+                openSyncStatus: { selection = .settings },
+                showInbox: inboxController.supported,
+                openInbox: { showInbox = true }
             )
                 .frame(width: width, alignment: .leading)
+            pendingCheckinSection(width: width)
             TodayHeroBlock(
                 briefing: briefing,
                 history: history,
@@ -166,6 +206,21 @@ struct TodayView: View {
         } else {
             TodayEmptyState(message: "No data yet. Pull to refresh.", isError: false)
                 .frame(width: width)
+        }
+    }
+
+    @ViewBuilder
+    private func pendingCheckinSection(width: CGFloat) -> some View {
+        if inboxController.supported &&
+            (inboxController.activePrompt != nil || inboxController.submissionState != .idle) {
+            TodayPendingCheckinCard(
+                controller: inboxController,
+                onAnswered: {
+                    await load()
+                    await inboxController.refresh()
+                }
+            )
+            .frame(width: width)
         }
     }
 

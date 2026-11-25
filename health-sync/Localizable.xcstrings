@@ -7976,6 +7976,146 @@
           }
         }
       }
+    },
+    "Already answered" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Already answered" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Уже отвечено" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Već odgovoreno" } }
+      }
+    },
+    "Already answered: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Already answered: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Уже отвечено: %@" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Već odgovoreno: %@" } }
+      }
+    },
+    "Answered" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Answered" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Отвечено" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Odgovoreno" } }
+      }
+    },
+    "Answered late" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Answered late" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Отвечено поздно" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Kasni odgovor" } }
+      }
+    },
+    "Check-in" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Check-in" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Чек-ин" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Ček-in" } }
+      }
+    },
+    "Could not save your answer. Try again." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not save your answer. Try again." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось сохранить ответ. Попробуйте ещё раз." } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Odgovor nije sačuvan. Pokušajte ponovo." } }
+      }
+    },
+    "Expired" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Expired" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Истёк" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Isteklo" } }
+      }
+    },
+    "Great" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Great" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Отлично" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Odlično" } }
+      }
+    },
+    "Inbox" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Inbox" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Входящие" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Prijemno" } }
+      }
+    },
+    "Inbox is not enabled on this server." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Inbox is not enabled on this server." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Входящие недоступны на этом сервере." } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Prijemno nije dostupno na ovom serveru." } }
+      }
+    },
+    "Load older" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Load older" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Показать раньше" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Učitaj starije" } }
+      }
+    },
+    "Meh" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Meh" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не очень" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Onako" } }
+      }
+    },
+    "Morning reports and check-ins will appear here." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Morning reports and check-ins will appear here." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Утренние отчёты и чек-ины появятся здесь." } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Jutarnji izveštaji i ček-in pitanja će se pojaviti ovde." } }
+      }
+    },
+    "OK" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "OK" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Нормально" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Normalno" } }
+      }
+    },
+    "Saved" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сохранено" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Sačuvano" } }
+      }
+    },
+    "Saved: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сохранено: %@" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Sačuvano: %@" } }
+      }
+    },
+    "Sick" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sick" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Болен(а)" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Bolestan(a)" } }
+      }
+    },
+    "This check-in is no longer active for today." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This check-in is no longer active for today." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Этот вопрос уже неактуален для сегодняшнего дня." } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Ovo pitanje više nije aktivno za danas." } }
+      }
+    },
+    "Try again" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Try again" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Повторить" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Pokušaj ponovo" } }
+      }
+    },
+    "Waiting for answer" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting for answer" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ждёт ответа" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Čeka odgovor" } }
+      }
     }
   },
   "version" : "1.1"
