@@ -453,4 +453,192 @@ struct PushNotificationTests {
         #expect(registerCalls == 2)
         #expect(manager.activeBindingIDForCurrentProfile() == bindingID)
     }
+
+    @Test
+    func rapidProfileSwitchABAReusingBindingDoesNotDeleteActiveRegistration() async {
+        let keychain = InMemoryKeychainAccess()
+        let endpointA = URL(string: "https://server-a.example.com")!
+        let endpointB = URL(string: "https://server-b.example.com")!
+        var activeEndpoint = endpointA
+        var activeKey = "key-a"
+
+        // Matches server UpsertPushDevice behavior: active device on server A
+        // keeps the same binding_id across both POST requests.
+        let bindingA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let bindingB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+        var postACount = 0
+        var releaseFirstPostA: CheckedContinuation<PushDeviceRegisterResponse, Error>?
+        var deleted: [(bindingID: String, endpoint: URL, apiKey: String)] = []
+
+        let manager = PushRegistrationManager(
+            keychain: keychain,
+            registerCall: { req, endpoint, _ in
+                if endpoint == endpointA {
+                    postACount += 1
+                    if postACount == 1 {
+                        return try await withCheckedThrowingContinuation { cont in
+                            releaseFirstPostA = cont
+                        }
+                    }
+                    return PushDeviceRegisterResponse(
+                        deviceID: req.deviceID,
+                        bindingID: bindingA,
+                        enabled: true,
+                        registrationVersion: 1,
+                        apnsEnv: req.apnsEnv
+                    )
+                }
+                return PushDeviceRegisterResponse(
+                    deviceID: req.deviceID,
+                    bindingID: bindingB,
+                    enabled: true,
+                    registrationVersion: 1,
+                    apnsEnv: req.apnsEnv
+                )
+            },
+            deleteCall: { _, bindingID, endpoint, apiKey in
+                deleted.append((bindingID, endpoint, apiKey))
+            },
+            configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
+            isPushEnabled: { true },
+            resolveAPNsEnv: { "sandbox" },
+            bundleIDProvider: { "com.dzarlax.health-sync" },
+            localeProvider: { "en" },
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+
+        let tokenHex = String(repeating: "a", count: 64)
+
+        // 1. Start POST #1 on profile A and hold it in flight.
+        let firstPostATask = Task { await manager.syncRegistration(tokenHex: tokenHex) }
+        while releaseFirstPostA == nil { await Task.yield() }
+
+        // 2. Switch A -> B: registers bindingB on server B.
+        activeEndpoint = endpointB
+        activeKey = "key-b"
+        await manager.handleConfigurationChanged(pushEnabled: true)
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingB)
+
+        // 3. Switch B -> A: deletes bindingB and runs POST #2 on server A,
+        // which reuses and saves bindingA.
+        activeEndpoint = endpointA
+        activeKey = "key-a"
+        await manager.handleConfigurationChanged(pushEnabled: true)
+        #expect(postACount == 2)
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
+        #expect(deleted.count == 1)
+        #expect(deleted[0].bindingID == bindingB)
+
+        // 4. Delayed POST #1 from the earlier epoch finally returns the same bindingA.
+        let deviceID = try! manager.ensureDeviceID()
+        releaseFirstPostA?.resume(returning: PushDeviceRegisterResponse(
+            deviceID: deviceID,
+            bindingID: bindingA,
+            enabled: true,
+            registrationVersion: 1,
+            apnsEnv: "sandbox"
+        ))
+        await firstPostATask.value
+
+        // Must keep bindingA active on iOS AND must NOT send DELETE for bindingA!
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
+        #expect(deleted.count == 1)
+        #expect(deleted[0].bindingID == bindingB)
+        #expect(manager.loadPendingDeregistrations().isEmpty)
+    }
+
+    @Test
+    func rapidProfileSwitchABAWithInFlightDeleteSerializesBeforeReregistration() async {
+        let keychain = InMemoryKeychainAccess()
+        let endpointA = URL(string: "https://server-a.example.com")!
+        let endpointB = URL(string: "https://server-b.example.com")!
+        var activeEndpoint = endpointA
+        var activeKey = "key-a"
+
+        let bindingA1 = "11111111-1111-4111-8111-111111111111"
+        let bindingA2 = "22222222-2222-4222-8222-222222222222"
+        let bindingB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+        var serverADisabled = false
+        var releaseDeleteA: CheckedContinuation<Void, Error>?
+        var events: [String] = []
+
+        let manager = PushRegistrationManager(
+            keychain: keychain,
+            registerCall: { req, endpoint, _ in
+                if endpoint == endpointA {
+                    let binding = serverADisabled ? bindingA2 : bindingA1
+                    events.append("post-a:\(binding)")
+                    return PushDeviceRegisterResponse(
+                        deviceID: req.deviceID,
+                        bindingID: binding,
+                        enabled: true,
+                        registrationVersion: serverADisabled ? 2 : 1,
+                        apnsEnv: req.apnsEnv
+                    )
+                }
+                events.append("post-b:\(bindingB)")
+                return PushDeviceRegisterResponse(
+                    deviceID: req.deviceID,
+                    bindingID: bindingB,
+                    enabled: true,
+                    registrationVersion: 1,
+                    apnsEnv: req.apnsEnv
+                )
+            },
+            deleteCall: { _, bindingID, endpoint, _ in
+                if endpoint == endpointA {
+                    try await withCheckedThrowingContinuation { cont in
+                        releaseDeleteA = cont
+                    }
+                    serverADisabled = true
+                    events.append("delete-a:\(bindingID)")
+                } else {
+                    events.append("delete-b:\(bindingID)")
+                }
+            },
+            configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
+            isPushEnabled: { true },
+            resolveAPNsEnv: { "sandbox" },
+            bundleIDProvider: { "com.dzarlax.health-sync" },
+            localeProvider: { "en" },
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+
+        let tokenHex = String(repeating: "b", count: 64)
+
+        // 1. Register bindingA1 on profile A.
+        await manager.syncRegistration(tokenHex: tokenHex)
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingA1)
+
+        // 2. Switch A -> B: DELETE(bindingA1) starts and suspends in flight.
+        activeEndpoint = endpointB
+        activeKey = "key-b"
+        let switchAToB = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
+        while releaseDeleteA == nil { await Task.yield() }
+
+        // 3. Switch back B -> A while DELETE(bindingA1) is still in flight.
+        activeEndpoint = endpointA
+        activeKey = "key-a"
+        let switchBToA = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
+        for _ in 0..<5 { await Task.yield() }
+
+        // POST #2 for server A must wait for the in-flight DELETE(bindingA1) to finish.
+        #expect(events == ["post-a:\(bindingA1)"])
+
+        // 4. Complete DELETE(bindingA1): server disables bindingA1, then POST #2
+        // runs and receives a fresh bindingA2.
+        releaseDeleteA?.resume(returning: ())
+        await switchAToB.value
+        await switchBToA.value
+
+        #expect(events == [
+            "post-a:\(bindingA1)",
+            "delete-a:\(bindingA1)",
+            "post-a:\(bindingA2)"
+        ])
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingA2)
+        #expect(manager.loadPendingDeregistrations().isEmpty)
+    }
 }
