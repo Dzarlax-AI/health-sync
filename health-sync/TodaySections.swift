@@ -6,6 +6,8 @@ struct TodayPageHeader: View {
     let date: String
     let syncStatus: SyncStatus
     let openSyncStatus: () -> Void
+    var showInbox: Bool = false
+    var openInbox: (() -> Void)? = nil
 
     var body: some View {
         let layout = dynamicTypeSize.isAccessibilitySize
@@ -21,7 +23,21 @@ struct TodayPageHeader: View {
                     .foregroundStyle(Color.dsHorizonTextSecondary)
             }
             if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
-            TodayHeaderSyncButton(status: syncStatus, action: openSyncStatus)
+            HStack(spacing: 8) {
+                if showInbox, let openInbox {
+                    Button(action: openInbox) {
+                        Image(systemName: "tray.full")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.dsHorizonText)
+                            .frame(width: 34, height: 34)
+                            .background(Color.dsHorizonSurfaceTint, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Inbox")
+                    .accessibilityIdentifier("today-open-inbox")
+                }
+                TodayHeaderSyncButton(status: syncStatus, action: openSyncStatus)
+            }
         }
     }
 
