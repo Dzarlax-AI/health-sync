@@ -15,6 +15,7 @@ enum PushNotificationConstants {
 
     static let deregistrationTTL: TimeInterval = 7 * 24 * 60 * 60
     static let heartbeatRefreshInterval: TimeInterval = 24 * 60 * 60
+    static let unsupportedRetryInterval: TimeInterval = 15 * 60
 }
 
 struct PushDeviceRegisterRequest: Encodable, Equatable {
@@ -250,28 +251,34 @@ private struct PushSystemKeychainAccess: KeychainAccess {
 @MainActor
 @Observable
 final class PushRegistrationManager {
-    typealias RegisterCall = @MainActor (PushDeviceRegisterRequest) async throws -> PushDeviceRegisterResponse
+    typealias RegisterCall = @MainActor (PushDeviceRegisterRequest, URL, String) async throws -> PushDeviceRegisterResponse
     typealias DeleteCall = @MainActor (String, String, URL, String) async throws -> Void
     typealias ConfigSnapshot = @MainActor () throws -> SyncConfiguration
 
     static let shared = PushRegistrationManager()
 
     private(set) var lastRegistrationError: String?
-    private(set) var unsupportedFingerprint: String?
+    private(set) var unsupportedRetryAfter: Date?
 
     private let store: PushKeychainStorage
     private let registerCall: RegisterCall
     private let deleteCall: DeleteCall
     private let configSnapshot: ConfigSnapshot
+    private let isPushEnabled: @MainActor () -> Bool
     private let resolveAPNsEnv: () -> String
     private let bundleIDProvider: () -> String
     private let localeProvider: () -> String
     private let now: () -> Date
     private var lastKnownTokenHex: String?
+    private var registrationEpoch = UUID()
+    private var unsupportedRetryState: (fingerprint: String, retryAfter: Date)?
+    private var inFlightDeregistrations: Set<String> = []
 
     init(
         keychain: KeychainAccess? = nil,
-        registerCall: @escaping RegisterCall = { req in try await ServerClient.shared.registerPushDevice(req) },
+        registerCall: @escaping RegisterCall = { req, endpoint, apiKey in
+            try await ServerClient.shared.registerPushDevice(req, endpoint: endpoint, apiKey: apiKey)
+        },
         deleteCall: @escaping DeleteCall = { deviceID, bindingID, endpoint, apiKey in
             try await ServerClient.shared.deletePushDeviceBinding(
                 deviceID: deviceID,
@@ -281,6 +288,9 @@ final class PushRegistrationManager {
             )
         },
         configSnapshot: @escaping ConfigSnapshot = { try UserDefaultsSyncConfiguration.shared.snapshot() },
+        isPushEnabled: @escaping @MainActor () -> Bool = {
+            UserDefaults.standard.bool(forKey: PushNotificationConstants.enabledDefaultsKey)
+        },
         resolveAPNsEnv: @escaping () -> String = { APNsEnvironmentResolver.resolve() },
         bundleIDProvider: @escaping () -> String = { Bundle.main.bundleIdentifier ?? "com.dzarlax.health-sync" },
         localeProvider: @escaping () -> String = {
@@ -296,6 +306,7 @@ final class PushRegistrationManager {
         self.registerCall = registerCall
         self.deleteCall = deleteCall
         self.configSnapshot = configSnapshot
+        self.isPushEnabled = isPushEnabled
         self.resolveAPNsEnv = resolveAPNsEnv
         self.bundleIDProvider = bundleIDProvider
         self.localeProvider = localeProvider
@@ -382,13 +393,18 @@ final class PushRegistrationManager {
             await drainPendingDeregistrations()
         }
 
+        guard isPushEnabled() else { return }
         guard let config = try? configSnapshot() else { return }
-        if unsupportedFingerprint == config.fingerprint { return }
+        let currentNow = now()
+        if let retryState = unsupportedRetryState,
+           retryState.fingerprint == config.fingerprint,
+           currentNow < retryState.retryAfter {
+            return
+        }
 
         let env = resolveAPNsEnv()
         let locale = localeProvider()
         let tokenHash = Self.sha256Hex(tokenHex)
-        let currentNow = now()
 
         if let active = loadActiveRegistration(),
            active.endpointFingerprint == config.fingerprint,
@@ -399,37 +415,68 @@ final class PushRegistrationManager {
             return
         }
 
+        let capturedEpoch = registrationEpoch
+        let capturedConfig = config
+
         do {
             let deviceID = try ensureDeviceID()
-            let response = try await registerCall(PushDeviceRegisterRequest(
-                deviceID: deviceID,
-                apnsToken: tokenHex,
-                apnsEnv: env,
-                bundleID: bundleIDProvider(),
-                locale: locale
-            ))
+            let response = try await registerCall(
+                PushDeviceRegisterRequest(
+                    deviceID: deviceID,
+                    apnsToken: tokenHex,
+                    apnsEnv: env,
+                    bundleID: bundleIDProvider(),
+                    locale: locale
+                ),
+                capturedConfig.endpoint,
+                capturedConfig.apiKey
+            )
+
+            // If the user switched profiles or disabled pushes while POST was in
+            // flight, do NOT persist the stale registration — enqueue DELETE for
+            // the committed binding_id on the original server immediately.
+            let stillSameProfile = (try? configSnapshot())?.fingerprint == capturedConfig.fingerprint
+            guard capturedEpoch == registrationEpoch, isPushEnabled(), stillSameProfile else {
+                enqueueDeregistration(PendingPushDeregistration(
+                    deviceID: response.deviceID,
+                    bindingID: response.bindingID,
+                    endpoint: capturedConfig.endpoint,
+                    apiKey: capturedConfig.apiKey,
+                    queuedAt: now()
+                ))
+                await drainPendingDeregistrations()
+                return
+            }
+
             let record = ActivePushRegistration(
                 deviceID: response.deviceID,
                 bindingID: response.bindingID,
-                endpoint: config.endpoint,
-                apiKey: config.apiKey,
-                endpointFingerprint: config.fingerprint,
+                endpoint: capturedConfig.endpoint,
+                apiKey: capturedConfig.apiKey,
+                endpointFingerprint: capturedConfig.fingerprint,
                 tokenHash: tokenHash,
                 apnsEnv: response.apnsEnv,
                 locale: locale,
-                confirmedAt: currentNow
+                confirmedAt: now()
             )
             try saveActiveRegistration(record)
             lastRegistrationError = nil
-            unsupportedFingerprint = nil
+            unsupportedRetryState = nil
+            unsupportedRetryAfter = nil
         } catch let error as ServerError {
+            let stillSameProfile = (try? configSnapshot())?.fingerprint == capturedConfig.fingerprint
+            guard capturedEpoch == registrationEpoch, stillSameProfile else { return }
             if case .http(404, _) = error {
-                unsupportedFingerprint = config.fingerprint
+                let retryAt = now().addingTimeInterval(PushNotificationConstants.unsupportedRetryInterval)
+                unsupportedRetryState = (capturedConfig.fingerprint, retryAt)
+                unsupportedRetryAfter = retryAt
                 lastRegistrationError = nil
             } else {
                 lastRegistrationError = error.localizedDescription
             }
         } catch {
+            let stillSameProfile = (try? configSnapshot())?.fingerprint == capturedConfig.fingerprint
+            guard capturedEpoch == registrationEpoch, stillSameProfile else { return }
             lastRegistrationError = error.localizedDescription
         }
     }
@@ -438,15 +485,20 @@ final class PushRegistrationManager {
     /// durable deregistration queue, drains it, and re-registers on the new
     /// server when notifications remain enabled.
     func handleConfigurationChanged(pushEnabled: Bool) async {
-        unsupportedFingerprint = nil
+        registrationEpoch = UUID()
+        unsupportedRetryState = nil
+        unsupportedRetryAfter = nil
         await reconcileProfileSwitchIfNeeded()
         await drainPendingDeregistrations()
-        if pushEnabled, let token = lastKnownTokenHex {
+        if pushEnabled, isPushEnabled(), let token = lastKnownTokenHex {
             await syncRegistration(tokenHex: token, drainDeregistrations: false)
         }
     }
 
     func disablePushNotifications() async {
+        registrationEpoch = UUID()
+        unsupportedRetryState = nil
+        unsupportedRetryAfter = nil
         if let active = loadActiveRegistration() {
             enqueueDeregistration(from: active)
             try? saveActiveRegistration(nil)
@@ -454,33 +506,51 @@ final class PushRegistrationManager {
         await drainPendingDeregistrations()
     }
 
-    func drainPendingDeregistrations() async {
-        var queue = loadPendingDeregistrations()
-        guard !queue.isEmpty else { return }
-        let currentNow = now()
-        var remaining: [PendingPushDeregistration] = []
+    /// Invoked on foreground activation: drains pending deregistrations and,
+    /// when pushes are enabled, retries registration (respecting the bounded
+    /// 404 cooldown and 24h heartbeat) so pilot activation is picked up without
+    /// requiring an app restart.
+    func handleAppBecameActive(requestRemoteRegistration: (@MainActor () -> Void)? = nil) async {
+        await reconcileProfileSwitchIfNeeded()
+        await drainPendingDeregistrations()
+        guard isPushEnabled() else { return }
+        if let token = lastKnownTokenHex {
+            await syncRegistration(tokenHex: token, drainDeregistrations: false)
+        } else {
+            requestRemoteRegistration?()
+        }
+    }
 
-        for item in queue {
+    func drainPendingDeregistrations() async {
+        let snapshot = loadPendingDeregistrations()
+        guard !snapshot.isEmpty else { return }
+        let currentNow = now()
+
+        for item in snapshot {
+            let dedupKey = "\(item.deviceID):\(item.bindingID)"
+            guard inFlightDeregistrations.insert(dedupKey).inserted else { continue }
+            defer { inFlightDeregistrations.remove(dedupKey) }
+
             if currentNow.timeIntervalSince(item.queuedAt) > PushNotificationConstants.deregistrationTTL {
+                removePendingDeregistration(deviceID: item.deviceID, bindingID: item.bindingID)
                 continue
             }
             do {
                 try await deleteCall(item.deviceID, item.bindingID, item.endpoint, item.apiKey)
-                // 204 success -> drop from queue
+                // Remove ONLY this processed entry from the live queue so
+                // items added concurrently while DELETE was in flight are preserved.
+                removePendingDeregistration(deviceID: item.deviceID, bindingID: item.bindingID)
             } catch let error as ServerError {
                 switch error {
                 case .http(let code, _) where code == 400 || code == 401 || code == 403 || code == 404:
-                    // Terminal response -> do not retry forever
-                    continue
+                    removePendingDeregistration(deviceID: item.deviceID, bindingID: item.bindingID)
                 default:
-                    remaining.append(item)
+                    break
                 }
             } catch {
-                remaining.append(item)
+                // Transient error: leave entry in live queue for later retry.
             }
         }
-        queue = remaining
-        savePendingDeregistrations(queue)
     }
 
     private func reconcileProfileSwitchIfNeeded() async {
@@ -493,17 +563,27 @@ final class PushRegistrationManager {
     }
 
     private func enqueueDeregistration(from active: ActivePushRegistration) {
+        enqueueDeregistration(PendingPushDeregistration(
+            deviceID: active.deviceID,
+            bindingID: active.bindingID,
+            endpoint: active.endpoint,
+            apiKey: active.apiKey,
+            queuedAt: now()
+        ))
+    }
+
+    private func enqueueDeregistration(_ entry: PendingPushDeregistration) {
         var queue = loadPendingDeregistrations()
-        if !queue.contains(where: { $0.deviceID == active.deviceID && $0.bindingID == active.bindingID }) {
-            queue.append(PendingPushDeregistration(
-                deviceID: active.deviceID,
-                bindingID: active.bindingID,
-                endpoint: active.endpoint,
-                apiKey: active.apiKey,
-                queuedAt: now()
-            ))
+        if !queue.contains(where: { $0.deviceID == entry.deviceID && $0.bindingID == entry.bindingID }) {
+            queue.append(entry)
             savePendingDeregistrations(queue)
         }
+    }
+
+    private func removePendingDeregistration(deviceID: String, bindingID: String) {
+        var live = loadPendingDeregistrations()
+        live.removeAll { $0.deviceID == deviceID && $0.bindingID == bindingID }
+        savePendingDeregistrations(live)
     }
 
     private func saveActiveRegistration(_ record: ActivePushRegistration?) throws {

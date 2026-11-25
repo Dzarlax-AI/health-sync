@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import UIKit
+import UserNotifications
 
 @main
 struct HealthSyncApp: App {
@@ -27,7 +29,18 @@ struct HealthSyncApp: App {
                 SyncEngine.shared.handleAppBecameActive()
                 PushRegistrationManager.registerNotificationCategories()
                 if !SyncRuntime.isTestMode {
-                    Task { await PushRegistrationManager.shared.drainPendingDeregistrations() }
+                    Task {
+                        await PushRegistrationManager.shared.handleAppBecameActive {
+                            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                                guard settings.authorizationStatus == .authorized ||
+                                        settings.authorizationStatus == .provisional
+                                else { return }
+                                DispatchQueue.main.async {
+                                    UIApplication.shared.registerForRemoteNotifications()
+                                }
+                            }
+                        }
+                    }
                 }
             case .background, .inactive:
                 SyncEngine.shared.stopForegroundTimer()

@@ -399,12 +399,47 @@ final class ServerClient {
         )
     }
 
-    func registerPushDevice(_ body: PushDeviceRegisterRequest) async throws -> PushDeviceRegisterResponse {
-        try await post(
-            PushDeviceRegisterResponse.self,
-            path: "/api/push/devices",
-            body: body
-        )
+    /// Registers an APNs device binding against an explicit (endpoint, apiKey)
+    /// snapshot without discarding the committed `binding_id` if the user
+    /// switches profiles while the POST is in flight.
+    func registerPushDevice(
+        _ body: PushDeviceRegisterRequest,
+        endpoint: URL,
+        apiKey: String
+    ) async throws -> PushDeviceRegisterResponse {
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+        let basePath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+        let route = "/api/push/devices"
+        components?.path = basePath.isEmpty ? route : "/\(basePath)\(route)"
+        guard let url = components?.url else {
+            throw ServerError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(body)
+        request.timeoutInterval = 15
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ServerError.http(0, "Invalid response")
+        }
+        if (300...399).contains(http.statusCode),
+           let location = http.value(forHTTPHeaderField: "Location") {
+            throw ServerError.redirected(to: location)
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            throw ServerError.http(http.statusCode, text)
+        }
+        do {
+            return try JSONDecoder().decode(PushDeviceRegisterResponse.self, from: data)
+        } catch {
+            let sample = String(data: data.prefix(200), encoding: .utf8) ?? ""
+            throw ServerError.decode(error.localizedDescription, sample: sample)
+        }
     }
 
     func deletePushDeviceBinding(
