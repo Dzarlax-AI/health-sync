@@ -167,4 +167,133 @@ struct InboxTests {
         #expect(controller.activePrompt == nil)
         #expect(controller.submissionState == .idle)
     }
+
+    @Test
+    func staleInFlightRefreshCannotRestoreAnsweredPrompt() async {
+        let prompt = PendingCheckinPrompt(
+            promptID: "11111111-1111-1111-1111-111111111111",
+            localDate: "2026-11-25",
+            expiresAt: "2026-11-25T10:00:00Z",
+            title: "How are you feeling?",
+            options: [
+                InboxPromptOption(id: "great", label: "Great"),
+                InboxPromptOption(id: "ok", label: "OK")
+            ]
+        )
+
+        var releaseStaleRefresh: CheckedContinuation<InboxPendingResponse, Error>?
+        var fetchCall = 0
+        let controller = TodayInboxController(
+            fetchPending: {
+                fetchCall += 1
+                if fetchCall == 1 {
+                    return InboxPendingResponse(prompts: [prompt])
+                }
+                if fetchCall == 2 {
+                    return try await withCheckedThrowingContinuation { cont in
+                        releaseStaleRefresh = cont
+                    }
+                }
+                return InboxPendingResponse(prompts: [])
+            },
+            submitAnswer: { _, _ in
+                PromptAnswerResponse(
+                    status: "saved",
+                    answer: "great",
+                    answeredAt: "2026-11-25T08:05:00Z",
+                    timing: "on_time"
+                )
+            }
+        )
+
+        await controller.refresh()
+        #expect(controller.activePrompt?.promptID == prompt.promptID)
+
+        // Start a refresh before answering, hold it in flight while submit succeeds.
+        let staleRefreshTask = Task { await controller.refresh() }
+        while releaseStaleRefresh == nil {
+            await Task.yield()
+        }
+
+        await controller.submit(prompt: prompt, optionID: "great")
+        #expect(controller.activePrompt == nil)
+
+        // Now complete the stale refresh with the pre-answer prompt list.
+        releaseStaleRefresh?.resume(returning: InboxPendingResponse(prompts: [prompt]))
+        await staleRefreshTask.value
+
+        #expect(controller.activePrompt == nil)
+        #expect(controller.submissionState == .resolved(promptID: prompt.promptID, status: "saved", answerLabel: "Great"))
+    }
+
+    @Test
+    func submissionCompletionFromBeforeResetIsDiscarded() async {
+        let promptA = PendingCheckinPrompt(
+            promptID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            localDate: "2026-11-25",
+            expiresAt: "2026-11-25T10:00:00Z",
+            title: "How are you feeling?",
+            options: [InboxPromptOption(id: "great", label: "Great")]
+        )
+        let promptB = PendingCheckinPrompt(
+            promptID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            localDate: "2026-11-25",
+            expiresAt: "2026-11-25T10:00:00Z",
+            title: "How are you feeling?",
+            options: [InboxPromptOption(id: "ok", label: "OK")]
+        )
+
+        var releaseSubmitA: CheckedContinuation<PromptAnswerResponse, Error>?
+        var releaseSubmitB: CheckedContinuation<PromptAnswerResponse, Error>?
+        var onAnsweredACalled = false
+
+        let controller = TodayInboxController(
+            fetchPending: { InboxPendingResponse(prompts: [promptB]) },
+            submitAnswer: { promptID, _ in
+                try await withCheckedThrowingContinuation { cont in
+                    if promptID == promptA.promptID {
+                        releaseSubmitA = cont
+                    } else {
+                        releaseSubmitB = cont
+                    }
+                }
+            }
+        )
+
+        let submitATask = Task {
+            await controller.submit(prompt: promptA, optionID: "great") {
+                onAnsweredACalled = true
+            }
+        }
+        while releaseSubmitA == nil {
+            await Task.yield()
+        }
+
+        // Switch server endpoint -> reset controller and start submitting promptB.
+        controller.reset()
+        await controller.refresh()
+        let submitBTask = Task {
+            await controller.submit(prompt: promptB, optionID: "ok")
+        }
+        while releaseSubmitB == nil {
+            await Task.yield()
+        }
+
+        // Endpoint A fails late after reset: must not overwrite endpoint B's submitting state.
+        releaseSubmitA?.resume(throwing: ServerError.http(500, "endpoint changed"))
+        await submitATask.value
+
+        #expect(onAnsweredACalled == false)
+        #expect(controller.submissionState == .submitting(promptID: promptB.promptID, optionID: "ok"))
+
+        releaseSubmitB?.resume(returning: PromptAnswerResponse(
+            status: "saved",
+            answer: "ok",
+            answeredAt: "2026-11-25T08:06:00Z",
+            timing: "on_time"
+        ))
+        await submitBTask.value
+
+        #expect(controller.submissionState == .resolved(promptID: promptB.promptID, status: "saved", answerLabel: "OK"))
+    }
 }

@@ -113,6 +113,23 @@ struct TodayView: View {
 
     @ViewBuilder
     private func content(width: CGFloat) -> some View {
+        let showStandaloneInbox = briefing == nil &&
+            inboxController.supported &&
+            visibleSyncStatus != .notConfigured &&
+            SyncUIFixtures.state == nil
+
+        if showStandaloneInbox {
+            TodayPageHeader(
+                date: todayInsights.response?.date ?? "",
+                syncStatus: visibleSyncStatus,
+                openSyncStatus: { selection = .settings },
+                showInbox: true,
+                openInbox: { showInbox = true }
+            )
+            .frame(width: width, alignment: .leading)
+            pendingCheckinSection(width: width)
+        }
+
         if let briefing {
             TodayPageHeader(
                 date: briefing.date,
@@ -122,17 +139,7 @@ struct TodayView: View {
                 openInbox: { showInbox = true }
             )
                 .frame(width: width, alignment: .leading)
-            if inboxController.supported &&
-                (inboxController.activePrompt != nil || inboxController.submissionState != .idle) {
-                TodayPendingCheckinCard(
-                    controller: inboxController,
-                    onAnswered: {
-                        await load()
-                        await inboxController.refresh()
-                    }
-                )
-                .frame(width: width)
-            }
+            pendingCheckinSection(width: width)
             TodayHeroBlock(
                 briefing: briefing,
                 history: history,
@@ -199,6 +206,21 @@ struct TodayView: View {
         } else {
             TodayEmptyState(message: "No data yet. Pull to refresh.", isError: false)
                 .frame(width: width)
+        }
+    }
+
+    @ViewBuilder
+    private func pendingCheckinSection(width: CGFloat) -> some View {
+        if inboxController.supported &&
+            (inboxController.activePrompt != nil || inboxController.submissionState != .idle) {
+            TodayPendingCheckinCard(
+                controller: inboxController,
+                onAnswered: {
+                    await load()
+                    await inboxController.refresh()
+                }
+            )
+            .frame(width: width)
         }
     }
 

@@ -143,6 +143,7 @@ final class TodayInboxController {
     private let fetchPending: FetchPending
     private let submitAnswer: SubmitAnswer
     private var loadGeneration = UUID()
+    private var sessionGeneration = UUID()
 
     init(
         fetchPending: @escaping FetchPending = { try await ServerClient.shared.pendingInboxPrompts() },
@@ -159,6 +160,7 @@ final class TodayInboxController {
     }
 
     func reset() {
+        sessionGeneration = UUID()
         loadGeneration = UUID()
         supported = false
         pendingPrompts = []
@@ -203,10 +205,14 @@ final class TodayInboxController {
         onAnswered: (@MainActor () async -> Void)? = nil
     ) async {
         if case .submitting = submissionState { return }
+        let session = sessionGeneration
         submissionState = .submitting(promptID: prompt.promptID, optionID: optionID)
         do {
             let response = try await submitAnswer(prompt.promptID, optionID)
-            let canonicalLabel = prompt.options.first(where: { $0.id == response.answer })?.label ?? response.answer
+            guard session == sessionGeneration else { return }
+            let canonicalLabel = prompt.options.first(where: { $0.id == response.answer })?.label
+                ?? CheckinAnswerLabel.localized(response.answer)
+            loadGeneration = UUID()
             pendingPrompts.removeAll { $0.promptID == prompt.promptID }
             submissionState = .resolved(
                 promptID: prompt.promptID,
@@ -217,7 +223,9 @@ final class TodayInboxController {
                 await onAnswered()
             }
         } catch let error as ServerError {
+            guard session == sessionGeneration else { return }
             if case .http(409, _) = error {
+                loadGeneration = UUID()
                 pendingPrompts.removeAll { $0.promptID == prompt.promptID }
                 submissionState = .resolved(
                     promptID: prompt.promptID,
@@ -231,10 +239,23 @@ final class TodayInboxController {
                 message: String(localized: "Could not save your answer. Try again.")
             )
         } catch {
+            guard session == sessionGeneration else { return }
             submissionState = .error(
                 promptID: prompt.promptID,
                 message: String(localized: "Could not save your answer. Try again.")
             )
+        }
+    }
+}
+
+enum CheckinAnswerLabel {
+    static func localized(_ answer: String) -> String {
+        switch answer {
+        case "great": return String(localized: "Great")
+        case "ok": return String(localized: "OK")
+        case "meh": return String(localized: "Meh")
+        case "sick": return String(localized: "Sick")
+        default: return answer
         }
     }
 }

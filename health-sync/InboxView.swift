@@ -77,7 +77,7 @@ struct TodayPendingCheckinCard: View {
             if let errorMessage {
                 Text(verbatim: errorMessage)
                     .font(.footnote)
-                    .foregroundStyle(Color.red)
+                    .foregroundStyle(Color.dsDanger)
             }
         }
         .padding(.dsSpacing)
@@ -104,7 +104,7 @@ struct TodayPendingCheckinCard: View {
 
         return HStack(spacing: .dsSpacingSm) {
             Image(systemName: status == "expired" ? "clock" : "checkmark.circle.fill")
-                .foregroundStyle(status == "expired" ? Color.dsHorizonTextSecondary : Color.green)
+                .foregroundStyle(status == "expired" ? Color.dsHorizonTextSecondary : Color.dsGood)
             Text(verbatim: text)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(Color.dsHorizonText)
@@ -123,6 +123,7 @@ struct InboxView: View {
     @State private var nextCursor: String?
     @State private var isLoading = false
     @State private var isLoadingMore = false
+    @State private var feedGeneration = UUID()
     @State private var loadError: String?
     @State private var unavailable = false
     @State private var pendingController = TodayInboxController()
@@ -193,7 +194,7 @@ struct InboxView: View {
                                 }
                             }
                             .buttonStyle(DSPrimaryButtonStyle())
-                            .disabled(isLoadingMore)
+                            .disabled(isLoading || isLoadingMore)
                         }
                     }
                 }
@@ -227,14 +228,19 @@ struct InboxView: View {
     }
 
     private func loadFeed() async {
+        let generation = UUID()
+        feedGeneration = generation
         isLoading = true
+        isLoadingMore = false
         loadError = nil
         unavailable = false
         do {
             let feed = try await ServerClient.shared.inbox(limit: 20)
+            guard generation == feedGeneration else { return }
             items = feed.items
             nextCursor = (feed.nextCursor?.isEmpty == false) ? feed.nextCursor : nil
         } catch let error as ServerError {
+            guard generation == feedGeneration else { return }
             if case .http(404, _) = error {
                 unavailable = true
                 items = []
@@ -243,22 +249,29 @@ struct InboxView: View {
                 loadError = error.localizedDescription
             }
         } catch {
+            guard generation == feedGeneration else { return }
             loadError = error.localizedDescription
         }
-        isLoading = false
+        if generation == feedGeneration {
+            isLoading = false
+        }
     }
 
     private func loadMore() async {
-        guard let cursor = nextCursor, !isLoadingMore else { return }
+        guard !isLoading, !isLoadingMore, let cursor = nextCursor else { return }
+        let generation = feedGeneration
         isLoadingMore = true
         do {
             let more = try await ServerClient.shared.inbox(limit: 20, cursor: cursor)
+            guard generation == feedGeneration else { return }
             items.append(contentsOf: more.items)
             nextCursor = (more.nextCursor?.isEmpty == false) ? more.nextCursor : nil
         } catch {
             // Keep loaded items visible for retry.
         }
-        isLoadingMore = false
+        if generation == feedGeneration {
+            isLoadingMore = false
+        }
     }
 }
 
@@ -303,7 +316,7 @@ private struct InboxItemRow: View {
         default: statusLabel = item.status ?? ""
         }
         if let answer = item.answer, !answer.isEmpty {
-            return "\(statusLabel) · \(answer)"
+            return "\(statusLabel) · \(CheckinAnswerLabel.localized(answer))"
         }
         return statusLabel
     }
@@ -395,11 +408,14 @@ struct InboxDetailView: View {
             }
         }()
 
-        Text(verbatim: detail.answer.map { "\(statusText): \($0)" } ?? statusText)
+        let answerLabel = detail.answer.map { raw in
+            detail.options?.first(where: { $0.id == raw })?.label ?? CheckinAnswerLabel.localized(raw)
+        }
+        Text(verbatim: answerLabel.map { "\(statusText): \($0)" } ?? statusText)
             .font(.subheadline)
             .foregroundStyle(Color.dsHorizonTextSecondary)
 
-        if detail.status == "prompted",
+        if (detail.status == "prompted" || detail.status == "expired"),
            let promptID = detail.promptID,
            let options = detail.options,
            !options.isEmpty {
