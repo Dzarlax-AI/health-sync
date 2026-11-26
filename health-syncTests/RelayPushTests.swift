@@ -1348,4 +1348,91 @@ final class RelayPushTests: XCTestCase {
         XCTAssertEqual(registeredGrantIDs, [newGrantID])
         XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, newGrantID)
     }
+
+    func testAttestKeyReadFailureRetainsPendingRevocationAndSucceedsAfterRecovery() async {
+        let kc = InMemoryRelayKeychain()
+        let attest = MockAppAttestProvider()
+        let relayTransport = MockRelayHTTPTransport()
+        let grantID = UUID().uuidString.lowercased()
+        var revokedGrantIDs: [String] = []
+
+        relayTransport.handler = { method, url, body, _ in
+            let path = url.path
+            if path.hasSuffix("/v1/attest/challenge") {
+                let data = try JSONEncoder().encode(RelayChallengeResponse(
+                    challengeID: UUID().uuidString.lowercased(),
+                    nonce: "nonce-\(UUID().uuidString)",
+                    expiresAt: nil
+                ))
+                return (200, data)
+            }
+            if path.hasSuffix("/v1/attest/register") {
+                return (200, Data(#"{"key_id":"ok"}"#.utf8))
+            }
+            if method == "POST", path.hasSuffix("/v1/grants") {
+                let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+                let tok = (json?["apns_token"] as? String) ?? self.tokenA
+                let resp = try JSONEncoder().encode(RelayGrantCreateResponse(
+                    grantID: grantID,
+                    expiresAt: nil,
+                    tokenHash: RelayGrantCoordinator.sha256Hex(tok)
+                ))
+                return (200, resp)
+            }
+            if method == "DELETE", path.hasSuffix("/v1/grants/\(grantID)") {
+                revokedGrantIDs.append(grantID)
+                return (200, Data(#"{"revoked":true}"#.utf8))
+            }
+            return (404, Data())
+        }
+
+        let coordinator = RelayGrantCoordinator(keychain: kc, appAttest: attest, transport: relayTransport)
+        var pushEnabled = true
+        let mgr = PushRegistrationManager(
+            keychain: kc,
+            registerCall: { req, _, _ in
+                PushDeviceRegisterResponse(
+                    deviceID: req.deviceID,
+                    bindingID: req.bindingID ?? UUID().uuidString.lowercased(),
+                    enabled: true,
+                    registrationVersion: 1,
+                    apnsEnv: req.apnsEnv,
+                    inboxContractVersion: 2
+                )
+            },
+            deleteCall: { _, _, _, _ in throw URLError(.cannotConnectToHost) },
+            cancelAttemptCall: { _, _, _, _ in throw URLError(.cannotConnectToHost) },
+            fetchPreferencesCall: { _, _ in
+                self.makePreferences(
+                    apnsPushEnabled: true,
+                    apnsPushConfigured: true,
+                    apnsTransportMode: "relay",
+                    apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                )
+            },
+            relayCoordinator: coordinator,
+            configSnapshot: { self.makeConfig() },
+            isPushEnabled: { pushEnabled },
+            resolveAPNsEnv: { "production" },
+            resetBadge: {}
+        )
+
+        // 1. Complete normal Relay registration.
+        await mgr.syncRegistration(tokenHex: tokenA)
+        XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, grantID)
+
+        // 2. Simulate transient Keychain read failure for attestKeyAccount when user disables pushes
+        // (while self-hosted server is also unreachable). Revocation MUST stay queued, not be dropped!
+        kc.failedReads.insert(RelayPushConstants.attestKeyAccount)
+        pushEnabled = false
+        await mgr.disablePushNotifications()
+        XCTAssertTrue(revokedGrantIDs.isEmpty)
+        XCTAssertEqual(coordinator.loadPendingRevocations().map(\.identifier), [grantID])
+
+        // 3. Keychain access to App Attest key recovers -> drain retries and completes DELETE on Relay!
+        kc.failedReads.remove(RelayPushConstants.attestKeyAccount)
+        await mgr.drainPendingDeregistrations()
+        XCTAssertEqual(revokedGrantIDs, [grantID])
+        XCTAssertTrue(coordinator.loadPendingRevocations().isEmpty)
+    }
 }

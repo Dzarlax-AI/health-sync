@@ -352,10 +352,6 @@ final class RelayGrantCoordinator {
         return try JSONDecoder().decode(StoredRelayAttestKey.self, from: data)
     }
 
-    private func loadAttestKey() -> StoredRelayAttestKey? {
-        (try? readAttestKey()) ?? nil
-    }
-
     private func saveAttestKey(_ key: StoredRelayAttestKey?) throws {
         let data = try key.map { try JSONEncoder().encode($0) }
         try store.writeData(data, account: RelayPushConstants.attestKeyAccount)
@@ -664,8 +660,17 @@ final class RelayGrantCoordinator {
                 removeRevocation(entry)
                 continue
             }
-            guard let storedKey = loadAttestKey(), storedKey.registered, storedKey.relayOrigin == entry.relayOrigin else {
-                // Without a registered attest key, no grant could have been created on Relay.
+            let maybeKey: StoredRelayAttestKey?
+            do {
+                maybeKey = try readAttestKey()
+            } catch {
+                // Transient Keychain read failure: keep the pending revocation intact
+                // and retry once the App Attest key is readable again.
+                continue
+            }
+            guard let storedKey = maybeKey, storedKey.registered, storedKey.relayOrigin == entry.relayOrigin else {
+                // Confirmed absence of a registered attest key for this origin:
+                // no grant could exist on Relay.
                 removeRevocation(entry)
                 continue
             }
