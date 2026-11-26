@@ -156,6 +156,7 @@ struct PendingRelayGrantAttempt: Codable, Equatable {
     var confirmedGrantID: String?
     var confirmedTokenHash: String? = nil
     var confirmedExpiresAt: Date? = nil
+    var attestKeyID: String? = nil
 }
 
 struct PendingRelayRevocation: Codable, Equatable {
@@ -168,6 +169,7 @@ struct PendingRelayRevocation: Codable, Equatable {
     let identifier: String
     let relayOrigin: String
     let queuedAt: Date
+    var attestKeyID: String? = nil
 }
 
 protocol AppAttestProviding: Sendable {
@@ -290,6 +292,7 @@ final class RelayGrantCoordinator {
     private let transport: RelayHTTPTransport
     private let trustedOrigins: Set<String>
     private let now: () -> Date
+    private var keyRegistrationTasks: [String: Task<String, Error>] = [:]
 
     init(
         keychain: KeychainAccess? = nil,
@@ -357,22 +360,24 @@ final class RelayGrantCoordinator {
         try store.writeData(data, account: RelayPushConstants.attestKeyAccount)
     }
 
-    func enqueueGrantRevocation(grantID: String, relayOrigin: String) throws {
+    func enqueueGrantRevocation(grantID: String, relayOrigin: String, attestKeyID: String? = nil) throws {
         let entry = PendingRelayRevocation(
             kind: .grantID,
             identifier: grantID,
             relayOrigin: relayOrigin,
-            queuedAt: now()
+            queuedAt: now(),
+            attestKeyID: attestKeyID
         )
         try enqueueRevocationEntry(entry)
     }
 
-    func enqueueClientGrantKeyCancellation(clientGrantKey: UUID, relayOrigin: String) throws {
+    func enqueueClientGrantKeyCancellation(clientGrantKey: UUID, relayOrigin: String, attestKeyID: String? = nil) throws {
         let entry = PendingRelayRevocation(
             kind: .clientGrantKey,
             identifier: clientGrantKey.uuidString.lowercased(),
             relayOrigin: relayOrigin,
-            queuedAt: now()
+            queuedAt: now(),
+            attestKeyID: attestKeyID
         )
         try enqueueRevocationEntry(entry)
     }
@@ -386,9 +391,9 @@ final class RelayGrantCoordinator {
               let pending = attempts[fingerprint] else { return }
         do {
             if let grantID = pending.confirmedGrantID, !grantID.isEmpty {
-                try enqueueGrantRevocation(grantID: grantID, relayOrigin: pending.relayOrigin)
+                try enqueueGrantRevocation(grantID: grantID, relayOrigin: pending.relayOrigin, attestKeyID: pending.attestKeyID)
             } else {
-                try enqueueClientGrantKeyCancellation(clientGrantKey: pending.clientGrantKey, relayOrigin: pending.relayOrigin)
+                try enqueueClientGrantKeyCancellation(clientGrantKey: pending.clientGrantKey, relayOrigin: pending.relayOrigin, attestKeyID: pending.attestKeyID)
             }
             attempts.removeValue(forKey: fingerprint)
             try? savePendingGrantAttempts(attempts)
@@ -404,9 +409,9 @@ final class RelayGrantCoordinator {
         for (fp, pending) in attempts where fp != keepFingerprint {
             do {
                 if let grantID = pending.confirmedGrantID, !grantID.isEmpty {
-                    try enqueueGrantRevocation(grantID: grantID, relayOrigin: pending.relayOrigin)
+                    try enqueueGrantRevocation(grantID: grantID, relayOrigin: pending.relayOrigin, attestKeyID: pending.attestKeyID)
                 } else {
-                    try enqueueClientGrantKeyCancellation(clientGrantKey: pending.clientGrantKey, relayOrigin: pending.relayOrigin)
+                    try enqueueClientGrantKeyCancellation(clientGrantKey: pending.clientGrantKey, relayOrigin: pending.relayOrigin, attestKeyID: pending.attestKeyID)
                 }
                 attempts.removeValue(forKey: fp)
                 changed = true
@@ -457,7 +462,8 @@ final class RelayGrantCoordinator {
                 createdAt: now(),
                 confirmedGrantID: nil,
                 confirmedTokenHash: nil,
-                confirmedExpiresAt: nil
+                confirmedExpiresAt: nil,
+                attestKeyID: keyID
             )
             attempts[endpointFingerprint] = fresh
             try savePendingGrantAttempts(attempts)
@@ -468,14 +474,15 @@ final class RelayGrantCoordinator {
         if let existing = attempts[endpointFingerprint],
            existing.relayOrigin == origin,
            existing.apnsEnv == apnsEnv,
-           existing.inboxContractVersion == inboxContractVersion {
+           existing.inboxContractVersion == inboxContractVersion,
+           existing.attestKeyID == nil || existing.attestKeyID == keyID {
             attempt = existing
         } else {
             if let old = attempts[endpointFingerprint] {
                 if let gid = old.confirmedGrantID, !gid.isEmpty {
-                    try enqueueGrantRevocation(grantID: gid, relayOrigin: old.relayOrigin)
+                    try enqueueGrantRevocation(grantID: gid, relayOrigin: old.relayOrigin, attestKeyID: old.attestKeyID)
                 } else {
-                    try enqueueClientGrantKeyCancellation(clientGrantKey: old.clientGrantKey, relayOrigin: old.relayOrigin)
+                    try enqueueClientGrantKeyCancellation(clientGrantKey: old.clientGrantKey, relayOrigin: old.relayOrigin, attestKeyID: old.attestKeyID)
                 }
             }
             attempt = try makeFreshAttempt()
@@ -515,6 +522,9 @@ final class RelayGrantCoordinator {
                 // Pending grant expired, was revoked, or was invalidated while the
                 // self-hosted server was unreachable: drop it and mint a fresh grant.
                 attempts = try readPendingGrantAttempts()
+                guard attempts[endpointFingerprint]?.clientGrantKey == attempt.clientGrantKey else {
+                    throw CancellationError()
+                }
                 attempt = try makeFreshAttempt()
             }
         }
@@ -653,7 +663,7 @@ final class RelayGrantCoordinator {
         return nil
     }
 
-    func drainPendingRevocations() async {
+    func drainPendingRevocations(retainingGrantID: String? = nil) async {
         guard let snapshot = try? readPendingRevocations() else { return }
         for entry in snapshot {
             guard let relayURL = validateOrigin(entry.relayOrigin) else {
@@ -668,12 +678,9 @@ final class RelayGrantCoordinator {
                 // and retry once the App Attest key is readable again.
                 continue
             }
-            guard let storedKey = maybeKey, storedKey.registered, storedKey.relayOrigin == entry.relayOrigin else {
-                // Confirmed absence of a registered attest key for this origin:
-                // no grant could exist on Relay.
-                removeRevocation(entry)
-                continue
-            }
+            // A replacement key cannot revoke its predecessor's grants.
+            guard let keyID = entry.attestKeyID ?? (maybeKey?.relayOrigin == entry.relayOrigin && maybeKey?.registered == true ? maybeKey?.keyID : nil)
+            else { continue }
             do {
                 let op: String
                 let url: URL
@@ -685,7 +692,7 @@ final class RelayGrantCoordinator {
                     op = RelayPushConstants.opGrantCancelByClientKey
                     url = relayURL.appendingPathComponent("v1/grants/by-client-key/\(entry.identifier)")
                 }
-                let challenge = try await fetchChallenge(relayURL: relayURL, keyID: storedKey.keyID, op: op)
+                let challenge = try await fetchChallenge(relayURL: relayURL, keyID: keyID, op: op)
                 let payload = RelayRevokeBody(
                     appID: RelayPushConstants.appID,
                     op: op,
@@ -694,17 +701,18 @@ final class RelayGrantCoordinator {
                     nonce: challenge.nonce
                 )
                 let rawBody = try JSONEncoder().encode(payload)
-                let assertion = try await appAttest.generateAssertion(storedKey.keyID, clientDataHash: Data(SHA256.hash(data: rawBody)))
+                let assertion = try await appAttest.generateAssertion(keyID, clientDataHash: Data(SHA256.hash(data: rawBody)))
                 let (status, _) = try await transport.send(
                     method: "DELETE",
                     url: url,
                     body: rawBody,
                     headers: [
-                        "X-App-Attest-Key-ID": storedKey.keyID,
+                        "X-App-Attest-Key-ID": keyID,
                         "X-App-Attest-Assertion": assertion.base64EncodedString(),
                     ]
                 )
-                if (200...299).contains(status) || status == 404 || status == 410 {
+                if ((200...299).contains(status) || status == 404 || status == 410),
+                   entry.kind != .grantID || entry.identifier != retainingGrantID {
                     removeRevocation(entry)
                 }
             } catch {
@@ -730,7 +738,25 @@ final class RelayGrantCoordinator {
         }
     }
 
+    func hasPendingGrantRevocation(grantID: String, relayOrigin: String) throws -> Bool {
+        try readPendingRevocations().contains {
+            $0.kind == .grantID && $0.identifier == grantID && $0.relayOrigin == relayOrigin
+        }
+    }
+
     private func ensureRegisteredAttestKey(relayURL: URL) async throws -> String {
+        let origin = relayURL.absoluteString
+        if let task = keyRegistrationTasks[origin] {
+            return try await task.value
+        }
+
+        let task = Task { try await self.registerAttestKeyIfNeeded(relayURL: relayURL) }
+        keyRegistrationTasks[origin] = task
+        defer { keyRegistrationTasks.removeValue(forKey: origin) }
+        return try await task.value
+    }
+
+    private func registerAttestKeyIfNeeded(relayURL: URL) async throws -> String {
         guard appAttest.isSupported else {
             throw RelayPushError.appAttestUnsupported
         }
@@ -756,7 +782,18 @@ final class RelayGrantCoordinator {
             nonce: challenge.nonce
         )
         let clientDataHash = Data(SHA256.hash(data: canonical))
-        let attestationObject = try await appAttest.attestKey(keyID, clientDataHash: clientDataHash)
+        let attestationObject: Data
+        do {
+            attestationObject = try await appAttest.attestKey(keyID, clientDataHash: clientDataHash)
+        } catch {
+            let deviceCheckError = error as NSError
+            if deviceCheckError.domain == DCError.errorDomain,
+               deviceCheckError.code == DCError.Code.invalidKey.rawValue,
+               try readAttestKey()?.keyID == keyID {
+                try saveAttestKey(nil)
+            }
+            throw error
+        }
         let reqBody = RelayAttestRegisterBody(
             appID: RelayPushConstants.appID,
             keyID: keyID,
@@ -798,6 +835,7 @@ final class RelayGrantCoordinator {
             let nonce: String
         }
         let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return (try? encoder.encode(Canonical(
             app_id: appID,
             op: RelayPushConstants.opAttestRegister,

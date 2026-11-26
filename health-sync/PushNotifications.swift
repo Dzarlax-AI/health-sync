@@ -145,6 +145,7 @@ struct ActivePushRegistration: Codable, Equatable {
     var relayClientGrantKey: UUID? = nil
     var relayOrigin: String? = nil
     var relayLastRefreshedAt: Date? = nil
+    var relayAttestKeyID: String? = nil
 }
 
 private struct PendingPushRegistrationAttempt: Codable {
@@ -764,7 +765,8 @@ final class PushRegistrationManager {
                active.relayOrigin == relayURL.absoluteString,
                active.apnsEnv == env,
                active.locale == locale,
-               active.inboxContractVersion == contractVersion {
+               active.inboxContractVersion == contractVersion,
+               (try? relayCoordinator.hasPendingGrantRevocation(grantID: activeGrantID, relayOrigin: relayURL.absoluteString)) == false {
                 var mustReissueRelayGrant = false
                 if active.tokenHash != tokenHash {
                     do {
@@ -798,7 +800,8 @@ final class PushRegistrationManager {
                                 relayGrantID: active.relayGrantID,
                                 relayClientGrantKey: active.relayClientGrantKey,
                                 relayOrigin: active.relayOrigin,
-                                relayLastRefreshedAt: active.relayLastRefreshedAt
+                                relayLastRefreshedAt: active.relayLastRefreshedAt,
+                                relayAttestKeyID: active.relayAttestKeyID
                             )
                             try saveActiveRegistration(refreshed)
                             lastRegistrationError = nil
@@ -853,7 +856,8 @@ final class PushRegistrationManager {
                                 relayGrantID: active.relayGrantID,
                                 relayClientGrantKey: active.relayClientGrantKey,
                                 relayOrigin: active.relayOrigin,
-                                relayLastRefreshedAt: now()
+                                relayLastRefreshedAt: now(),
+                                relayAttestKeyID: active.relayAttestKeyID
                             )
                             try saveActiveRegistration(refreshed)
                             lastRegistrationError = nil
@@ -1048,11 +1052,25 @@ final class PushRegistrationManager {
                         relayGrantID: relayAttemptMeta?.grantID,
                         relayClientGrantKey: relayAttemptMeta?.attempt.clientGrantKey,
                         relayOrigin: relayAttemptMeta?.relayURL.absoluteString,
-                        relayLastRefreshedAt: relayAttemptMeta != nil ? now() : nil
+                        relayLastRefreshedAt: relayAttemptMeta != nil ? now() : nil,
+                        relayAttestKeyID: relayAttemptMeta?.attempt.attestKeyID
                     )
                     do {
+                        if let previous = loadActiveRegistration(),
+                           previous.endpointFingerprint == fingerprint,
+                           let oldGrantID = previous.relayGrantID,
+                           let oldOrigin = previous.relayOrigin,
+                           oldGrantID != record.relayGrantID || oldOrigin != record.relayOrigin {
+                            try relayCoordinator.enqueueGrantRevocation(
+                                grantID: oldGrantID,
+                                relayOrigin: oldOrigin,
+                                attestKeyID: previous.relayAttestKeyID
+                            )
+                        }
                         try saveActiveRegistration(record)
-                        try forgetRegistrationAttempt(attempt)
+                        // Once the active record commits, cleanup of a journal
+                        // entry must not revoke that registration.
+                        try? forgetRegistrationAttempt(attempt)
                         if let relayMeta = relayAttemptMeta {
                             relayCoordinator.clearPendingGrantAttempt(
                                 forFingerprint: fingerprint,
@@ -1062,9 +1080,8 @@ final class PushRegistrationManager {
                         lastRegistrationError = nil
                         unsupportedRetryState = nil
                         unsupportedRetryAfter = nil
-                        shouldDrainDeregistrations = loadPendingDeregistrations().contains {
-                            $0.fingerprint == fingerprint
-                        }
+                        shouldDrainDeregistrations = !relayCoordinator.loadPendingRevocations().isEmpty ||
+                            loadPendingDeregistrations().contains { $0.fingerprint == fingerprint }
                     } catch {
                         if preserveDeregistration(cleanup) {
                             try? forgetRegistrationAttempt(attempt)
@@ -1072,7 +1089,8 @@ final class PushRegistrationManager {
                         if let relayMeta = relayAttemptMeta {
                             if (try? relayCoordinator.enqueueGrantRevocation(
                                 grantID: relayMeta.grantID,
-                                relayOrigin: relayMeta.relayURL.absoluteString
+                                relayOrigin: relayMeta.relayURL.absoluteString,
+                                attestKeyID: relayMeta.attempt.attestKeyID
                             )) != nil {
                                 relayCoordinator.clearPendingGrantAttempt(
                                     forFingerprint: fingerprint,
@@ -1089,7 +1107,8 @@ final class PushRegistrationManager {
                     if let relayMeta = relayAttemptMeta {
                         if (try? relayCoordinator.enqueueGrantRevocation(
                             grantID: relayMeta.grantID,
-                            relayOrigin: relayMeta.relayURL.absoluteString
+                            relayOrigin: relayMeta.relayURL.absoluteString,
+                            attestKeyID: relayMeta.attempt.attestKeyID
                         )) != nil {
                             relayCoordinator.clearPendingGrantAttempt(
                                 forFingerprint: fingerprint,
@@ -1146,6 +1165,8 @@ final class PushRegistrationManager {
         registrationEpoch = capturedEpoch
         unsupportedRetryState = nil
         unsupportedRetryAfter = nil
+        pushServerStatus = .unknown
+        lastRegistrationError = nil
         resetBadge()
         reconcileActiveRegistration()
         await drainPendingDeregistrations()
@@ -1188,7 +1209,9 @@ final class PushRegistrationManager {
         } else if let currentFP = try? configSnapshot().fingerprint {
             relayCoordinator.moveAllPendingGrantAttemptsToRevocationQueue(exceptFingerprint: currentFP)
         }
-        await relayCoordinator.drainPendingRevocations()
+        // If clearing an active record failed, retain its queued revoke after
+        // delivery so the record still cannot be reused on the next launch.
+        await relayCoordinator.drainPendingRevocations(retainingGrantID: loadActiveRegistration()?.relayGrantID)
         await drainRegistrationAttempts()
         for item in unsavedDeregistrations {
             do {
@@ -1372,6 +1395,12 @@ final class PushRegistrationManager {
 
     private func reconcileActiveRegistration() {
         guard let active = loadActiveRegistration() else { return }
+        if let grantID = active.relayGrantID,
+           let origin = active.relayOrigin,
+           (try? relayCoordinator.hasPendingGrantRevocation(grantID: grantID, relayOrigin: origin)) == true {
+            moveActiveRegistrationToQueue()
+            return
+        }
         if !isPushEnabled() {
             moveActiveRegistrationToQueue()
             return
@@ -1393,7 +1422,11 @@ final class PushRegistrationManager {
             if active.transportMode == "relay",
                let grantID = active.relayGrantID,
                let relayOrigin = active.relayOrigin {
-                try relayCoordinator.enqueueGrantRevocation(grantID: grantID, relayOrigin: relayOrigin)
+                try relayCoordinator.enqueueGrantRevocation(
+                    grantID: grantID,
+                    relayOrigin: relayOrigin,
+                    attestKeyID: active.relayAttestKeyID
+                )
             }
             try enqueueDeregistration(PendingPushDeregistration(
                 deviceID: active.deviceID,

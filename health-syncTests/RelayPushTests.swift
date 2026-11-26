@@ -33,9 +33,27 @@ private final class MockRelayHTTPTransport: RelayHTTPTransport, @unchecked Senda
         let headers: [String: String]
     }
 
+    typealias Handler = @Sendable (String, URL, Data, [String: String]) async throws -> (Int, Data)
+
     private let lock = NSLock()
-    private(set) var requests: [RecordedRequest] = []
-    var handler: (@Sendable (String, URL, Data, [String: String]) async throws -> (Int, Data))?
+    private var recordedRequests: [RecordedRequest] = []
+    private var requestHandler: Handler?
+
+    var requests: [RecordedRequest] {
+        lock.withLock { recordedRequests }
+    }
+    var handler: Handler? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return requestHandler
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            requestHandler = newValue
+        }
+    }
 
     func send(
         method: String,
@@ -43,14 +61,18 @@ private final class MockRelayHTTPTransport: RelayHTTPTransport, @unchecked Senda
         body: Data,
         headers: [String: String]
     ) async throws -> (Int, Data) {
-        lock.lock()
-        requests.append(RecordedRequest(method: method, url: url, body: body, headers: headers))
-        let h = handler
-        lock.unlock()
+        let h = record(method: method, url: url, body: body, headers: headers)
         if let h {
             return try await h(method, url, body, headers)
         }
         return (200, Data("{}".utf8))
+    }
+
+    private func record(method: String, url: URL, body: Data, headers: [String: String]) -> Handler? {
+        lock.lock()
+        defer { lock.unlock() }
+        recordedRequests.append(RecordedRequest(method: method, url: url, body: body, headers: headers))
+        return requestHandler
     }
 }
 
@@ -141,6 +163,93 @@ final class RelayPushTests: XCTestCase {
             telegramConfigured: false,
             activePushDevicesCount: 0
         )
+    }
+
+    func testReplacingRelayGrantKeepsNewGrantWhenRegistrationJournalCleanupFails() async {
+        let keychain = InMemoryRelayKeychain()
+        let relay = MockRelayHTTPTransport()
+        let firstGrantID = UUID().uuidString.lowercased()
+        let secondGrantID = UUID().uuidString.lowercased()
+        var locale = "en"
+        var createCount = 0
+        var revoked: [String] = []
+        let token = tokenA
+        relay.handler = { method, url, _, _ in
+            if url.path.hasSuffix("/v1/attest/challenge") {
+                let challenge = RelayChallengeResponse(
+                    challengeID: UUID().uuidString.lowercased(), nonce: "test-nonce", expiresAt: nil
+                )
+                return (200, try JSONEncoder().encode(challenge))
+            }
+            if url.path.hasSuffix("/v1/attest/register") {
+                return (200, Data("{}".utf8))
+            }
+            if method == "POST", url.path.hasSuffix("/v1/grants") {
+                createCount += 1
+                let result = RelayGrantCreateResponse(
+                    grantID: createCount == 1 ? firstGrantID : secondGrantID,
+                    tokenHash: RelayGrantCoordinator.sha256Hex(token)
+                )
+                return (200, try JSONEncoder().encode(result))
+            }
+            if method == "DELETE" {
+                revoked.append(url.lastPathComponent)
+                return (200, Data("{}".utf8))
+            }
+            return (404, Data())
+        }
+        let coordinator = RelayGrantCoordinator(
+            keychain: keychain, appAttest: MockAppAttestProvider(), transport: relay
+        )
+        let manager = PushRegistrationManager(
+            keychain: keychain,
+            registerCall: { request, _, _ in
+                if request.relayGrantID == secondGrantID {
+                    keychain.failedWrites.insert(PushNotificationConstants.registrationAttemptsAccount)
+                }
+                return PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: request.bindingID!,
+                    enabled: true, registrationVersion: 1, apnsEnv: request.apnsEnv
+                )
+            },
+            deleteCall: { _, _, _, _ in },
+            cancelAttemptCall: { _, _, _, _ in },
+            fetchPreferencesCall: { _, _ in
+                self.makePreferences(
+                    apnsPushEnabled: true, apnsPushConfigured: true, apnsTransportMode: "relay",
+                    apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                )
+            },
+            relayCoordinator: coordinator,
+            configSnapshot: { self.makeConfig() },
+            isPushEnabled: { true },
+            resolveAPNsEnv: { "production" },
+            localeProvider: { locale },
+            resetBadge: {}
+        )
+
+        await manager.syncRegistration(tokenHex: token)
+        XCTAssertEqual(manager.loadActiveRegistration()?.relayGrantID, firstGrantID)
+        locale = "ru"
+        await manager.syncRegistration(tokenHex: token)
+        XCTAssertEqual(manager.loadActiveRegistration()?.relayGrantID, secondGrantID)
+        XCTAssertEqual(revoked, [firstGrantID])
+        XCTAssertFalse(coordinator.loadPendingRevocations().contains { $0.identifier == secondGrantID })
+
+        keychain.failedWrites.remove(PushNotificationConstants.registrationAttemptsAccount)
+        await manager.drainPendingDeregistrations()
+        XCTAssertEqual(manager.loadActiveRegistration()?.relayGrantID, secondGrantID)
+        XCTAssertEqual(revoked, [firstGrantID])
+    }
+
+    func testCanonicalRegistrationMatchesGoFixture() {
+        let expected = #"{"app_id":"health_sync","challenge_id":"challenge","nonce":"nonce","op":"attest.register","resource_id":"key/abc+=="}"#
+        for _ in 0..<16 {
+            let payload = RelayGrantCoordinator.canonicalRegisterPayload(
+                appID: "health_sync", keyID: "key/abc+==", challengeID: "challenge", nonce: "nonce"
+            )
+            XCTAssertEqual(payload, Data(expected.utf8))
+        }
     }
 
     func testOriginValidationPinsExactProductionOrigin() {
@@ -524,7 +633,6 @@ final class RelayPushTests: XCTestCase {
             var currentServerURL = serverURL
             var pushEnabled = true
 
-            var rotationStarted: CheckedContinuation<Void, Never>?
             var releaseRotation: CheckedContinuation<(Int, Data), Error>?
 
             relayTransport.handler = { method, url, _, _ in
@@ -549,10 +657,9 @@ final class RelayPushTests: XCTestCase {
                     return (200, resp)
                 }
                 if method == "PUT", path.hasSuffix("/v1/attest/token") {
+                    try Task.checkCancellation()
                     return try await withCheckedThrowingContinuation { cont in
                         releaseRotation = cont
-                        rotationStarted?.resume()
-                        rotationStarted = nil
                     }
                 }
                 if method == "DELETE" {
@@ -613,12 +720,14 @@ final class RelayPushTests: XCTestCase {
             let rotationTask = Task {
                 await mgr.syncRegistration(tokenHex: tokenB)
             }
-            await withCheckedContinuation { cont in
-                if releaseRotation != nil {
-                    cont.resume()
-                } else {
-                    rotationStarted = cont
-                }
+            let deadline = ContinuousClock.now + .seconds(3)
+            while releaseRotation == nil && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            guard releaseRotation != nil else {
+                rotationTask.cancel()
+                XCTFail("Relay rotation did not start")
+                return
             }
 
             // While PUT /v1/attest/token is suspended, disable pushes OR switch profile.
@@ -650,7 +759,6 @@ final class RelayPushTests: XCTestCase {
             var pushEnabled = true
             var currentNow = Date(timeIntervalSince1970: 1_800_000_000)
 
-            var refreshStarted: CheckedContinuation<Void, Never>?
             var releaseRefresh: CheckedContinuation<(Int, Data), Error>?
 
             relayTransport.handler = { method, url, _, _ in
@@ -675,10 +783,9 @@ final class RelayPushTests: XCTestCase {
                     return (200, resp)
                 }
                 if method == "PUT", path.hasSuffix("/refresh") {
+                    try Task.checkCancellation()
                     return try await withCheckedThrowingContinuation { cont in
                         releaseRefresh = cont
-                        refreshStarted?.resume()
-                        refreshStarted = nil
                     }
                 }
                 if method == "DELETE" {
@@ -741,12 +848,14 @@ final class RelayPushTests: XCTestCase {
             let refreshTask = Task {
                 await mgr.syncRegistration(tokenHex: tokenA)
             }
-            await withCheckedContinuation { cont in
-                if releaseRefresh != nil {
-                    cont.resume()
-                } else {
-                    refreshStarted = cont
-                }
+            let deadline = ContinuousClock.now + .seconds(3)
+            while releaseRefresh == nil && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            guard releaseRefresh != nil else {
+                refreshTask.cancel()
+                XCTFail("Relay refresh did not start")
+                return
             }
 
             if switchProfile {
