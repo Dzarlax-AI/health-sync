@@ -520,17 +520,20 @@ struct PushNotificationTests {
         await manager.handleConfigurationChanged(pushEnabled: true)
         #expect(manager.activeBindingIDForCurrentProfile() == bindingB)
 
-        // 3. Switch B -> A: deletes bindingB and runs POST #2 on server A,
-        // which reuses and saves bindingA.
+        // 3. Switch B -> A while POST #1 for server A is still in flight:
+        // DELETE(bindingB) runs immediately, while POST #2 for server A waits
+        // for POST #1 to finish (strict per-profile POST serialization).
         activeEndpoint = endpointA
         activeKey = "key-a"
-        await manager.handleConfigurationChanged(pushEnabled: true)
-        #expect(postACount == 2)
-        #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
+        let switchBackTask = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
+        for _ in 0..<5 { await Task.yield() }
+        #expect(postACount == 1)
         #expect(deleted.count == 1)
         #expect(deleted[0].bindingID == bindingB)
 
         // 4. Delayed POST #1 from the earlier epoch finally returns the same bindingA.
+        // It must NOT delete bindingA, and the serialized follow-up POST #2 must
+        // confirm and save bindingA under the current epoch.
         let deviceID = try! manager.ensureDeviceID()
         releaseFirstPostA?.resume(returning: PushDeviceRegisterResponse(
             deviceID: deviceID,
@@ -540,8 +543,10 @@ struct PushNotificationTests {
             apnsEnv: "sandbox"
         ))
         await firstPostATask.value
+        await switchBackTask.value
 
         // Must keep bindingA active on iOS AND must NOT send DELETE for bindingA!
+        #expect(postACount == 2)
         #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
         #expect(deleted.count == 1)
         #expect(deleted[0].bindingID == bindingB)
@@ -846,5 +851,86 @@ struct PushNotificationTests {
         #expect(manager.activeBindingIDForCurrentProfile() == bindingA2)
         #expect(deletedOnA == [bindingA1])
         #expect(manager.loadPendingDeregistrations().isEmpty)
+    }
+
+    @Test
+    func tokenRotationSerializesPostsForSameProfileAndSendsLatestToken() async {
+        let keychain = InMemoryKeychainAccess()
+        let endpoint = URL(string: "https://server-a.example.com")!
+        let bindingA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+        let token1 = String(repeating: "1", count: 64)
+        let token2 = String(repeating: "2", count: 64)
+        let token3 = String(repeating: "3", count: 64)
+
+        var sentTokens: [String] = []
+        var serverActiveToken: String?
+        var releaseFirstPost: CheckedContinuation<PushDeviceRegisterResponse, Error>?
+
+        let manager = PushRegistrationManager(
+            keychain: keychain,
+            registerCall: { req, _, _ in
+                sentTokens.append(req.apnsToken)
+                if sentTokens.count == 1 {
+                    let response = try await withCheckedThrowingContinuation { cont in
+                        releaseFirstPost = cont
+                    }
+                    serverActiveToken = req.apnsToken
+                    return response
+                }
+                serverActiveToken = req.apnsToken
+                return PushDeviceRegisterResponse(
+                    deviceID: req.deviceID,
+                    bindingID: bindingA,
+                    enabled: true,
+                    registrationVersion: Int64(sentTokens.count),
+                    apnsEnv: req.apnsEnv
+                )
+            },
+            deleteCall: { _, _, _, _ in },
+            configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "key-a") },
+            isPushEnabled: { true },
+            resolveAPNsEnv: { "sandbox" },
+            bundleIDProvider: { "com.dzarlax.health-sync" },
+            localeProvider: { "en" },
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+
+        // 1. Start POST for token1 and hold it in flight.
+        let post1Task = Task { await manager.syncRegistration(tokenHex: token1) }
+        while releaseFirstPost == nil { await Task.yield() }
+
+        // 2. While token1's POST is in flight, APNs rotates token1 -> token2 -> token3.
+        let post2Task = Task { await manager.syncRegistration(tokenHex: token2) }
+        await Task.yield()
+        let post3Task = Task { await manager.syncRegistration(tokenHex: token3) }
+        for _ in 0..<5 { await Task.yield() }
+
+        // No second POST may start concurrently while token1 is still in flight.
+        #expect(sentTokens == [token1])
+
+        // 3. Complete token1's POST -> serialized loop sends ONLY the latest token3.
+        let deviceID = try! manager.ensureDeviceID()
+        releaseFirstPost?.resume(returning: PushDeviceRegisterResponse(
+            deviceID: deviceID,
+            bindingID: bindingA,
+            enabled: true,
+            registrationVersion: 1,
+            apnsEnv: "sandbox"
+        ))
+        await post1Task.value
+        await post2Task.value
+        await post3Task.value
+
+        #expect(sentTokens == [token1, token3])
+        #expect(serverActiveToken == token3)
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
+        #expect(manager.loadActiveRegistration()?.tokenHash != nil)
+        #expect(manager.loadActiveRegistration()?.tokenHash != manager.loadActiveRegistration().map { _ in "" })
+
+        // Verify a follow-up sync with token3 hits the 24h heartbeat cache (proving
+        // local tokenHash matches token3, not token1).
+        await manager.syncRegistration(tokenHex: token3)
+        #expect(sentTokens == [token1, token3])
     }
 }

@@ -279,6 +279,8 @@ final class PushRegistrationManager {
     private var unsupportedRetryState: (fingerprint: String, retryAfter: Date)?
     private var inFlightDeregistrations: [String: InFlightDeregistration] = [:]
     private var inFlightRegistrations: [String: Int] = [:]
+    private var inFlightRegistrationTasks: [String: Task<Void, Never>] = [:]
+    private var pendingRegistrationFingerprints: Set<String> = []
     private var deferredDeregistrationFingerprints: Set<String> = []
 
     init(
@@ -403,137 +405,195 @@ final class PushRegistrationManager {
 
         guard initialEpoch == registrationEpoch, isPushEnabled() else { return }
         guard let config = try? configSnapshot() else { return }
+        let fingerprint = config.fingerprint
 
-        // Ensure any in-flight DELETE targeting this same profile finishes before
-        // sending POST so the server cannot reuse a binding_id that a racing
-        // DELETE is about to disable.
-        await waitForInFlightDeregistrations(forFingerprint: config.fingerprint)
-        guard initialEpoch == registrationEpoch,
-              isPushEnabled(),
-              let refreshedConfig = try? configSnapshot(),
-              refreshedConfig.fingerprint == config.fingerprint
-        else { return }
-
-        let currentNow = now()
-        if let retryState = unsupportedRetryState,
-           retryState.fingerprint == refreshedConfig.fingerprint,
-           currentNow < retryState.retryAfter {
+        // Serialize POSTs per profile: if a registration loop is already running
+        // for this profile, mark a coalesced follow-up pass (which will read the
+        // latest `lastKnownTokenHex`) and await its completion instead of running
+        // two concurrent POSTs that could overwrite a newer APNs token on server.
+        if let existingTask = inFlightRegistrationTasks[fingerprint] {
+            pendingRegistrationFingerprints.insert(fingerprint)
+            await existingTask.value
             return
         }
 
-        let env = resolveAPNsEnv()
-        let locale = localeProvider()
-        let tokenHash = Self.sha256Hex(tokenHex)
-
-        if let active = loadActiveRegistration(),
-           active.endpointFingerprint == refreshedConfig.fingerprint,
-           active.tokenHash == tokenHash,
-           active.apnsEnv == env,
-           active.locale == locale,
-           currentNow.timeIntervalSince(active.confirmedAt) < PushNotificationConstants.heartbeatRefreshInterval {
-            return
-        }
-
-        let capturedEpoch = initialEpoch
-        let capturedConfig = refreshedConfig
-
-        // Hold mutual exclusion against DELETE for the same profile across the
-        // entire POST suspension window so a queued DELETE cannot run while
-        // POST is in flight and disable a binding_id the server just reused.
-        inFlightRegistrations[capturedConfig.fingerprint, default: 0] += 1
-        let registerResult: Result<PushDeviceRegisterResponse, Error>
-        do {
-            let deviceID = try ensureDeviceID()
-            let response = try await registerCall(
-                PushDeviceRegisterRequest(
-                    deviceID: deviceID,
-                    apnsToken: tokenHex,
-                    apnsEnv: env,
-                    bundleID: bundleIDProvider(),
-                    locale: locale
-                ),
-                capturedConfig.endpoint,
-                capturedConfig.apiKey
+        let task = Task { @MainActor [self] in
+            defer {
+                self.inFlightRegistrationTasks.removeValue(forKey: fingerprint)
+                self.pendingRegistrationFingerprints.remove(fingerprint)
+            }
+            await self.runSerializedRegistrationLoop(
+                forFingerprint: fingerprint,
+                initialEpoch: initialEpoch
             )
-            registerResult = .success(response)
-        } catch {
-            registerResult = .failure(error)
         }
+        inFlightRegistrationTasks[fingerprint] = task
+        await task.value
+    }
 
-        // Decrement and commit local state synchronously (no `await` in between)
-        // before running any deferred or newly-queued deregistrations.
-        let remainingRegistrations = (inFlightRegistrations[capturedConfig.fingerprint] ?? 1) - 1
-        if remainingRegistrations <= 0 {
-            inFlightRegistrations.removeValue(forKey: capturedConfig.fingerprint)
-        } else {
-            inFlightRegistrations[capturedConfig.fingerprint] = remainingRegistrations
-        }
+    private func runSerializedRegistrationLoop(forFingerprint fingerprint: String, initialEpoch: UUID) async {
+        var expectedEpoch = initialEpoch
+        var isFirstPass = true
 
-        var shouldDrainDeregistrations = false
-
-        switch registerResult {
-        case .success(let response):
-            let stillSameProfile = (try? configSnapshot())?.fingerprint == capturedConfig.fingerprint
-            let pushStillEnabled = isPushEnabled()
-
-            // If the user switched away from this profile or disabled pushes while
-            // POST was in flight, do NOT persist the stale registration — enqueue
-            // DELETE for the committed binding_id on the original server immediately.
-            if !pushStillEnabled || !stillSameProfile {
-                enqueueDeregistration(PendingPushDeregistration(
-                    deviceID: response.deviceID,
-                    bindingID: response.bindingID,
-                    endpoint: capturedConfig.endpoint,
-                    apiKey: capturedConfig.apiKey,
-                    queuedAt: now()
-                ))
-                shouldDrainDeregistrations = true
-            } else if capturedEpoch == registrationEpoch {
-                let record = ActivePushRegistration(
-                    deviceID: response.deviceID,
-                    bindingID: response.bindingID,
-                    endpoint: capturedConfig.endpoint,
-                    apiKey: capturedConfig.apiKey,
-                    endpointFingerprint: capturedConfig.fingerprint,
-                    tokenHash: tokenHash,
-                    apnsEnv: response.apnsEnv,
-                    locale: locale,
-                    confirmedAt: now()
-                )
-                do {
-                    try saveActiveRegistration(record)
-                    lastRegistrationError = nil
-                    unsupportedRetryState = nil
-                    unsupportedRetryAfter = nil
-                } catch {
-                    lastRegistrationError = error.localizedDescription
+        while true {
+            if !isFirstPass {
+                guard pendingRegistrationFingerprints.remove(fingerprint) != nil else {
+                    break
                 }
+                expectedEpoch = registrationEpoch
             }
-            // Rapid A -> B -> A or disable -> re-enable (`capturedEpoch != registrationEpoch`
-            // while `pushStillEnabled && stillSameProfile`): drop the stale response
-            // without deleting or overwriting the current epoch's state.
+            isFirstPass = false
 
-        case .failure(let error):
-            let stillSameProfile = (try? configSnapshot())?.fingerprint == capturedConfig.fingerprint
-            if capturedEpoch == registrationEpoch, stillSameProfile {
-                if let serverError = error as? ServerError, case .http(404, _) = serverError {
-                    let retryAt = now().addingTimeInterval(PushNotificationConstants.unsupportedRetryInterval)
-                    unsupportedRetryState = (capturedConfig.fingerprint, retryAt)
-                    unsupportedRetryAfter = retryAt
-                    lastRegistrationError = nil
+            guard expectedEpoch == registrationEpoch,
+                  isPushEnabled(),
+                  let config = try? configSnapshot(),
+                  config.fingerprint == fingerprint
+            else {
+                break
+            }
+
+            // Ensure any in-flight DELETE targeting this same profile finishes before
+            // sending POST so the server cannot reuse a binding_id that a racing
+            // DELETE is about to disable.
+            await waitForInFlightDeregistrations(forFingerprint: fingerprint)
+
+            guard isPushEnabled(),
+                  let refreshedConfig = try? configSnapshot(),
+                  refreshedConfig.fingerprint == fingerprint,
+                  let latestTokenHex = lastKnownTokenHex
+            else {
+                break
+            }
+            if expectedEpoch != registrationEpoch {
+                if pendingRegistrationFingerprints.remove(fingerprint) != nil {
+                    expectedEpoch = registrationEpoch
                 } else {
-                    lastRegistrationError = error.localizedDescription
+                    break
                 }
             }
-        }
 
-        if remainingRegistrations <= 0,
-           deferredDeregistrationFingerprints.remove(capturedConfig.fingerprint) != nil {
-            shouldDrainDeregistrations = true
-        }
+            let currentNow = now()
+            if let retryState = unsupportedRetryState,
+               retryState.fingerprint == fingerprint,
+               currentNow < retryState.retryAfter {
+                continue
+            }
 
-        if shouldDrainDeregistrations {
-            await drainPendingDeregistrations()
+            let env = resolveAPNsEnv()
+            let locale = localeProvider()
+            let tokenHash = Self.sha256Hex(latestTokenHex)
+
+            if let active = loadActiveRegistration(),
+               active.endpointFingerprint == fingerprint,
+               active.tokenHash == tokenHash,
+               active.apnsEnv == env,
+               active.locale == locale,
+               currentNow.timeIntervalSince(active.confirmedAt) < PushNotificationConstants.heartbeatRefreshInterval {
+                continue
+            }
+
+            let capturedEpoch = expectedEpoch
+            let capturedConfig = refreshedConfig
+
+            // Hold mutual exclusion against DELETE for the same profile across the
+            // entire POST suspension window so a queued DELETE cannot run while
+            // POST is in flight and disable a binding_id the server just reused.
+            inFlightRegistrations[fingerprint, default: 0] += 1
+            let registerResult: Result<PushDeviceRegisterResponse, Error>
+            do {
+                let deviceID = try ensureDeviceID()
+                let response = try await registerCall(
+                    PushDeviceRegisterRequest(
+                        deviceID: deviceID,
+                        apnsToken: latestTokenHex,
+                        apnsEnv: env,
+                        bundleID: bundleIDProvider(),
+                        locale: locale
+                    ),
+                    capturedConfig.endpoint,
+                    capturedConfig.apiKey
+                )
+                registerResult = .success(response)
+            } catch {
+                registerResult = .failure(error)
+            }
+
+            // Decrement and commit local state synchronously (no `await` in between)
+            // before running any deferred or newly-queued deregistrations.
+            let remainingRegistrations = (inFlightRegistrations[fingerprint] ?? 1) - 1
+            if remainingRegistrations <= 0 {
+                inFlightRegistrations.removeValue(forKey: fingerprint)
+            } else {
+                inFlightRegistrations[fingerprint] = remainingRegistrations
+            }
+
+            var shouldDrainDeregistrations = false
+
+            switch registerResult {
+            case .success(let response):
+                let stillSameProfile = (try? configSnapshot())?.fingerprint == fingerprint
+                let pushStillEnabled = isPushEnabled()
+
+                // If the user switched away from this profile or disabled pushes while
+                // POST was in flight, do NOT persist the stale registration — enqueue
+                // DELETE for the committed binding_id on the original server immediately.
+                if !pushStillEnabled || !stillSameProfile {
+                    enqueueDeregistration(PendingPushDeregistration(
+                        deviceID: response.deviceID,
+                        bindingID: response.bindingID,
+                        endpoint: capturedConfig.endpoint,
+                        apiKey: capturedConfig.apiKey,
+                        queuedAt: now()
+                    ))
+                    shouldDrainDeregistrations = true
+                } else if capturedEpoch == registrationEpoch {
+                    let record = ActivePushRegistration(
+                        deviceID: response.deviceID,
+                        bindingID: response.bindingID,
+                        endpoint: capturedConfig.endpoint,
+                        apiKey: capturedConfig.apiKey,
+                        endpointFingerprint: fingerprint,
+                        tokenHash: tokenHash,
+                        apnsEnv: response.apnsEnv,
+                        locale: locale,
+                        confirmedAt: now()
+                    )
+                    do {
+                        try saveActiveRegistration(record)
+                        lastRegistrationError = nil
+                        unsupportedRetryState = nil
+                        unsupportedRetryAfter = nil
+                    } catch {
+                        lastRegistrationError = error.localizedDescription
+                    }
+                }
+                // Rapid A -> B -> A or disable -> re-enable (`capturedEpoch != registrationEpoch`
+                // while `pushStillEnabled && stillSameProfile`): drop the stale response
+                // without deleting or overwriting; a pending follow-up iteration will
+                // re-POST with the current epoch and latest token.
+
+            case .failure(let error):
+                let stillSameProfile = (try? configSnapshot())?.fingerprint == fingerprint
+                if capturedEpoch == registrationEpoch, stillSameProfile {
+                    if let serverError = error as? ServerError, case .http(404, _) = serverError {
+                        let retryAt = now().addingTimeInterval(PushNotificationConstants.unsupportedRetryInterval)
+                        unsupportedRetryState = (fingerprint, retryAt)
+                        unsupportedRetryAfter = retryAt
+                        lastRegistrationError = nil
+                    } else {
+                        lastRegistrationError = error.localizedDescription
+                    }
+                }
+            }
+
+            if remainingRegistrations <= 0,
+               deferredDeregistrationFingerprints.remove(fingerprint) != nil {
+                shouldDrainDeregistrations = true
+            }
+
+            if shouldDrainDeregistrations {
+                await drainPendingDeregistrations()
+            }
         }
     }
 
