@@ -467,4 +467,20 @@ struct InboxTests {
         #expect(page.snapshotAt == nil)
     }
 
+
+    @Test
+    func unreadRefreshKeepsInboxCountWithoutRestoringOptedOutIconBadge() async {
+        var iconCounts: [Int] = []
+        var pushesEnabled = true
+        let controller = TodayInboxController(
+            fetchPending: { InboxPendingResponse(prompts: [], unreadCount: 4) },
+            syncBadge: { iconCounts.append(AppBadgeSync.iconCount(unreadCount: $0, pushesEnabled: pushesEnabled)) }
+        )
+        await controller.refresh()
+        pushesEnabled = false
+        await controller.refresh()
+        #expect(controller.unreadCount == 4)
+        #expect(iconCounts == [4, 0])
+    }
+
 }

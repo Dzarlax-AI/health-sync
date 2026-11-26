@@ -27,15 +27,20 @@ enum AppBadgeSync {
     private static var pendingCount: Int?
     private static var isApplying = false
 
+    static func iconCount(unreadCount: Int, pushesEnabled: Bool) -> Int {
+        pushesEnabled ? max(0, unreadCount) : 0
+    }
+
     static func update(unreadCount: Int) {
         guard !SyncRuntime.isTestMode else { return }
-        pendingCount = max(0, unreadCount)
+        pendingCount = unreadCount
         guard !isApplying else { return }
         isApplying = true
         Task {
             while let count = pendingCount {
                 pendingCount = nil
-                try? await UNUserNotificationCenter.current().setBadgeCount(count)
+                let enabled = UserDefaults.standard.bool(forKey: PushNotificationConstants.enabledDefaultsKey)
+                try? await UNUserNotificationCenter.current().setBadgeCount(iconCount(unreadCount: count, pushesEnabled: enabled))
             }
             isApplying = false
         }
