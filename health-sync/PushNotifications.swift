@@ -751,6 +751,11 @@ final class PushRegistrationManager {
 
             // Fast-path for existing active Relay registration: rotate APNs token
             // directly in Relay or refresh 90-day TTL without minting a new grant.
+            // Re-verify epoch, push toggle, profile fingerprint, and live active
+            // registration AFTER every `await` so a late Relay response can never
+            // resurrect a disabled or switched-away registration. When Relay reports
+            // that this grant is terminal (404/409/410 or absent from active_grant_ids),
+            // clear the dead active registration and fall through to mint a fresh grant.
             if case .relay(let relayURL) = resolvedTransport,
                let active = loadActiveRegistration(),
                active.endpointFingerprint == fingerprint,
@@ -760,74 +765,133 @@ final class PushRegistrationManager {
                active.apnsEnv == env,
                active.locale == locale,
                active.inboxContractVersion == contractVersion {
+                var mustReissueRelayGrant = false
                 if active.tokenHash != tokenHash {
                     do {
-                        try await relayCoordinator.updateDeviceToken(
+                        let resp = try await relayCoordinator.updateDeviceToken(
                             relayURL: relayURL,
                             apnsToken: latestTokenHex,
                             apnsEnv: env
                         )
-                        var updated = active
-                        let refreshed = ActivePushRegistration(
-                            deviceID: updated.deviceID,
-                            bindingID: updated.bindingID,
-                            endpoint: updated.endpoint,
-                            apiKey: updated.apiKey,
-                            endpointFingerprint: updated.endpointFingerprint,
-                            tokenHash: tokenHash,
-                            apnsEnv: updated.apnsEnv,
-                            locale: updated.locale,
-                            confirmedAt: now(),
-                            inboxContractVersion: updated.inboxContractVersion,
-                            registrationAttemptID: updated.registrationAttemptID,
-                            transportMode: updated.transportMode,
-                            relayGrantID: updated.relayGrantID,
-                            relayClientGrantKey: updated.relayClientGrantKey,
-                            relayOrigin: updated.relayOrigin,
-                            relayLastRefreshedAt: updated.relayLastRefreshedAt
-                        )
-                        updated = refreshed
-                        try saveActiveRegistration(updated)
-                        lastRegistrationError = nil
+                        guard isRelayActiveRegistrationStillCurrent(
+                            capturedEpoch: capturedEpoch,
+                            fingerprint: fingerprint,
+                            expectedBindingID: active.bindingID,
+                            expectedGrantID: activeGrantID
+                        ) else {
+                            continue
+                        }
+                        if resp.confirmsGrantActive(activeGrantID) {
+                            let refreshed = ActivePushRegistration(
+                                deviceID: active.deviceID,
+                                bindingID: active.bindingID,
+                                endpoint: active.endpoint,
+                                apiKey: active.apiKey,
+                                endpointFingerprint: active.endpointFingerprint,
+                                tokenHash: tokenHash,
+                                apnsEnv: active.apnsEnv,
+                                locale: active.locale,
+                                confirmedAt: now(),
+                                inboxContractVersion: active.inboxContractVersion,
+                                registrationAttemptID: active.registrationAttemptID,
+                                transportMode: active.transportMode,
+                                relayGrantID: active.relayGrantID,
+                                relayClientGrantKey: active.relayClientGrantKey,
+                                relayOrigin: active.relayOrigin,
+                                relayLastRefreshedAt: active.relayLastRefreshedAt
+                            )
+                            try saveActiveRegistration(refreshed)
+                            lastRegistrationError = nil
+                            continue
+                        }
+                        mustReissueRelayGrant = true
+                    } catch let relayErr as RelayPushError where relayErr.isTerminalGrantError {
+                        guard isRelayActiveRegistrationStillCurrent(
+                            capturedEpoch: capturedEpoch,
+                            fingerprint: fingerprint,
+                            expectedBindingID: active.bindingID,
+                            expectedGrantID: activeGrantID
+                        ) else {
+                            continue
+                        }
+                        mustReissueRelayGrant = true
                     } catch {
                         lastRegistrationError = error.localizedDescription
+                        continue
                     }
-                    continue
-                }
-                let lastRefresh = active.relayLastRefreshedAt ?? active.confirmedAt
-                if currentNow.timeIntervalSince(lastRefresh) >= RelayPushConstants.refreshInterval {
-                    do {
-                        try await relayCoordinator.refreshGrant(
-                            relayURL: relayURL,
-                            grantID: activeGrantID,
-                            apnsToken: latestTokenHex,
-                            inboxContractVersion: contractVersion
-                        )
-                        let refreshed = ActivePushRegistration(
-                            deviceID: active.deviceID,
-                            bindingID: active.bindingID,
-                            endpoint: active.endpoint,
-                            apiKey: active.apiKey,
-                            endpointFingerprint: active.endpointFingerprint,
-                            tokenHash: active.tokenHash,
-                            apnsEnv: active.apnsEnv,
-                            locale: active.locale,
-                            confirmedAt: now(),
-                            inboxContractVersion: active.inboxContractVersion,
-                            registrationAttemptID: active.registrationAttemptID,
-                            transportMode: active.transportMode,
-                            relayGrantID: active.relayGrantID,
-                            relayClientGrantKey: active.relayClientGrantKey,
-                            relayOrigin: active.relayOrigin,
-                            relayLastRefreshedAt: now()
-                        )
-                        try saveActiveRegistration(refreshed)
-                        lastRegistrationError = nil
-                    } catch {
-                        lastRegistrationError = error.localizedDescription
+                } else {
+                    let lastRefresh = active.relayLastRefreshedAt ?? active.confirmedAt
+                    if currentNow.timeIntervalSince(lastRefresh) >= RelayPushConstants.refreshInterval {
+                        do {
+                            try await relayCoordinator.refreshGrant(
+                                relayURL: relayURL,
+                                grantID: activeGrantID,
+                                apnsToken: latestTokenHex,
+                                inboxContractVersion: contractVersion
+                            )
+                            guard isRelayActiveRegistrationStillCurrent(
+                                capturedEpoch: capturedEpoch,
+                                fingerprint: fingerprint,
+                                expectedBindingID: active.bindingID,
+                                expectedGrantID: activeGrantID
+                            ) else {
+                                continue
+                            }
+                            let refreshed = ActivePushRegistration(
+                                deviceID: active.deviceID,
+                                bindingID: active.bindingID,
+                                endpoint: active.endpoint,
+                                apiKey: active.apiKey,
+                                endpointFingerprint: active.endpointFingerprint,
+                                tokenHash: active.tokenHash,
+                                apnsEnv: active.apnsEnv,
+                                locale: active.locale,
+                                confirmedAt: now(),
+                                inboxContractVersion: active.inboxContractVersion,
+                                registrationAttemptID: active.registrationAttemptID,
+                                transportMode: active.transportMode,
+                                relayGrantID: active.relayGrantID,
+                                relayClientGrantKey: active.relayClientGrantKey,
+                                relayOrigin: active.relayOrigin,
+                                relayLastRefreshedAt: now()
+                            )
+                            try saveActiveRegistration(refreshed)
+                            lastRegistrationError = nil
+                            continue
+                        } catch let relayErr as RelayPushError where relayErr.isTerminalGrantError {
+                            guard isRelayActiveRegistrationStillCurrent(
+                                capturedEpoch: capturedEpoch,
+                                fingerprint: fingerprint,
+                                expectedBindingID: active.bindingID,
+                                expectedGrantID: activeGrantID
+                            ) else {
+                                continue
+                            }
+                            mustReissueRelayGrant = true
+                        } catch {
+                            lastRegistrationError = error.localizedDescription
+                            continue
+                        }
+                    } else {
+                        continue
                     }
                 }
-                continue
+
+                if mustReissueRelayGrant {
+                    guard isRelayActiveRegistrationStillCurrent(
+                        capturedEpoch: capturedEpoch,
+                        fingerprint: fingerprint,
+                        expectedBindingID: active.bindingID,
+                        expectedGrantID: activeGrantID
+                    ) else {
+                        continue
+                    }
+                    try? saveActiveRegistration(nil)
+                    if let oldClientKey = active.relayClientGrantKey {
+                        relayCoordinator.clearPendingGrantAttempt(forFingerprint: fingerprint, clientGrantKey: oldClientKey)
+                    }
+                    // Fall through to mint a fresh Relay grant and re-register on the self-hosted server.
+                }
             }
 
             let attempt: PendingPushRegistrationAttempt
@@ -1282,6 +1346,26 @@ final class PushRegistrationManager {
             onRegistrationWait?()
             await pending.task.value
         }
+    }
+
+    private func isRelayActiveRegistrationStillCurrent(
+        capturedEpoch: UUID,
+        fingerprint: String,
+        expectedBindingID: String,
+        expectedGrantID: String
+    ) -> Bool {
+        guard capturedEpoch == registrationEpoch,
+              isPushEnabled(),
+              (try? configSnapshot())?.fingerprint == fingerprint,
+              let live = loadActiveRegistration(),
+              live.endpointFingerprint == fingerprint,
+              live.transportMode == "relay",
+              live.relayGrantID == expectedGrantID,
+              live.bindingID == expectedBindingID
+        else {
+            return false
+        }
+        return true
     }
 
     private func reconcileActiveRegistration() {

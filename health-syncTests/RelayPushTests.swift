@@ -349,7 +349,7 @@ final class RelayPushTests: XCTestCase {
             }
             if method == "PUT", path.hasSuffix("/v1/attest/token") {
                 tokenUpdateCount += 1
-                return (200, Data(#"{"updated":1}"#.utf8))
+                return (200, Data(#"{"updated":1,"active_grant_ids":["\#(fixedGrantID)"]}"#.utf8))
             }
             if method == "DELETE", path.hasSuffix("/v1/grants/\(fixedGrantID)") {
                 revokedGrantIDs.append(fixedGrantID)
@@ -503,5 +503,410 @@ final class RelayPushTests: XCTestCase {
         XCTAssertEqual(cancelledClientGrantKeys, [capturedClientGrantKey!])
         XCTAssertTrue(coordinator.loadPendingGrantAttempts().isEmpty)
         XCTAssertTrue(coordinator.loadPendingRevocations().isEmpty)
+    }
+
+    func testLateTokenRotationResponseCannotResurrectDisabledOrSwitchedProfile() async {
+        for switchProfile in [false, true] {
+            let kc = InMemoryRelayKeychain()
+            let attest = MockAppAttestProvider()
+            let relayTransport = MockRelayHTTPTransport()
+            let initialGrantID = UUID().uuidString.lowercased()
+            let secondServerURL = URL(string: "https://second-server.example.com")!
+            var currentServerURL = serverURL
+            var pushEnabled = true
+
+            var rotationStarted: CheckedContinuation<Void, Never>?
+            var releaseRotation: CheckedContinuation<(Int, Data), Error>?
+
+            relayTransport.handler = { method, url, _, _ in
+                let path = url.path
+                if path.hasSuffix("/v1/attest/challenge") {
+                    let data = try JSONEncoder().encode(RelayChallengeResponse(
+                        challengeID: UUID().uuidString.lowercased(),
+                        nonce: "nonce-\(UUID().uuidString)",
+                        expiresAt: nil
+                    ))
+                    return (200, data)
+                }
+                if path.hasSuffix("/v1/attest/register") {
+                    return (200, Data(#"{"key_id":"ok"}"#.utf8))
+                }
+                if method == "POST", path.hasSuffix("/v1/grants") {
+                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(grantID: initialGrantID, expiresAt: nil))
+                    return (200, resp)
+                }
+                if method == "PUT", path.hasSuffix("/v1/attest/token") {
+                    return try await withCheckedThrowingContinuation { cont in
+                        releaseRotation = cont
+                        rotationStarted?.resume()
+                        rotationStarted = nil
+                    }
+                }
+                if method == "DELETE" {
+                    return (200, Data(#"{"revoked":true}"#.utf8))
+                }
+                return (404, Data())
+            }
+
+            let coordinator = RelayGrantCoordinator(keychain: kc, appAttest: attest, transport: relayTransport)
+            let mgr = PushRegistrationManager(
+                keychain: kc,
+                registerCall: { req, _, _ in
+                    PushDeviceRegisterResponse(
+                        deviceID: req.deviceID,
+                        bindingID: req.bindingID ?? UUID().uuidString.lowercased(),
+                        enabled: true,
+                        registrationVersion: 1,
+                        apnsEnv: req.apnsEnv,
+                        inboxContractVersion: 2
+                    )
+                },
+                deleteCall: { _, _, _, _ in },
+                cancelAttemptCall: { _, _, _, _ in },
+                fetchPreferencesCall: { url, _ in
+                    if url == secondServerURL {
+                        return self.makePreferences(apnsPushEnabled: false, apnsPushConfigured: false, apnsTransportMode: "none")
+                    }
+                    return self.makePreferences(
+                        apnsPushEnabled: true,
+                        apnsPushConfigured: true,
+                        apnsTransportMode: "relay",
+                        apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                    )
+                },
+                relayCoordinator: coordinator,
+                configSnapshot: {
+                    SyncConfiguration(
+                        endpoint: currentServerURL,
+                        apiKey: self.apiKey,
+                        fingerprint: UserDefaultsSyncConfiguration.fingerprint(endpoint: currentServerURL, apiKey: self.apiKey),
+                        metricGroups: [.vitals],
+                        workoutsEnabled: true,
+                        backgroundEnabled: true,
+                        syncOnLaunch: true,
+                        interval: 900,
+                        workoutHRTimeline: true
+                    )
+                },
+                isPushEnabled: { pushEnabled },
+                resolveAPNsEnv: { "production" },
+                resetBadge: {}
+            )
+
+            await mgr.syncRegistration(tokenHex: tokenA)
+            XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, initialGrantID)
+
+            // Start token rotation (A -> B) and pause while PUT /v1/attest/token is in flight.
+            let rotationTask = Task {
+                await mgr.syncRegistration(tokenHex: tokenB)
+            }
+            await withCheckedContinuation { cont in
+                if releaseRotation != nil {
+                    cont.resume()
+                } else {
+                    rotationStarted = cont
+                }
+            }
+
+            // While PUT /v1/attest/token is suspended, disable pushes OR switch profile.
+            if switchProfile {
+                currentServerURL = secondServerURL
+                await mgr.handleConfigurationChanged(pushEnabled: true)
+            } else {
+                pushEnabled = false
+                await mgr.disablePushNotifications()
+            }
+
+            // Release late 200 response from Relay -> MUST NOT resurrect old registration in Keychain!
+            releaseRotation?.resume(returning: (200, Data(#"{"updated":1,"active_grant_ids":["\#(initialGrantID)"]}"#.utf8)))
+            releaseRotation = nil
+            await rotationTask.value
+
+            XCTAssertNil(mgr.loadActiveRegistration(), "Late token rotation response resurrected stale registration (switchProfile=\(switchProfile))")
+        }
+    }
+
+    func testLateGrantRefreshResponseCannotResurrectDisabledOrSwitchedProfile() async {
+        for switchProfile in [false, true] {
+            let kc = InMemoryRelayKeychain()
+            let attest = MockAppAttestProvider()
+            let relayTransport = MockRelayHTTPTransport()
+            let initialGrantID = UUID().uuidString.lowercased()
+            let secondServerURL = URL(string: "https://second-refresh.example.com")!
+            var currentServerURL = serverURL
+            var pushEnabled = true
+            var currentNow = Date(timeIntervalSince1970: 1_800_000_000)
+
+            var refreshStarted: CheckedContinuation<Void, Never>?
+            var releaseRefresh: CheckedContinuation<(Int, Data), Error>?
+
+            relayTransport.handler = { method, url, _, _ in
+                let path = url.path
+                if path.hasSuffix("/v1/attest/challenge") {
+                    let data = try JSONEncoder().encode(RelayChallengeResponse(
+                        challengeID: UUID().uuidString.lowercased(),
+                        nonce: "nonce-\(UUID().uuidString)",
+                        expiresAt: nil
+                    ))
+                    return (200, data)
+                }
+                if path.hasSuffix("/v1/attest/register") {
+                    return (200, Data(#"{"key_id":"ok"}"#.utf8))
+                }
+                if method == "POST", path.hasSuffix("/v1/grants") {
+                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(grantID: initialGrantID, expiresAt: nil))
+                    return (200, resp)
+                }
+                if method == "PUT", path.hasSuffix("/refresh") {
+                    return try await withCheckedThrowingContinuation { cont in
+                        releaseRefresh = cont
+                        refreshStarted?.resume()
+                        refreshStarted = nil
+                    }
+                }
+                if method == "DELETE" {
+                    return (200, Data(#"{"revoked":true}"#.utf8))
+                }
+                return (404, Data())
+            }
+
+            let coordinator = RelayGrantCoordinator(keychain: kc, appAttest: attest, transport: relayTransport, now: { currentNow })
+            let mgr = PushRegistrationManager(
+                keychain: kc,
+                registerCall: { req, _, _ in
+                    PushDeviceRegisterResponse(
+                        deviceID: req.deviceID,
+                        bindingID: req.bindingID ?? UUID().uuidString.lowercased(),
+                        enabled: true,
+                        registrationVersion: 1,
+                        apnsEnv: req.apnsEnv,
+                        inboxContractVersion: 2
+                    )
+                },
+                deleteCall: { _, _, _, _ in },
+                cancelAttemptCall: { _, _, _, _ in },
+                fetchPreferencesCall: { url, _ in
+                    if url == secondServerURL {
+                        return self.makePreferences(apnsPushEnabled: false, apnsPushConfigured: false, apnsTransportMode: "none")
+                    }
+                    return self.makePreferences(
+                        apnsPushEnabled: true,
+                        apnsPushConfigured: true,
+                        apnsTransportMode: "relay",
+                        apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                    )
+                },
+                relayCoordinator: coordinator,
+                configSnapshot: {
+                    SyncConfiguration(
+                        endpoint: currentServerURL,
+                        apiKey: self.apiKey,
+                        fingerprint: UserDefaultsSyncConfiguration.fingerprint(endpoint: currentServerURL, apiKey: self.apiKey),
+                        metricGroups: [.vitals],
+                        workoutsEnabled: true,
+                        backgroundEnabled: true,
+                        syncOnLaunch: true,
+                        interval: 900,
+                        workoutHRTimeline: true
+                    )
+                },
+                isPushEnabled: { pushEnabled },
+                resolveAPNsEnv: { "production" },
+                now: { currentNow },
+                resetBadge: {}
+            )
+
+            await mgr.syncRegistration(tokenHex: tokenA)
+            XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, initialGrantID)
+
+            // Advance 8 days to trigger grant refresh.
+            currentNow = currentNow.addingTimeInterval(8 * 24 * 60 * 60)
+            let refreshTask = Task {
+                await mgr.syncRegistration(tokenHex: tokenA)
+            }
+            await withCheckedContinuation { cont in
+                if releaseRefresh != nil {
+                    cont.resume()
+                } else {
+                    refreshStarted = cont
+                }
+            }
+
+            if switchProfile {
+                currentServerURL = secondServerURL
+                await mgr.handleConfigurationChanged(pushEnabled: true)
+            } else {
+                pushEnabled = false
+                await mgr.disablePushNotifications()
+            }
+
+            releaseRefresh?.resume(returning: (200, Data(#"{"grant_id":"\#(initialGrantID)"}"#.utf8)))
+            releaseRefresh = nil
+            await refreshTask.value
+
+            XCTAssertNil(mgr.loadActiveRegistration(), "Late grant refresh response resurrected stale registration (switchProfile=\(switchProfile))")
+        }
+    }
+
+    func testExpiredOrInvalidatedGrantDuringRefreshMintsFreshGrantAndReregisters() async {
+        let kc = InMemoryRelayKeychain()
+        let attest = MockAppAttestProvider()
+        let relayTransport = MockRelayHTTPTransport()
+        let oldGrantID = UUID().uuidString.lowercased()
+        let newGrantID = UUID().uuidString.lowercased()
+        var currentNow = Date(timeIntervalSince1970: 1_800_000_000)
+        var grantCreates = 0
+
+        relayTransport.handler = { method, url, _, _ in
+            let path = url.path
+            if path.hasSuffix("/v1/attest/challenge") {
+                let data = try JSONEncoder().encode(RelayChallengeResponse(
+                    challengeID: UUID().uuidString.lowercased(),
+                    nonce: "nonce-\(UUID().uuidString)",
+                    expiresAt: nil
+                ))
+                return (200, data)
+            }
+            if path.hasSuffix("/v1/attest/register") {
+                return (200, Data(#"{"key_id":"ok"}"#.utf8))
+            }
+            if method == "POST", path.hasSuffix("/v1/grants") {
+                grantCreates += 1
+                let gid = grantCreates == 1 ? oldGrantID : newGrantID
+                let resp = try JSONEncoder().encode(RelayGrantCreateResponse(grantID: gid, expiresAt: nil))
+                return (200, resp)
+            }
+            if method == "PUT", path.hasSuffix("/v1/grants/\(oldGrantID)/refresh") {
+                return (410, Data(#"{"error":"grant expired, revoked, or invalidated"}"#.utf8))
+            }
+            return (404, Data())
+        }
+
+        let coordinator = RelayGrantCoordinator(keychain: kc, appAttest: attest, transport: relayTransport, now: { currentNow })
+        var serverRegs: [PushDeviceRegisterRequest] = []
+        let mgr = PushRegistrationManager(
+            keychain: kc,
+            registerCall: { req, _, _ in
+                serverRegs.append(req)
+                return PushDeviceRegisterResponse(
+                    deviceID: req.deviceID,
+                    bindingID: req.bindingID ?? UUID().uuidString.lowercased(),
+                    enabled: true,
+                    registrationVersion: Int64(serverRegs.count),
+                    apnsEnv: req.apnsEnv,
+                    inboxContractVersion: 2
+                )
+            },
+            deleteCall: { _, _, _, _ in },
+            cancelAttemptCall: { _, _, _, _ in },
+            fetchPreferencesCall: { _, _ in
+                self.makePreferences(
+                    apnsPushEnabled: true,
+                    apnsPushConfigured: true,
+                    apnsTransportMode: "relay",
+                    apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                )
+            },
+            relayCoordinator: coordinator,
+            configSnapshot: { self.makeConfig() },
+            isPushEnabled: { true },
+            resolveAPNsEnv: { "production" },
+            now: { currentNow },
+            resetBadge: {}
+        )
+
+        await mgr.syncRegistration(tokenHex: tokenA)
+        XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, oldGrantID)
+        XCTAssertEqual(serverRegs.count, 1)
+
+        // Advance 8 days -> refresh returns 410 Gone -> iOS must mint newGrantID and re-register on self-hosted server.
+        currentNow = currentNow.addingTimeInterval(8 * 24 * 60 * 60)
+        await mgr.syncRegistration(tokenHex: tokenA)
+        XCTAssertEqual(grantCreates, 2)
+        XCTAssertEqual(serverRegs.count, 2)
+        XCTAssertEqual(serverRegs[1].relayGrantID, newGrantID)
+        XCTAssertNotEqual(serverRegs[1].bindingID, serverRegs[0].bindingID)
+        XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, newGrantID)
+    }
+
+    func testTokenRotationWithUpdatedZeroMintsFreshGrantAndReregisters() async {
+        for includeActiveIDsField in [true, false] {
+            let kc = InMemoryRelayKeychain()
+            let attest = MockAppAttestProvider()
+            let relayTransport = MockRelayHTTPTransport()
+            let oldGrantID = UUID().uuidString.lowercased()
+            let newGrantID = UUID().uuidString.lowercased()
+            var grantCreates = 0
+
+            relayTransport.handler = { method, url, _, _ in
+                let path = url.path
+                if path.hasSuffix("/v1/attest/challenge") {
+                    let data = try JSONEncoder().encode(RelayChallengeResponse(
+                        challengeID: UUID().uuidString.lowercased(),
+                        nonce: "nonce-\(UUID().uuidString)",
+                        expiresAt: nil
+                    ))
+                    return (200, data)
+                }
+                if path.hasSuffix("/v1/attest/register") {
+                    return (200, Data(#"{"key_id":"ok"}"#.utf8))
+                }
+                if method == "POST", path.hasSuffix("/v1/grants") {
+                    grantCreates += 1
+                    let gid = grantCreates == 1 ? oldGrantID : newGrantID
+                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(grantID: gid, expiresAt: nil))
+                    return (200, resp)
+                }
+                if method == "PUT", path.hasSuffix("/v1/attest/token") {
+                    if includeActiveIDsField {
+                        return (200, Data(#"{"updated":0,"active_grant_ids":[]}"#.utf8))
+                    }
+                    return (200, Data(#"{"updated":0}"#.utf8))
+                }
+                return (404, Data())
+            }
+
+            let coordinator = RelayGrantCoordinator(keychain: kc, appAttest: attest, transport: relayTransport)
+            var serverRegs: [PushDeviceRegisterRequest] = []
+            let mgr = PushRegistrationManager(
+                keychain: kc,
+                registerCall: { req, _, _ in
+                    serverRegs.append(req)
+                    return PushDeviceRegisterResponse(
+                        deviceID: req.deviceID,
+                        bindingID: req.bindingID ?? UUID().uuidString.lowercased(),
+                        enabled: true,
+                        registrationVersion: Int64(serverRegs.count),
+                        apnsEnv: req.apnsEnv,
+                        inboxContractVersion: 2
+                    )
+                },
+                deleteCall: { _, _, _, _ in },
+                cancelAttemptCall: { _, _, _, _ in },
+                fetchPreferencesCall: { _, _ in
+                    self.makePreferences(
+                        apnsPushEnabled: true,
+                        apnsPushConfigured: true,
+                        apnsTransportMode: "relay",
+                        apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                    )
+                },
+                relayCoordinator: coordinator,
+                configSnapshot: { self.makeConfig() },
+                isPushEnabled: { true },
+                resolveAPNsEnv: { "production" },
+                resetBadge: {}
+            )
+
+            await mgr.syncRegistration(tokenHex: tokenA)
+            XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, oldGrantID)
+
+            // Rotating token A -> B receives updated: 0 (grant dead on Relay) -> iOS must mint newGrantID and re-register!
+            await mgr.syncRegistration(tokenHex: tokenB)
+            XCTAssertEqual(grantCreates, 2, "Expected fresh grant mint on updated=0 (includeActiveIDsField=\(includeActiveIDsField))")
+            XCTAssertEqual(serverRegs.count, 2)
+            XCTAssertEqual(serverRegs[1].relayGrantID, newGrantID)
+            XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, newGrantID)
+        }
     }
 }

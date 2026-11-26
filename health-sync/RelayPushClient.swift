@@ -28,6 +28,15 @@ enum RelayPushError: Error, Equatable, LocalizedError {
     case invalidResponse
     case secretGenerationFailed
 
+    var isTerminalGrantError: Bool {
+        switch self {
+        case .http(let code, _):
+            return code == 404 || code == 409 || code == 410
+        default:
+            return false
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case .untrustedRelayOrigin:
@@ -101,6 +110,23 @@ struct RelayGrantCreateResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case grantID = "grant_id"
         case expiresAt = "expires_at"
+    }
+}
+
+struct RelayUpdateDeviceTokenResponse: Decodable, Equatable, Sendable {
+    let updated: Int
+    let activeGrantIDs: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case updated
+        case activeGrantIDs = "active_grant_ids"
+    }
+
+    func confirmsGrantActive(_ grantID: String) -> Bool {
+        if let activeGrantIDs {
+            return activeGrantIDs.contains { $0.caseInsensitiveCompare(grantID) == .orderedSame }
+        }
+        return updated > 0
     }
 }
 
@@ -469,7 +495,7 @@ final class RelayGrantCoordinator {
         return (updated, decoded.grantID)
     }
 
-    func updateDeviceToken(relayURL: URL, apnsToken: String, apnsEnv: String) async throws {
+    func updateDeviceToken(relayURL: URL, apnsToken: String, apnsEnv: String) async throws -> RelayUpdateDeviceTokenResponse {
         let keyID = try await ensureRegisteredAttestKey(relayURL: relayURL)
         let challenge = try await fetchChallenge(relayURL: relayURL, keyID: keyID, op: RelayPushConstants.opDeviceUpdateToken)
         let payload = RelayUpdateDeviceTokenBody(
@@ -496,6 +522,7 @@ final class RelayGrantCoordinator {
         guard (200...299).contains(status) else {
             throw RelayPushError.http(status, String(data: data, encoding: .utf8) ?? "")
         }
+        return try JSONDecoder().decode(RelayUpdateDeviceTokenResponse.self, from: data)
     }
 
     func refreshGrant(
