@@ -1,4 +1,5 @@
 import CryptoKit
+import DeviceCheck
 import Foundation
 import Security
 import XCTest
@@ -9,6 +10,7 @@ private final class MockAppAttestProvider: AppAttestProviding, @unchecked Sendab
     var generatedKeyID: String = Data(repeating: 0x42, count: 32).base64EncodedString()
     var attestCalls: Int = 0
     var assertionCalls: Int = 0
+    var invalidAssertionKeyIDs: Set<String> = []
 
     func generateKey() async throws -> String {
         generatedKeyID
@@ -20,6 +22,9 @@ private final class MockAppAttestProvider: AppAttestProviding, @unchecked Sendab
     }
 
     func generateAssertion(_ keyID: String, clientDataHash: Data) async throws -> Data {
+        if invalidAssertionKeyIDs.contains(keyID) {
+            throw NSError(domain: DCError.errorDomain, code: DCError.Code.invalidKey.rawValue)
+        }
         assertionCalls += 1
         return Data("mock-assertion-\(assertionCalls)".utf8)
     }
@@ -163,6 +168,77 @@ final class RelayPushTests: XCTestCase {
             telegramConfigured: false,
             activePushDevicesCount: 0
         )
+    }
+
+    func testRestoredRegistrationReattestsWhenTheInstallationKeyIsInvalid() async {
+        let keychain = InMemoryRelayKeychain()
+        let firstAttest = MockAppAttestProvider()
+        let replacementAttest = MockAppAttestProvider()
+        replacementAttest.generatedKeyID = Data(repeating: 0x24, count: 32).base64EncodedString()
+        replacementAttest.invalidAssertionKeyIDs = [firstAttest.generatedKeyID]
+        let relay = MockRelayHTTPTransport()
+        let firstGrantID = UUID().uuidString.lowercased()
+        let replacementGrantID = UUID().uuidString.lowercased()
+        let token = tokenA
+        var authenticatedGrantKeys: [String] = []
+        var registeredGrants: [String] = []
+        relay.handler = { method, url, _, headers in
+            if url.path.hasSuffix("/v1/attest/challenge") {
+                let challenge = RelayChallengeResponse(
+                    challengeID: UUID().uuidString.lowercased(), nonce: "test-nonce", expiresAt: nil
+                )
+                return (200, try JSONEncoder().encode(challenge))
+            }
+            if url.path.hasSuffix("/v1/attest/register") {
+                return (200, Data("{}".utf8))
+            }
+            if method == "POST", url.path.hasSuffix("/v1/grants") {
+                let key = headers["X-App-Attest-Key-ID"] ?? ""
+                authenticatedGrantKeys.append(key)
+                let id = key == firstAttest.generatedKeyID ? firstGrantID : replacementGrantID
+                return (200, try JSONEncoder().encode(RelayGrantCreateResponse(
+                    grantID: id, tokenHash: RelayGrantCoordinator.sha256Hex(token)
+                )))
+            }
+            XCTFail("Unexpected request to Relay: \(method) \(url.path)")
+            return (404, Data())
+        }
+
+        func makeManager(_ provider: MockAppAttestProvider) -> PushRegistrationManager {
+            PushRegistrationManager(
+                keychain: keychain,
+                registerCall: { request, _, _ in
+                    registeredGrants.append(try XCTUnwrap(request.relayGrantID))
+                    return PushDeviceRegisterResponse(
+                        deviceID: request.deviceID, bindingID: try XCTUnwrap(request.bindingID),
+                        enabled: true, registrationVersion: 1, apnsEnv: request.apnsEnv
+                    )
+                },
+                deleteCall: { _, _, _, _ in },
+                cancelAttemptCall: { _, _, _, _ in },
+                fetchPreferencesCall: { _, _ in
+                    self.makePreferences(
+                        apnsPushEnabled: true, apnsPushConfigured: true, apnsTransportMode: "relay",
+                        apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                    )
+                },
+                relayCoordinator: RelayGrantCoordinator(keychain: keychain, appAttest: provider, transport: relay),
+                configSnapshot: { self.makeConfig() },
+                isPushEnabled: { true },
+                resolveAPNsEnv: { "production" },
+                resetBadge: {}
+            )
+        }
+
+        let installed = makeManager(firstAttest)
+        await installed.syncRegistration(tokenHex: token)
+        XCTAssertEqual(installed.loadActiveRegistration()?.relayGrantID, firstGrantID)
+        let reinstalled = makeManager(replacementAttest)
+        await reinstalled.syncRegistration(tokenHex: token)
+        XCTAssertEqual(reinstalled.loadActiveRegistration()?.relayGrantID, replacementGrantID)
+        XCTAssertEqual(reinstalled.loadActiveRegistration()?.relayAttestKeyID, replacementAttest.generatedKeyID)
+        XCTAssertEqual(authenticatedGrantKeys, [firstAttest.generatedKeyID, replacementAttest.generatedKeyID])
+        XCTAssertEqual(registeredGrants, [firstGrantID, replacementGrantID])
     }
 
     func testReplacingRelayGrantKeepsNewGrantWhenRegistrationJournalCleanupFails() async {

@@ -824,7 +824,8 @@ final class PushRegistrationManager {
                     }
                 } else {
                     let lastRefresh = active.relayLastRefreshedAt ?? active.confirmedAt
-                    if currentNow.timeIntervalSince(lastRefresh) >= RelayPushConstants.refreshInterval {
+                    if relayCoordinator.requiresGrantValidation(activeGrantID) ||
+                        currentNow.timeIntervalSince(lastRefresh) >= RelayPushConstants.refreshInterval {
                         do {
                             try await relayCoordinator.refreshGrant(
                                 relayURL: relayURL,

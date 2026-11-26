@@ -24,12 +24,15 @@ enum RelayPushError: Error, Equatable, LocalizedError {
     case untrustedRelayOrigin
     case redirectForbidden
     case appAttestUnsupported
+    case invalidAttestKey
     case http(Int, String)
     case invalidResponse
     case secretGenerationFailed
 
     var isTerminalGrantError: Bool {
         switch self {
+        case .invalidAttestKey:
+            return true
         case .http(let code, _):
             return code == 404 || code == 409 || code == 410
         default:
@@ -45,6 +48,8 @@ enum RelayPushError: Error, Equatable, LocalizedError {
             return String(localized: "Redirects are not allowed for APNs relay requests")
         case .appAttestUnsupported:
             return String(localized: "App Attest is not supported on this device")
+        case .invalidAttestKey:
+            return "The App Attest key is no longer valid"
         case .http(let code, let message):
             return message.isEmpty ? "Relay HTTP \(code)" : "Relay HTTP \(code): \(message)"
         case .invalidResponse:
@@ -293,6 +298,7 @@ final class RelayGrantCoordinator {
     private let trustedOrigins: Set<String>
     private let now: () -> Date
     private var keyRegistrationTasks: [String: Task<String, Error>] = [:]
+    private var lastValidatedGrantID: String?
 
     init(
         keychain: KeychainAccess? = nil,
@@ -443,6 +449,29 @@ final class RelayGrantCoordinator {
         apnsEnv: String,
         inboxContractVersion: Int
     ) async throws -> (attempt: PendingRelayGrantAttempt, grantID: String) {
+        do {
+            return try await obtainGrantUsingCurrentKey(
+                relayURL: relayURL, endpointFingerprint: endpointFingerprint,
+                apnsToken: apnsToken, apnsEnv: apnsEnv, inboxContractVersion: inboxContractVersion
+            )
+        } catch RelayPushError.invalidAttestKey {
+            // Installation keys can be lost while their Keychain IDs survive.
+            // Retry with a new attestation, once, through the same grant journal.
+            try Task.checkCancellation()
+            return try await obtainGrantUsingCurrentKey(
+                relayURL: relayURL, endpointFingerprint: endpointFingerprint,
+                apnsToken: apnsToken, apnsEnv: apnsEnv, inboxContractVersion: inboxContractVersion
+            )
+        }
+    }
+
+    private func obtainGrantUsingCurrentKey(
+        relayURL: URL,
+        endpointFingerprint: String,
+        apnsToken: String,
+        apnsEnv: String,
+        inboxContractVersion: Int
+    ) async throws -> (attempt: PendingRelayGrantAttempt, grantID: String) {
         let keyID = try await ensureRegisteredAttestKey(relayURL: relayURL)
         let origin = relayURL.absoluteString
         let currentTokenHash = Self.sha256Hex(apnsToken)
@@ -475,7 +504,7 @@ final class RelayGrantCoordinator {
            existing.relayOrigin == origin,
            existing.apnsEnv == apnsEnv,
            existing.inboxContractVersion == inboxContractVersion,
-           existing.attestKeyID == nil || existing.attestKeyID == keyID {
+           existing.attestKeyID == keyID {
             attempt = existing
         } else {
             if let old = attempts[endpointFingerprint] {
@@ -497,7 +526,7 @@ final class RelayGrantCoordinator {
                 nearOrPastExpiry = currentNow.timeIntervalSince(attempt.createdAt) >= RelayPushConstants.refreshInterval
             }
 
-            if !tokenMismatch && !nearOrPastExpiry {
+            if !tokenMismatch && !nearOrPastExpiry && !requiresGrantValidation(existingGrantID) {
                 return (attempt, existingGrantID)
             }
 
@@ -518,7 +547,7 @@ final class RelayGrantCoordinator {
                     try savePendingGrantAttempts(latestAttempts)
                 }
                 return (attempt, existingGrantID)
-            } catch let err as RelayPushError where err.isTerminalGrantError {
+            } catch let err as RelayPushError where err.isTerminalGrantError && err != .invalidAttestKey {
                 // Pending grant expired, was revoked, or was invalidated while the
                 // self-hosted server was unreachable: drop it and mint a fresh grant.
                 attempts = try readPendingGrantAttempts()
@@ -546,7 +575,7 @@ final class RelayGrantCoordinator {
             apnsEnv: apnsEnv
         )
         let rawBody = try JSONEncoder().encode(payload)
-        let assertion = try await appAttest.generateAssertion(keyID, clientDataHash: Data(SHA256.hash(data: rawBody)))
+        let assertion = try await signAssertion(keyID: keyID, origin: relayURL.absoluteString, rawBody: rawBody)
         let url = relayURL.appendingPathComponent("v1/grants")
         let (status, data) = try await transport.send(
             method: "POST",
@@ -591,7 +620,12 @@ final class RelayGrantCoordinator {
             latestAttempts[endpointFingerprint] = updated
             try savePendingGrantAttempts(latestAttempts)
         }
+        lastValidatedGrantID = decoded.grantID
         return (updated, decoded.grantID)
+    }
+
+    func requiresGrantValidation(_ grantID: String) -> Bool {
+        grantID != lastValidatedGrantID
     }
 
     func updateDeviceToken(relayURL: URL, apnsToken: String, apnsEnv: String) async throws -> RelayUpdateDeviceTokenResponse {
@@ -607,7 +641,7 @@ final class RelayGrantCoordinator {
             apnsEnv: apnsEnv
         )
         let rawBody = try JSONEncoder().encode(payload)
-        let assertion = try await appAttest.generateAssertion(keyID, clientDataHash: Data(SHA256.hash(data: rawBody)))
+        let assertion = try await signAssertion(keyID: keyID, origin: relayURL.absoluteString, rawBody: rawBody)
         let url = relayURL.appendingPathComponent("v1/attest/token")
         let (status, data) = try await transport.send(
             method: "PUT",
@@ -643,7 +677,7 @@ final class RelayGrantCoordinator {
             inboxContractVersion: inboxContractVersion
         )
         let rawBody = try JSONEncoder().encode(payload)
-        let assertion = try await appAttest.generateAssertion(keyID, clientDataHash: Data(SHA256.hash(data: rawBody)))
+        let assertion = try await signAssertion(keyID: keyID, origin: relayURL.absoluteString, rawBody: rawBody)
         let url = relayURL.appendingPathComponent("v1/grants/\(grantID)/refresh")
         let (status, data) = try await transport.send(
             method: "PUT",
@@ -657,6 +691,7 @@ final class RelayGrantCoordinator {
         guard (200...299).contains(status) else {
             throw RelayPushError.http(status, String(data: data, encoding: .utf8) ?? "")
         }
+        lastValidatedGrantID = grantID
         if let decoded = try? JSONDecoder().decode(RelayGrantCreateResponse.self, from: data) {
             return Self.parseISO8601Date(decoded.expiresAt)
         }
@@ -701,7 +736,7 @@ final class RelayGrantCoordinator {
                     nonce: challenge.nonce
                 )
                 let rawBody = try JSONEncoder().encode(payload)
-                let assertion = try await appAttest.generateAssertion(keyID, clientDataHash: Data(SHA256.hash(data: rawBody)))
+                let assertion = try await signAssertion(keyID: keyID, origin: relayURL.absoluteString, rawBody: rawBody)
                 let (status, _) = try await transport.send(
                     method: "DELETE",
                     url: url,
@@ -754,6 +789,23 @@ final class RelayGrantCoordinator {
         keyRegistrationTasks[origin] = task
         defer { keyRegistrationTasks.removeValue(forKey: origin) }
         return try await task.value
+    }
+
+    private func signAssertion(keyID: String, origin: String, rawBody: Data) async throws -> Data {
+        do {
+            return try await appAttest.generateAssertion(keyID, clientDataHash: Data(SHA256.hash(data: rawBody)))
+        } catch {
+            let deviceCheckError = error as NSError
+            guard deviceCheckError.domain == DCError.errorDomain,
+                  deviceCheckError.code == DCError.Code.invalidKey.rawValue else {
+                throw error
+            }
+            if let stored = try readAttestKey(), stored.keyID == keyID, stored.relayOrigin == origin {
+                try saveAttestKey(nil)
+                lastValidatedGrantID = nil
+            }
+            throw RelayPushError.invalidAttestKey
+        }
     }
 
     private func registerAttestKeyIfNeeded(relayURL: URL) async throws -> String {
