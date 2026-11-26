@@ -57,10 +57,12 @@ private final class MockRelayHTTPTransport: RelayHTTPTransport, @unchecked Senda
 @MainActor
 private final class InMemoryRelayKeychain: KeychainAccess {
     var items: [String: Data] = [:]
+    var failedReads: Set<String> = []
     var failedWrites: Set<String> = []
 
     func copy(_ query: [CFString: Any]) -> (OSStatus, Any?) {
         guard let account = query[kSecAttrAccount] as? String else { return (errSecParam, nil) }
+        guard !failedReads.contains(account) else { return (errSecInteractionNotAllowed, nil) }
         guard let data = items[account] else { return (errSecItemNotFound, nil) }
         return (errSecSuccess, data)
     }
@@ -1201,5 +1203,149 @@ final class RelayPushTests: XCTestCase {
         XCTAssertEqual(cancelledClientGrantKeys, [capturedClientGrantKey!])
         XCTAssertTrue(coordinator.loadPendingGrantAttempts().isEmpty)
         XCTAssertTrue(coordinator.loadPendingRevocations().isEmpty)
+    }
+
+    func testKeychainReadFailureDoesNotOverwriteExistingRevocationQueue() async throws {
+        let kc = InMemoryRelayKeychain()
+        let attest = MockAppAttestProvider()
+        let relayTransport = MockRelayHTTPTransport()
+        let coordinator = RelayGrantCoordinator(keychain: kc, appAttest: attest, transport: relayTransport)
+
+        let existingGrantID = UUID().uuidString.lowercased()
+        let secondGrantID = UUID().uuidString.lowercased()
+
+        // 1. Persist an existing revocation in Keychain.
+        try coordinator.enqueueGrantRevocation(
+            grantID: existingGrantID,
+            relayOrigin: RelayPushConstants.trustedProductionOrigin
+        )
+        XCTAssertEqual(coordinator.loadPendingRevocations().map(\.identifier), [existingGrantID])
+
+        // 2. Simulate Keychain READ failure for pendingRevocationsAccount (while writes would succeed).
+        // Appending a second revocation MUST throw and MUST NOT overwrite the existing revocation!
+        kc.failedReads.insert(RelayPushConstants.pendingRevocationsAccount)
+        XCTAssertThrowsError(
+            try coordinator.enqueueGrantRevocation(
+                grantID: secondGrantID,
+                relayOrigin: RelayPushConstants.trustedProductionOrigin
+            )
+        )
+
+        // 3. Keychain read recovers -> existingGrantID MUST still be intact, and now appending secondGrantID keeps BOTH!
+        kc.failedReads.remove(RelayPushConstants.pendingRevocationsAccount)
+        XCTAssertEqual(coordinator.loadPendingRevocations().map(\.identifier), [existingGrantID])
+
+        try coordinator.enqueueGrantRevocation(
+            grantID: secondGrantID,
+            relayOrigin: RelayPushConstants.trustedProductionOrigin
+        )
+        XCTAssertEqual(coordinator.loadPendingRevocations().map(\.identifier), [existingGrantID, secondGrantID])
+    }
+
+    func testPendingGrantPastOrNearExpiryRefreshesOrReissuesBeforeServerRegistration() async {
+        let kc = InMemoryRelayKeychain()
+        let attest = MockAppAttestProvider()
+        let relayTransport = MockRelayHTTPTransport()
+        let oldGrantID = UUID().uuidString.lowercased()
+        let newGrantID = UUID().uuidString.lowercased()
+        var currentNow = Date(timeIntervalSince1970: 1_800_000_000)
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime]
+        var grantCreateCount = 0
+        var refreshCalls = 0
+
+        relayTransport.handler = { method, url, body, _ in
+            let path = url.path
+            if path.hasSuffix("/v1/attest/challenge") {
+                let data = try JSONEncoder().encode(RelayChallengeResponse(
+                    challengeID: UUID().uuidString.lowercased(),
+                    nonce: "nonce-\(UUID().uuidString)",
+                    expiresAt: nil
+                ))
+                return (200, data)
+            }
+            if path.hasSuffix("/v1/attest/register") {
+                return (200, Data(#"{"key_id":"ok"}"#.utf8))
+            }
+            if method == "POST", path.hasSuffix("/v1/grants") {
+                grantCreateCount += 1
+                let gid = grantCreateCount == 1 ? oldGrantID : newGrantID
+                let expStr = iso.string(from: currentNow.addingTimeInterval(90 * 24 * 60 * 60))
+                let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+                let tok = (json?["apns_token"] as? String) ?? self.tokenA
+                let resp = try JSONEncoder().encode(RelayGrantCreateResponse(
+                    grantID: gid,
+                    expiresAt: expStr,
+                    tokenHash: RelayGrantCoordinator.sha256Hex(tok)
+                ))
+                return (200, resp)
+            }
+            if method == "PUT", path.hasSuffix("/v1/grants/\(oldGrantID)/refresh") {
+                refreshCalls += 1
+                // Old pending grant already expired on Relay while self-hosted server was unreachable.
+                return (410, Data(#"{"error":"grant expired, revoked, or invalidated"}"#.utf8))
+            }
+            return (404, Data())
+        }
+
+        let coordinator = RelayGrantCoordinator(
+            keychain: kc,
+            appAttest: attest,
+            transport: relayTransport,
+            now: { currentNow }
+        )
+        var serverAttempts = 0
+        var registeredGrantIDs: [String] = []
+        let mgr = PushRegistrationManager(
+            keychain: kc,
+            registerCall: { req, _, _ in
+                serverAttempts += 1
+                if serverAttempts == 1 {
+                    throw URLError(.cannotConnectToHost)
+                }
+                if let gid = req.relayGrantID {
+                    registeredGrantIDs.append(gid)
+                }
+                return PushDeviceRegisterResponse(
+                    deviceID: req.deviceID,
+                    bindingID: req.bindingID ?? UUID().uuidString.lowercased(),
+                    enabled: true,
+                    registrationVersion: 1,
+                    apnsEnv: req.apnsEnv,
+                    inboxContractVersion: 2
+                )
+            },
+            deleteCall: { _, _, _, _ in },
+            cancelAttemptCall: { _, _, _, _ in },
+            fetchPreferencesCall: { _, _ in
+                self.makePreferences(
+                    apnsPushEnabled: true,
+                    apnsPushConfigured: true,
+                    apnsTransportMode: "relay",
+                    apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                )
+            },
+            relayCoordinator: coordinator,
+            configSnapshot: { self.makeConfig() },
+            isPushEnabled: { true },
+            resolveAPNsEnv: { "production" },
+            now: { currentNow },
+            resetBadge: {}
+        )
+
+        // 1. Relay mints oldGrantID (TTL 90d), but self-hosted server is unreachable.
+        await mgr.syncRegistration(tokenHex: tokenA)
+        XCTAssertEqual(grantCreateCount, 1)
+        XCTAssertNil(mgr.loadActiveRegistration())
+        XCTAssertEqual(coordinator.loadPendingGrantAttempts().values.first?.confirmedGrantID, oldGrantID)
+
+        // 2. 91 days pass with UNCHANGED tokenA -> oldGrantID is expired.
+        // Retry MUST check expires_at, attempt refresh (gets 410), mint newGrantID, and register newGrantID on server!
+        currentNow = currentNow.addingTimeInterval(91 * 24 * 60 * 60)
+        await mgr.syncRegistration(tokenHex: tokenA)
+        XCTAssertEqual(refreshCalls, 1)
+        XCTAssertEqual(grantCreateCount, 2)
+        XCTAssertEqual(registeredGrantIDs, [newGrantID])
+        XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, newGrantID)
     }
 }

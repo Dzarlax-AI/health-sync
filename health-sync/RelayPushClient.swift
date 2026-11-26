@@ -155,6 +155,7 @@ struct PendingRelayGrantAttempt: Codable, Equatable {
     let createdAt: Date
     var confirmedGrantID: String?
     var confirmedTokenHash: String? = nil
+    var confirmedExpiresAt: Date? = nil
 }
 
 struct PendingRelayRevocation: Codable, Equatable {
@@ -313,21 +314,25 @@ final class RelayGrantCoordinator {
     }
 
     func loadPendingGrantAttempts() -> [String: PendingRelayGrantAttempt] {
-        guard let data = try? store.readData(account: RelayPushConstants.pendingGrantAttemptsAccount),
-              let decoded = try? JSONDecoder().decode([String: PendingRelayGrantAttempt].self, from: data)
-        else {
-            return [:]
-        }
-        return decoded
+        (try? readPendingGrantAttempts()) ?? [:]
     }
 
     func loadPendingRevocations() -> [PendingRelayRevocation] {
-        guard let data = try? store.readData(account: RelayPushConstants.pendingRevocationsAccount),
-              let decoded = try? JSONDecoder().decode([PendingRelayRevocation].self, from: data)
-        else {
+        (try? readPendingRevocations()) ?? []
+    }
+
+    private func readPendingGrantAttempts() throws -> [String: PendingRelayGrantAttempt] {
+        guard let data = try store.readData(account: RelayPushConstants.pendingGrantAttemptsAccount) else {
+            return [:]
+        }
+        return try JSONDecoder().decode([String: PendingRelayGrantAttempt].self, from: data)
+    }
+
+    private func readPendingRevocations() throws -> [PendingRelayRevocation] {
+        guard let data = try store.readData(account: RelayPushConstants.pendingRevocationsAccount) else {
             return []
         }
-        return decoded
+        return try JSONDecoder().decode([PendingRelayRevocation].self, from: data)
     }
 
     private func savePendingGrantAttempts(_ attempts: [String: PendingRelayGrantAttempt]) throws {
@@ -340,11 +345,15 @@ final class RelayGrantCoordinator {
         try store.writeData(data, account: RelayPushConstants.pendingRevocationsAccount)
     }
 
-    private func loadAttestKey() -> StoredRelayAttestKey? {
-        guard let data = try? store.readData(account: RelayPushConstants.attestKeyAccount) else {
+    private func readAttestKey() throws -> StoredRelayAttestKey? {
+        guard let data = try store.readData(account: RelayPushConstants.attestKeyAccount) else {
             return nil
         }
-        return try? JSONDecoder().decode(StoredRelayAttestKey.self, from: data)
+        return try JSONDecoder().decode(StoredRelayAttestKey.self, from: data)
+    }
+
+    private func loadAttestKey() -> StoredRelayAttestKey? {
+        (try? readAttestKey()) ?? nil
     }
 
     private func saveAttestKey(_ key: StoredRelayAttestKey?) throws {
@@ -375,10 +384,10 @@ final class RelayGrantCoordinator {
     /// Cancels any unconfirmed pending grant attempt for `fingerprint` (e.g., when
     /// the user disables pushes or switches profiles after a lost POST /v1/grants
     /// response before `grant_id` was received). Preserves the original attempt in
-    /// Keychain if persisting the revocation queue fails.
+    /// Keychain if reading or persisting the revocation queue fails.
     func movePendingGrantAttemptToRevocationQueue(forFingerprint fingerprint: String) {
-        var attempts = loadPendingGrantAttempts()
-        guard let pending = attempts[fingerprint] else { return }
+        guard var attempts = try? readPendingGrantAttempts(),
+              let pending = attempts[fingerprint] else { return }
         do {
             if let grantID = pending.confirmedGrantID, !grantID.isEmpty {
                 try enqueueGrantRevocation(grantID: grantID, relayOrigin: pending.relayOrigin)
@@ -389,12 +398,12 @@ final class RelayGrantCoordinator {
             try? savePendingGrantAttempts(attempts)
         } catch {
             // Keep the pending attempt intact in Keychain so a later drain can
-            // persist the revocation once Keychain becomes writable again.
+            // persist the revocation once Keychain becomes readable/writable again.
         }
     }
 
     func moveAllPendingGrantAttemptsToRevocationQueue(exceptFingerprint keepFingerprint: String? = nil) {
-        var attempts = loadPendingGrantAttempts()
+        guard var attempts = try? readPendingGrantAttempts() else { return }
         var changed = false
         for (fp, pending) in attempts where fp != keepFingerprint {
             do {
@@ -406,7 +415,7 @@ final class RelayGrantCoordinator {
                 attempts.removeValue(forKey: fp)
                 changed = true
             } catch {
-                // Retain this pending attempt until the revocation queue write succeeds.
+                // Retain this pending attempt until the revocation queue read/write succeeds.
             }
         }
         if changed {
@@ -415,8 +424,8 @@ final class RelayGrantCoordinator {
     }
 
     func clearPendingGrantAttempt(forFingerprint fingerprint: String, clientGrantKey: UUID) {
-        var attempts = loadPendingGrantAttempts()
-        guard attempts[fingerprint]?.clientGrantKey == clientGrantKey else { return }
+        guard var attempts = try? readPendingGrantAttempts(),
+              attempts[fingerprint]?.clientGrantKey == clientGrantKey else { return }
         attempts.removeValue(forKey: fingerprint)
         try? savePendingGrantAttempts(attempts)
     }
@@ -424,7 +433,8 @@ final class RelayGrantCoordinator {
     /// Ensures a durable client-generated `delivery_secret` and `client_grant_key`
     /// exist in Keychain BEFORE the first `POST /v1/grants`, then creates or
     /// idempotently recovers the grant from the trusted Relay and guarantees that
-    /// `apnsToken` is confirmed on the Relay before returning.
+    /// both `apnsToken` and the grant's validity (`expires_at`) are confirmed on
+    /// Relay before returning.
     func obtainGrant(
         relayURL: URL,
         endpointFingerprint: String,
@@ -435,7 +445,29 @@ final class RelayGrantCoordinator {
         let keyID = try await ensureRegisteredAttestKey(relayURL: relayURL)
         let origin = relayURL.absoluteString
         let currentTokenHash = Self.sha256Hex(apnsToken)
-        var attempts = loadPendingGrantAttempts()
+        let currentNow = now()
+        var attempts = try readPendingGrantAttempts()
+
+        func makeFreshAttempt() throws -> PendingRelayGrantAttempt {
+            let secret = try Self.generateDeliverySecret()
+            let fresh = PendingRelayGrantAttempt(
+                clientGrantKey: UUID(),
+                regID: UUID(),
+                deliverySecret: secret,
+                endpointFingerprint: endpointFingerprint,
+                relayOrigin: origin,
+                apnsEnv: apnsEnv,
+                inboxContractVersion: inboxContractVersion,
+                createdAt: now(),
+                confirmedGrantID: nil,
+                confirmedTokenHash: nil,
+                confirmedExpiresAt: nil
+            )
+            attempts[endpointFingerprint] = fresh
+            try savePendingGrantAttempts(attempts)
+            return fresh
+        }
+
         var attempt: PendingRelayGrantAttempt
         if let existing = attempts[endpointFingerprint],
            existing.relayOrigin == origin,
@@ -450,44 +482,45 @@ final class RelayGrantCoordinator {
                     try enqueueClientGrantKeyCancellation(clientGrantKey: old.clientGrantKey, relayOrigin: old.relayOrigin)
                 }
             }
-            let secret = try Self.generateDeliverySecret()
-            attempt = PendingRelayGrantAttempt(
-                clientGrantKey: UUID(),
-                regID: UUID(),
-                deliverySecret: secret,
-                endpointFingerprint: endpointFingerprint,
-                relayOrigin: origin,
-                apnsEnv: apnsEnv,
-                inboxContractVersion: inboxContractVersion,
-                createdAt: now(),
-                confirmedGrantID: nil,
-                confirmedTokenHash: nil
-            )
-            attempts[endpointFingerprint] = attempt
-            try savePendingGrantAttempts(attempts)
+            attempt = try makeFreshAttempt()
         }
 
         if let existingGrantID = attempt.confirmedGrantID, !existingGrantID.isEmpty {
-            if attempt.confirmedTokenHash != currentTokenHash {
-                do {
-                    try await refreshGrant(
-                        relayURL: relayURL,
-                        grantID: existingGrantID,
-                        apnsToken: apnsToken,
-                        inboxContractVersion: inboxContractVersion
-                    )
-                } catch let err as RelayPushError where err.isTerminalGrantError {
-                    clearPendingGrantAttempt(forFingerprint: endpointFingerprint, clientGrantKey: attempt.clientGrantKey)
-                    throw err
-                }
+            let tokenMismatch = attempt.confirmedTokenHash != currentTokenHash
+            let nearOrPastExpiry: Bool
+            if let exp = attempt.confirmedExpiresAt {
+                nearOrPastExpiry = exp <= currentNow.addingTimeInterval(RelayPushConstants.refreshInterval)
+            } else {
+                nearOrPastExpiry = currentNow.timeIntervalSince(attempt.createdAt) >= RelayPushConstants.refreshInterval
+            }
+
+            if !tokenMismatch && !nearOrPastExpiry {
+                return (attempt, existingGrantID)
+            }
+
+            do {
+                let refreshedExp = try await refreshGrant(
+                    relayURL: relayURL,
+                    grantID: existingGrantID,
+                    apnsToken: apnsToken,
+                    inboxContractVersion: inboxContractVersion
+                )
                 attempt.confirmedTokenHash = currentTokenHash
-                var latestAttempts = loadPendingGrantAttempts()
+                if let refreshedExp {
+                    attempt.confirmedExpiresAt = refreshedExp
+                }
+                var latestAttempts = try readPendingGrantAttempts()
                 if latestAttempts[endpointFingerprint]?.clientGrantKey == attempt.clientGrantKey {
                     latestAttempts[endpointFingerprint] = attempt
                     try savePendingGrantAttempts(latestAttempts)
                 }
+                return (attempt, existingGrantID)
+            } catch let err as RelayPushError where err.isTerminalGrantError {
+                // Pending grant expired, was revoked, or was invalidated while the
+                // self-hosted server was unreachable: drop it and mint a fresh grant.
+                attempts = try readPendingGrantAttempts()
+                attempt = try makeFreshAttempt()
             }
-            return (attempt, existingGrantID)
         }
 
         let challenge = try await fetchChallenge(relayURL: relayURL, keyID: keyID, op: RelayPushConstants.opGrantCreate)
@@ -529,21 +562,25 @@ final class RelayGrantCoordinator {
         let decoded = try JSONDecoder().decode(RelayGrantCreateResponse.self, from: data)
         var updated = attempt
         updated.confirmedGrantID = decoded.grantID
+        updated.confirmedExpiresAt = Self.parseISO8601Date(decoded.expiresAt)
         if let returnedHash = decoded.tokenHash?.lowercased(), returnedHash == currentTokenHash {
             updated.confirmedTokenHash = currentTokenHash
         } else {
             // Relay did not confirm the latest APNs token in the grant response
             // (e.g. older Relay replay or concurrent rotation): explicitly refresh
             // the grant with the latest token before confirming registration.
-            try await refreshGrant(
+            let refreshedExp = try await refreshGrant(
                 relayURL: relayURL,
                 grantID: decoded.grantID,
                 apnsToken: apnsToken,
                 inboxContractVersion: inboxContractVersion
             )
             updated.confirmedTokenHash = currentTokenHash
+            if let refreshedExp {
+                updated.confirmedExpiresAt = refreshedExp
+            }
         }
-        var latestAttempts = loadPendingGrantAttempts()
+        var latestAttempts = try readPendingGrantAttempts()
         if latestAttempts[endpointFingerprint]?.clientGrantKey == attempt.clientGrantKey {
             latestAttempts[endpointFingerprint] = updated
             try savePendingGrantAttempts(latestAttempts)
@@ -581,12 +618,13 @@ final class RelayGrantCoordinator {
         return try JSONDecoder().decode(RelayUpdateDeviceTokenResponse.self, from: data)
     }
 
+    @discardableResult
     func refreshGrant(
         relayURL: URL,
         grantID: String,
         apnsToken: String?,
         inboxContractVersion: Int
-    ) async throws {
+    ) async throws -> Date? {
         let keyID = try await ensureRegisteredAttestKey(relayURL: relayURL)
         let challenge = try await fetchChallenge(relayURL: relayURL, keyID: keyID, op: RelayPushConstants.opGrantRefresh)
         let payload = RelayRefreshGrantBody(
@@ -613,10 +651,14 @@ final class RelayGrantCoordinator {
         guard (200...299).contains(status) else {
             throw RelayPushError.http(status, String(data: data, encoding: .utf8) ?? "")
         }
+        if let decoded = try? JSONDecoder().decode(RelayGrantCreateResponse.self, from: data) {
+            return Self.parseISO8601Date(decoded.expiresAt)
+        }
+        return nil
     }
 
     func drainPendingRevocations() async {
-        let snapshot = loadPendingRevocations()
+        guard let snapshot = try? readPendingRevocations() else { return }
         for entry in snapshot {
             guard let relayURL = validateOrigin(entry.relayOrigin) else {
                 removeRevocation(entry)
@@ -667,7 +709,7 @@ final class RelayGrantCoordinator {
     }
 
     private func enqueueRevocationEntry(_ entry: PendingRelayRevocation) throws {
-        var list = loadPendingRevocations()
+        var list = try readPendingRevocations()
         if !list.contains(where: { $0.kind == entry.kind && $0.identifier == entry.identifier && $0.relayOrigin == entry.relayOrigin }) {
             list.append(entry)
             try savePendingRevocations(list)
@@ -675,7 +717,7 @@ final class RelayGrantCoordinator {
     }
 
     private func removeRevocation(_ entry: PendingRelayRevocation) {
-        var list = loadPendingRevocations()
+        guard var list = try? readPendingRevocations() else { return }
         let before = list.count
         list.removeAll { $0.kind == entry.kind && $0.identifier == entry.identifier && $0.relayOrigin == entry.relayOrigin }
         if list.count != before {
@@ -688,12 +730,13 @@ final class RelayGrantCoordinator {
             throw RelayPushError.appAttestUnsupported
         }
         let origin = relayURL.absoluteString
-        if let existing = loadAttestKey(), existing.relayOrigin == origin, existing.registered {
+        let existingKey = try readAttestKey()
+        if let existing = existingKey, existing.relayOrigin == origin, existing.registered {
             return existing.keyID
         }
 
         let keyID: String
-        if let existing = loadAttestKey(), existing.relayOrigin == origin {
+        if let existing = existingKey, existing.relayOrigin == origin {
             keyID = existing.keyID
         } else {
             keyID = try await appAttest.generateKey()
@@ -777,6 +820,20 @@ final class RelayGrantCoordinator {
 
     nonisolated static func sha256Hex(_ value: String) -> String {
         SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    nonisolated static func parseISO8601Date(_ raw: String?) -> Date? {
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        let withFractional = ISO8601DateFormatter()
+        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let parsed = withFractional.date(from: value) {
+            return parsed
+        }
+        let basic = ISO8601DateFormatter()
+        basic.formatOptions = [.withInternetDateTime]
+        return basic.date(from: value)
     }
 }
 
