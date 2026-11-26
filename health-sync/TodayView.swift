@@ -16,6 +16,8 @@ struct TodayView: View {
     @State private var todayInsights = TodayInsightsController()
     @State private var inboxController = TodayInboxController()
     @State private var showInbox = false
+    @State private var deepLinkedInboxItemID: String?
+    private let pushRouter = PushNavigationRouter.shared
 
     // Which stress-flag chip is currently expanded (tap-to-reveal-description).
     // nil = no description shown. Tapping the same chip again collapses it;
@@ -64,6 +66,18 @@ struct TodayView: View {
                     await inboxController.refresh()
                 })
             }
+            .navigationDestination(item: $deepLinkedInboxItemID) { itemID in
+                InboxDetailView(
+                    itemID: itemID,
+                    onPromptAnswered: {
+                        await load()
+                        await inboxController.refresh(clearResolved: true)
+                    }
+                )
+            }
+        }
+        .onChange(of: pushRouter.pendingDestination) { _, _ in
+            consumePushDestination()
         }
         .task(id: todayInsights.response?.date) {
             if let date = todayInsights.response?.date, let briefing, briefing.date != date,
@@ -83,6 +97,7 @@ struct TodayView: View {
             }
         }
         .task {
+            consumePushDestination()
             syncEngine.refreshConfiguration()
             async let core: Void = load()
             async let inbox: Void = inboxController.refresh()
@@ -222,6 +237,13 @@ struct TodayView: View {
             )
             .frame(width: width)
         }
+    }
+
+    private func consumePushDestination() {
+        guard let destination = pushRouter.consume() else { return }
+        showInbox = false
+        deepLinkedInboxItemID = destination.itemID
+        Task { await inboxController.refresh(clearResolved: true) }
     }
 
     private func load() async {

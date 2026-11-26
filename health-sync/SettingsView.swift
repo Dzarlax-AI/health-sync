@@ -8,6 +8,7 @@ struct SettingsView: View {
     @AppStorage("backgroundSync") private var backgroundSync = true
     @AppStorage("syncOnLaunch") private var syncOnLaunch = true
     @AppStorage("notifyOnSync") private var notifyOnSync = false
+    @AppStorage(PushNotificationConstants.enabledDefaultsKey) private var morningPushEnabled = false
     @AppStorage("syncIntervalMinutes") private var syncIntervalMinutes = 15
     @AppStorage("syncVitals") private var syncVitals = true
     @AppStorage("syncActivity") private var syncActivity = true
@@ -411,6 +412,31 @@ struct SettingsView: View {
                         }
                     )
                 )
+                Divider().padding(.leading, .dsSpacing)
+                DSToggleRow(
+                    label: "Morning & check-in pushes",
+                    subtitle: "Push notifications for morning reports and check-ins",
+                    isOn: Binding(
+                        get: { morningPushEnabled },
+                        set: { newValue in
+                            if newValue {
+                                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                                    DispatchQueue.main.async {
+                                        morningPushEnabled = granted
+                                        if granted {
+                                            PushRegistrationManager.registerNotificationCategories()
+                                            UIApplication.shared.registerForRemoteNotifications()
+                                        }
+                                    }
+                                }
+                            } else {
+                                morningPushEnabled = false
+                                UIApplication.shared.unregisterForRemoteNotifications()
+                                Task { await PushRegistrationManager.shared.disablePushNotifications() }
+                            }
+                        }
+                    )
+                )
             }
         }
         .dsCard()
@@ -563,6 +589,8 @@ struct SettingsView: View {
         resetConnectionState()
         configRevision &+= 1
         engine.refreshConfiguration()
+        let pushEnabled = morningPushEnabled
+        Task { await PushRegistrationManager.shared.handleConfigurationChanged(pushEnabled: pushEnabled) }
     }
 
     private func resetConnectionState() {

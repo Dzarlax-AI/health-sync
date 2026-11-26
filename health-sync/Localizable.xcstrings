@@ -8110,6 +8110,27 @@
         "sr" : { "stringUnit" : { "state" : "translated", "value" : "Pokušaj ponovo" } }
       }
     },
+    "Answer" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Answer" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ответить" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Odgovori" } }
+      }
+    },
+    "Morning & check-in pushes" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Morning & check-in pushes" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Пуши об отчёте и чек-ине" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Obaveštenja za izveštaj i ček-in" } }
+      }
+    },
+    "Push notifications for morning reports and check-ins" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Push notifications for morning reports and check-ins" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Пуш-уведомления об утреннем отчёте и чек-ине" } },
+        "sr" : { "stringUnit" : { "state" : "translated", "value" : "Push obaveštenja za jutarnji izveštaj i ček-in" } }
+      }
+    },
     "Waiting for answer" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting for answer" } },

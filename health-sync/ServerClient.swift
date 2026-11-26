@@ -399,6 +399,109 @@ final class ServerClient {
         )
     }
 
+    /// Registers an APNs device binding against an explicit (endpoint, apiKey)
+    /// snapshot without discarding the committed `binding_id` if the user
+    /// switches profiles while the POST is in flight.
+    func registerPushDevice(
+        _ body: PushDeviceRegisterRequest,
+        endpoint: URL,
+        apiKey: String
+    ) async throws -> PushDeviceRegisterResponse {
+        guard !SyncRuntime.isTestMode else { throw ServerError.missingConfig }
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+        let basePath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+        let route = "/api/push/devices"
+        components?.path = basePath.isEmpty ? route : "/\(basePath)\(route)"
+        guard let url = components?.url else {
+            throw ServerError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(body)
+        request.timeoutInterval = 15
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ServerError.http(0, "Invalid response")
+        }
+        if (300...399).contains(http.statusCode),
+           let location = http.value(forHTTPHeaderField: "Location") {
+            throw ServerError.redirected(to: location)
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            throw ServerError.http(http.statusCode, text)
+        }
+        do {
+            return try JSONDecoder().decode(PushDeviceRegisterResponse.self, from: data)
+        } catch {
+            let sample = String(data: data.prefix(200), encoding: .utf8) ?? ""
+            throw ServerError.decode(error.localizedDescription, sample: sample)
+        }
+    }
+
+    func deletePushDeviceBinding(
+        deviceID: String,
+        bindingID: String,
+        endpoint: URL,
+        apiKey: String
+    ) async throws {
+        try await deletePushRegistration(
+            deviceID: deviceID, selector: URLQueryItem(name: "binding_id", value: bindingID),
+            endpoint: endpoint, apiKey: apiKey
+        )
+    }
+
+    func cancelPushRegistrationAttempt(
+        deviceID: String,
+        attemptID: UUID,
+        endpoint: URL,
+        apiKey: String
+    ) async throws {
+        try await deletePushRegistration(
+            deviceID: deviceID,
+            selector: URLQueryItem(name: "registration_attempt_id", value: attemptID.uuidString.lowercased()),
+            endpoint: endpoint, apiKey: apiKey
+        )
+    }
+
+    private func deletePushRegistration(
+        deviceID: String,
+        selector: URLQueryItem,
+        endpoint: URL,
+        apiKey: String
+    ) async throws {
+        guard !SyncRuntime.isTestMode else { throw ServerError.missingConfig }
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+        let basePath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+        let route = "/api/push/devices/\(deviceID)"
+        components?.path = basePath.isEmpty ? route : "/\(basePath)\(route)"
+        components?.queryItems = [selector]
+        guard let url = components?.url else {
+            throw ServerError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ServerError.http(0, "Invalid response")
+        }
+        if (300...399).contains(http.statusCode),
+           let location = http.value(forHTTPHeaderField: "Location") {
+            throw ServerError.redirected(to: location)
+        }
+        guard http.statusCode == 204 else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw ServerError.http(http.statusCode, body)
+        }
+    }
+
     /// Fetches the rich per-section page (recovery / sleep / activity /
     /// cardio): summary + KPI details + curated chart list + "How it works"
     /// explainer cards. Mirrors the web's section page.
