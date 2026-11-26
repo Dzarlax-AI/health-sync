@@ -444,6 +444,41 @@ final class ServerClient {
         try await get(NotificationPreferencesResponse.self, path: "/api/notifications/preferences")
     }
 
+    func notificationPreferences(endpoint: URL, apiKey: String) async throws -> NotificationPreferencesResponse {
+        guard !SyncRuntime.isTestMode else { throw ServerError.missingConfig }
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+        let basePath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+        let route = "/api/notifications/preferences"
+        components?.path = basePath.isEmpty ? route : "/\(basePath)\(route)"
+        guard let url = components?.url else {
+            throw ServerError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ServerError.http(0, "Invalid response")
+        }
+        if (300...399).contains(http.statusCode),
+           let location = http.value(forHTTPHeaderField: "Location") {
+            throw ServerError.redirected(to: location)
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            throw ServerError.http(http.statusCode, text)
+        }
+        do {
+            return try JSONDecoder().decode(NotificationPreferencesResponse.self, from: data)
+        } catch {
+            let sample = String(data: data.prefix(200), encoding: .utf8) ?? ""
+            throw ServerError.decode(error.localizedDescription, sample: sample)
+        }
+    }
+
     func updateNotificationPreferences(_ body: NotificationPreferencesRequest) async throws -> NotificationPreferencesResponse {
         try await put(NotificationPreferencesResponse.self, path: "/api/notifications/preferences", body: body)
     }

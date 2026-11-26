@@ -961,7 +961,7 @@ struct PushNotificationTests {
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, _, _ in
-                sentTokens.append(req.apnsToken)
+                sentTokens.append(req.apnsToken ?? "")
                 if sentTokens.count == 1 {
                     let response = try await withCheckedThrowingContinuation { cont in
                         releaseFirstPost = cont
@@ -1134,7 +1134,7 @@ struct PushNotificationTests {
         let manager = PushRegistrationManager(
             keychain: InMemoryKeychainAccess(),
             registerCall: { request, _, _ in
-                sentTokens.append(request.apnsToken)
+                sentTokens.append(request.apnsToken ?? "")
                 return PushDeviceRegisterResponse(
                     deviceID: request.deviceID, bindingID: UUID().uuidString,
                     enabled: true, registrationVersion: 1, apnsEnv: "sandbox"

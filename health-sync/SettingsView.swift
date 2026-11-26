@@ -437,6 +437,36 @@ struct SettingsView: View {
                         }
                     )
                 )
+                if morningPushEnabled {
+                    switch PushRegistrationManager.shared.pushServerStatus {
+                    case .notConfiguredOnServer:
+                        Text("Push notifications are not configured on this server.")
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, .dsSpacing)
+                            .padding(.bottom, .dsSpacingSm)
+                    case .untrustedRelayURL:
+                        Text("Untrusted push relay configuration on this server.")
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsDanger)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, .dsSpacing)
+                            .padding(.bottom, .dsSpacingSm)
+                    case .appAttestUnsupported:
+                        Text("App Attest is not supported on this device.")
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, .dsSpacing)
+                            .padding(.bottom, .dsSpacingSm)
+                    case .unknown, .direct, .relay:
+                        EmptyView()
+                    }
+                }
                 if isServerConfigured {
                     Divider().padding(.leading, .dsSpacing)
                     NavigationLink(destination: NotificationPreferencesView()) {
@@ -876,11 +906,13 @@ struct NotificationPreferencesView: View {
                 Divider().padding(.leading, .dsSpacing)
                 statusRow(
                     label: "iOS Push",
-                    value: !prefs.apnsPushEnabled
-                        ? String(localized: "Off")
-                        : prefs.activePushDevicesCount > 0
-                            ? String(localized: "\(prefs.activePushDevicesCount) device(s)")
-                            : String(localized: "No iOS devices")
+                    value: (prefs.apnsTransportMode == "none" || prefs.apnsPushConfigured == false)
+                        ? String(localized: "Not configured")
+                        : !prefs.apnsPushEnabled
+                            ? String(localized: "Off")
+                            : prefs.activePushDevicesCount > 0
+                                ? String(localized: "\(prefs.activePushDevicesCount) device(s)")
+                                : String(localized: "No iOS devices")
                 )
                 Divider().padding(.leading, .dsSpacing)
                 statusRow(

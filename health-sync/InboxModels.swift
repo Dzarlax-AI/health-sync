@@ -217,6 +217,9 @@ struct NotificationPreferencesResponse: Codable, Equatable, Sendable {
     let telegramNotificationsEnabled: Bool
     let inboxEnabled: Bool
     let apnsPushEnabled: Bool
+    let apnsPushConfigured: Bool?
+    let apnsTransportMode: String?
+    let apnsRelayURL: String?
     let telegramConfigured: Bool
     let activePushDevicesCount: Int
 
@@ -236,8 +239,55 @@ struct NotificationPreferencesResponse: Codable, Equatable, Sendable {
         case telegramNotificationsEnabled = "telegram_notifications_enabled"
         case inboxEnabled = "inbox_enabled"
         case apnsPushEnabled = "apns_push_enabled"
+        case apnsPushConfigured = "apns_push_configured"
+        case apnsTransportMode = "apns_transport_mode"
+        case apnsRelayURL = "apns_relay_url"
         case telegramConfigured = "telegram_configured"
         case activePushDevicesCount = "active_push_devices_count"
+    }
+
+    init(
+        morningWeekdayHour: Int,
+        morningWeekendHour: Int,
+        eveningWeekdayHour: Int,
+        eveningWeekendHour: Int,
+        daytimeEnabled: Bool,
+        daytimeStartHour: Int,
+        daytimeEndHour: Int,
+        pushMorningReport: Bool,
+        pushEveningReport: Bool,
+        pushCheckins: Bool,
+        pushDaytimeUpdates: Bool,
+        pushDigestsNudges: Bool,
+        telegramNotificationsEnabled: Bool,
+        inboxEnabled: Bool,
+        apnsPushEnabled: Bool,
+        apnsPushConfigured: Bool? = nil,
+        apnsTransportMode: String? = nil,
+        apnsRelayURL: String? = nil,
+        telegramConfigured: Bool,
+        activePushDevicesCount: Int
+    ) {
+        self.morningWeekdayHour = morningWeekdayHour
+        self.morningWeekendHour = morningWeekendHour
+        self.eveningWeekdayHour = eveningWeekdayHour
+        self.eveningWeekendHour = eveningWeekendHour
+        self.daytimeEnabled = daytimeEnabled
+        self.daytimeStartHour = daytimeStartHour
+        self.daytimeEndHour = daytimeEndHour
+        self.pushMorningReport = pushMorningReport
+        self.pushEveningReport = pushEveningReport
+        self.pushCheckins = pushCheckins
+        self.pushDaytimeUpdates = pushDaytimeUpdates
+        self.pushDigestsNudges = pushDigestsNudges
+        self.telegramNotificationsEnabled = telegramNotificationsEnabled
+        self.inboxEnabled = inboxEnabled
+        self.apnsPushEnabled = apnsPushEnabled
+        self.apnsPushConfigured = apnsPushConfigured
+        self.apnsTransportMode = apnsTransportMode
+        self.apnsRelayURL = apnsRelayURL
+        self.telegramConfigured = telegramConfigured
+        self.activePushDevicesCount = activePushDevicesCount
     }
 }
 
