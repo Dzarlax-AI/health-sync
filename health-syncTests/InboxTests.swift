@@ -408,4 +408,63 @@ struct InboxTests {
         #expect(controller.unreadCount == 0)
         #expect(syncedBadges == [4, 3, 0])
     }
+
+    @Test
+    func readCountWinsOverAnOlderPendingRefreshAndNextRefreshStillUpdates() async {
+        var badges: [Int] = []
+        var fetches = 0
+        var replyToOldFetch: CheckedContinuation<InboxPendingResponse, Never>?
+        let started = AsyncStream<Void>.makeStream()
+        let controller = TodayInboxController(
+            fetchPending: {
+                fetches += 1
+                if fetches == 1 {
+                    return await withCheckedContinuation {
+                        replyToOldFetch = $0
+                        started.continuation.yield()
+                        started.continuation.finish()
+                    }
+                }
+                return InboxPendingResponse(prompts: [], unreadCount: 2)
+            },
+            syncBadge: { badges.append($0) }
+        )
+        let oldRefresh = Task { await controller.refresh() }
+        var signals = started.stream.makeAsyncIterator()
+        _ = await signals.next()
+        controller.updateUnreadCount(3)
+        replyToOldFetch?.resume(returning: InboxPendingResponse(prompts: [], unreadCount: 4))
+        await oldRefresh.value
+        #expect(controller.unreadCount == 3)
+        #expect(badges == [3])
+
+        await controller.refresh()
+        #expect(controller.unreadCount == 2)
+        #expect(badges == [3, 2])
+    }
+
+    @Test
+    func feedFilterClearsOnlyThePreviousFiltersPageAndCursor() throws {
+        let item = try JSONDecoder().decode(InboxItemSummary.self, from: Data("""
+        {"id":"11111111-1111-4111-8111-111111111111","kind":"morning_report",
+         "local_date":"2026-11-26","created_at":"2026-11-26T08:00:00Z","title":"Report",
+         "read_at":"2026-11-26T08:05:00Z"}
+        """.utf8))
+        var page = InboxFeedPage()
+        page.items = [item]
+        page.nextCursor = "all-cursor"
+        page.snapshotAt = "all-snapshot"
+        let sameFilterChanged = page.select(.all)
+        #expect(!sameFilterChanged)
+        #expect(page.items == [item])
+        #expect(page.nextCursor == "all-cursor")
+
+        let filterChanged = page.select(.unread)
+        #expect(filterChanged)
+        #expect(page.filter.query == "unread")
+        #expect(page.items.isEmpty)
+        #expect(page.nextCursor == nil)
+        #expect(page.snapshotAt == nil)
+    }
+
 }

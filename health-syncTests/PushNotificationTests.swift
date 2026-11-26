@@ -1,6 +1,8 @@
+import CryptoKit
 import Foundation
 import Security
 import Testing
+import UserNotifications
 @testable import health_sync
 
 @MainActor
@@ -1642,7 +1644,7 @@ struct PushNotificationTests {
             endpoint: endpointA,
             apiKey: "key-a",
             endpointFingerprint: configA.fingerprint,
-            tokenHash: "legacy",
+            tokenHash: SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined(),
             apnsEnv: "sandbox",
             locale: "en",
             confirmedAt: now.addingTimeInterval(-3600),
@@ -1691,6 +1693,31 @@ struct PushNotificationTests {
         enabled = false
         await manager.disablePushNotifications()
         #expect(badgeResetCount == 2)
+    }
+
+
+    @Test
+    func upgradesBadgePermissionOnlyForExistingAuthorizedSubscribers() async {
+        var requests = 0
+        let request: () async throws -> Bool = {
+            requests += 1
+            return false
+        }
+        let migrated = await BadgeAuthorizationUpgrade.requestIfNeeded(
+            authorization: .authorized, badgeSetting: .disabled, previouslyRequested: false, request: request
+        )
+        #expect(migrated)
+        #expect(requests == 1)
+        #expect(await !BadgeAuthorizationUpgrade.requestIfNeeded(
+            authorization: .authorized, badgeSetting: .disabled, previouslyRequested: migrated, request: request
+        ))
+        #expect(await !BadgeAuthorizationUpgrade.requestIfNeeded(
+            authorization: .denied, badgeSetting: .disabled, previouslyRequested: false, request: request
+        ))
+        #expect(await !BadgeAuthorizationUpgrade.requestIfNeeded(
+            authorization: .authorized, badgeSetting: .enabled, previouslyRequested: false, request: request
+        ))
+        #expect(requests == 1)
     }
 
 }

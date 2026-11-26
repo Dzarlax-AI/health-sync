@@ -298,6 +298,27 @@ enum InboxKindHelper {
 
 // MARK: - Today Inbox Controller
 
+struct InboxFeedPage {
+    enum Filter: String, CaseIterable {
+        case all
+        case unread
+
+        var query: String? { self == .unread ? rawValue : nil }
+    }
+
+    private(set) var filter: Filter = .all
+    var items: [InboxItemSummary] = []
+    var nextCursor: String?
+    var snapshotAt: String?
+
+    @discardableResult
+    mutating func select(_ nextFilter: Filter) -> Bool {
+        guard filter != nextFilter else { return false }
+        self = InboxFeedPage(filter: nextFilter)
+        return true
+    }
+}
+
 enum PromptSubmissionState: Equatable {
     case idle
     case submitting(promptID: String, optionID: String)
@@ -321,6 +342,7 @@ final class TodayInboxController {
     private let submitAnswer: SubmitAnswer
     private let syncBadge: BadgeSync
     private var loadGeneration = UUID()
+    private var unreadGeneration = UUID()
     private var sessionGeneration = UUID()
 
     init(
@@ -340,6 +362,7 @@ final class TodayInboxController {
     }
 
     func updateUnreadCount(_ count: Int) {
+        unreadGeneration = UUID()
         let clamped = max(0, count)
         unreadCount = clamped
         syncBadge(clamped)
@@ -358,14 +381,15 @@ final class TodayInboxController {
     func refresh(clearResolved: Bool = false) async {
         let generation = UUID()
         loadGeneration = generation
+        let unreadSnapshot = unreadGeneration
         do {
             let response = try await fetchPending()
             guard generation == loadGeneration else { return }
             supported = true
             pendingPrompts = response.prompts
-            let nextUnread = max(0, response.unreadCount ?? 0)
-            unreadCount = nextUnread
-            syncBadge(nextUnread)
+            if unreadSnapshot == unreadGeneration {
+                updateUnreadCount(response.unreadCount ?? 0)
+            }
             switch submissionState {
             case .resolved(let resolvedID, _, _):
                 if clearResolved || response.prompts.contains(where: { $0.promptID != resolvedID }) {
@@ -383,9 +407,10 @@ final class TodayInboxController {
             if case .http(404, _) = error {
                 supported = false
                 pendingPrompts = []
-                unreadCount = 0
                 submissionState = .idle
-                syncBadge(0)
+                if unreadSnapshot == unreadGeneration {
+                    updateUnreadCount(0)
+                }
             }
         } catch {
             // Non-404 errors keep current Inbox state without disrupting Today.
@@ -408,9 +433,7 @@ final class TodayInboxController {
             loadGeneration = UUID()
             pendingPrompts.removeAll { $0.promptID == prompt.promptID }
             if let nextUnread = response.unreadCount {
-                let clamped = max(0, nextUnread)
-                unreadCount = clamped
-                syncBadge(clamped)
+                updateUnreadCount(nextUnread)
             }
             submissionState = .resolved(
                 promptID: prompt.promptID,

@@ -117,18 +117,10 @@ struct TodayPendingCheckinCard: View {
 }
 
 struct InboxView: View {
-    enum FeedFilter: String, CaseIterable {
-        case all
-        case unread
-    }
-
     var onPromptAnswered: (@MainActor () async -> Void)?
     var onUnreadCountChanged: ((Int) -> Void)?
 
-    @State private var filter: FeedFilter = .all
-    @State private var items: [InboxItemSummary] = []
-    @State private var nextCursor: String?
-    @State private var snapshotAt: String?
+    @State private var page = InboxFeedPage()
     @State private var unreadCount: Int = 0
     @State private var isLoading = false
     @State private var isLoadingMore = false
@@ -136,7 +128,7 @@ struct InboxView: View {
     @State private var feedGeneration = UUID()
     @State private var loadError: String?
     @State private var unavailable = false
-    @State private var pendingController = TodayInboxController()
+    @State private var pendingController = TodayInboxController(syncBadge: { _ in })
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -145,14 +137,25 @@ struct InboxView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: .dsSpacing) {
                     if !unavailable {
-                        Picker("Filter", selection: $filter) {
-                            Text("All").tag(FeedFilter.all)
-                            Text(unreadCount > 0 ? "Unread (\(unreadCount))" : "Unread").tag(FeedFilter.unread)
+                        Picker("Filter", selection: Binding(
+                            get: { page.filter },
+                            set: { selected in
+                                guard page.select(selected) else { return }
+                                feedGeneration = UUID()
+                                isLoading = true
+                                isLoadingMore = false
+                                loadError = nil
+                                Task { await loadFeed() }
+                            }
+                        )) {
+                            Text("All").tag(InboxFeedPage.Filter.all)
+                            if unreadCount > 0 {
+                                Text("Unread (\(unreadCount))").tag(InboxFeedPage.Filter.unread)
+                            } else {
+                                Text("Unread").tag(InboxFeedPage.Filter.unread)
+                            }
                         }
                         .pickerStyle(.segmented)
-                        .onChange(of: filter) { _, _ in
-                            Task { await loadFeed() }
-                        }
                     }
 
                     if pendingController.activePrompt != nil ||
@@ -168,13 +171,13 @@ struct InboxView: View {
                         )
                     }
 
-                    if isLoading && items.isEmpty {
+                    if isLoading && page.items.isEmpty {
                         ProgressView()
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, .dsSpacingXl)
                     } else if unavailable {
                         emptyState(String(localized: "Inbox is not enabled on this server."))
-                    } else if let loadError, items.isEmpty {
+                    } else if let loadError, page.items.isEmpty {
                         VStack(spacing: .dsSpacingSm) {
                             emptyState(loadError)
                             Button("Try again") {
@@ -182,14 +185,14 @@ struct InboxView: View {
                             }
                             .buttonStyle(DSPrimaryButtonStyle())
                         }
-                    } else if items.isEmpty {
+                    } else if page.items.isEmpty {
                         emptyState(
-                            filter == .unread
+                            page.filter == .unread
                                 ? String(localized: "All caught up — no unread items.")
                                 : String(localized: "Reports, updates, and check-ins will appear here.")
                         )
                     } else {
-                        ForEach(items) { item in
+                        ForEach(page.items) { item in
                             NavigationLink {
                                 InboxDetailView(
                                     itemID: item.id,
@@ -200,8 +203,8 @@ struct InboxView: View {
                                         }
                                     },
                                     onUnreadCountChanged: { nextCount in
-                                        unreadCount = nextCount
-                                        onUnreadCountChanged?(nextCount)
+                                        feedGeneration = UUID()
+                                        applyUnreadCount(nextCount)
                                         Task { await loadFeed() }
                                     }
                                 )
@@ -211,7 +214,7 @@ struct InboxView: View {
                             .buttonStyle(.plain)
                         }
 
-                        if nextCursor != nil {
+                        if page.nextCursor != nil {
                             Button {
                                 Task { await loadMore() }
                             } label: {
@@ -274,27 +277,24 @@ struct InboxView: View {
         isLoadingMore = false
         loadError = nil
         unavailable = false
-        let requestedFilter = filter == .unread ? "unread" : nil
+        let requestedFilter = page.filter.query
         do {
             let feed = try await ServerClient.shared.inbox(limit: 20, filter: requestedFilter)
             guard generation == feedGeneration else { return }
-            items = feed.items
-            nextCursor = (feed.nextCursor?.isEmpty == false) ? feed.nextCursor : nil
-            snapshotAt = feed.snapshotAt
+            page.items = feed.items
+            page.nextCursor = (feed.nextCursor?.isEmpty == false) ? feed.nextCursor : nil
+            page.snapshotAt = feed.snapshotAt
             if let count = feed.unreadCount {
-                unreadCount = max(0, count)
-                AppBadgeSync.update(unreadCount: unreadCount)
-                onUnreadCountChanged?(unreadCount)
+                applyUnreadCount(count)
             }
         } catch let error as ServerError {
             guard generation == feedGeneration else { return }
             if case .http(404, _) = error {
                 unavailable = true
-                items = []
-                nextCursor = nil
-                unreadCount = 0
-                AppBadgeSync.update(unreadCount: 0)
-                onUnreadCountChanged?(0)
+                page.items = []
+                page.nextCursor = nil
+                page.snapshotAt = nil
+                applyUnreadCount(0)
             } else {
                 loadError = error.localizedDescription
             }
@@ -308,19 +308,17 @@ struct InboxView: View {
     }
 
     private func loadMore() async {
-        guard !isLoading, !isLoadingMore, let cursor = nextCursor else { return }
+        guard !isLoading, !isLoadingMore, let cursor = page.nextCursor else { return }
         let generation = feedGeneration
         isLoadingMore = true
-        let requestedFilter = filter == .unread ? "unread" : nil
+        let requestedFilter = page.filter.query
         do {
             let more = try await ServerClient.shared.inbox(limit: 20, cursor: cursor, filter: requestedFilter)
             guard generation == feedGeneration else { return }
-            items.append(contentsOf: more.items)
-            nextCursor = (more.nextCursor?.isEmpty == false) ? more.nextCursor : nil
+            page.items.append(contentsOf: more.items)
+            page.nextCursor = (more.nextCursor?.isEmpty == false) ? more.nextCursor : nil
             if let count = more.unreadCount {
-                unreadCount = max(0, count)
-                AppBadgeSync.update(unreadCount: unreadCount)
-                onUnreadCountChanged?(unreadCount)
+                applyUnreadCount(count)
             }
         } catch {
             // Keep loaded items visible for retry.
@@ -330,15 +328,22 @@ struct InboxView: View {
         }
     }
 
+    private func applyUnreadCount(_ count: Int) {
+        unreadCount = max(0, count)
+        if let onUnreadCountChanged {
+            onUnreadCountChanged(unreadCount)
+        } else {
+            AppBadgeSync.update(unreadCount: unreadCount)
+        }
+    }
+
     private func markAllRead() async {
         guard !isMarkingAllRead else { return }
         isMarkingAllRead = true
         defer { isMarkingAllRead = false }
         do {
-            let res = try await ServerClient.shared.markAllInboxRead(before: snapshotAt)
-            unreadCount = max(0, res.unreadCount)
-            AppBadgeSync.update(unreadCount: unreadCount)
-            onUnreadCountChanged?(unreadCount)
+            let res = try await ServerClient.shared.markAllInboxRead(before: page.snapshotAt)
+            applyUnreadCount(res.unreadCount)
             await loadFeed()
         } catch {
             // Leave current state visible so user can retry.
@@ -553,14 +558,21 @@ struct InboxDetailView: View {
             detail = loaded
             if loaded.readAt == nil {
                 if let res = try? await ServerClient.shared.markInboxItemRead(id: loaded.id) {
-                    AppBadgeSync.update(unreadCount: res.unreadCount)
-                    onUnreadCountChanged?(res.unreadCount)
+                    reportUnreadCount(res.unreadCount)
                 }
             }
         } catch {
             loadError = error.localizedDescription
         }
         isLoading = false
+    }
+
+    private func reportUnreadCount(_ count: Int) {
+        if let onUnreadCountChanged {
+            onUnreadCountChanged(count)
+        } else {
+            AppBadgeSync.update(unreadCount: count)
+        }
     }
 
     private func answerFromDetail(
@@ -581,8 +593,7 @@ struct InboxDetailView: View {
                 actionNotice = String(localized: "Saved: \(label)")
             }
             if let nextUnread = res.unreadCount {
-                AppBadgeSync.update(unreadCount: nextUnread)
-                onUnreadCountChanged?(nextUnread)
+                reportUnreadCount(nextUnread)
             }
             await load()
             if let onPromptAnswered {

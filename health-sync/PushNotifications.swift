@@ -22,13 +22,22 @@ enum PushNotificationConstants {
     static let unsupportedRetryInterval: TimeInterval = 15 * 60
 }
 
+@MainActor
 enum AppBadgeSync {
-    @MainActor
+    private static var pendingCount: Int?
+    private static var isApplying = false
+
     static func update(unreadCount: Int) {
         guard !SyncRuntime.isTestMode else { return }
-        let clamped = max(0, unreadCount)
+        pendingCount = max(0, unreadCount)
+        guard !isApplying else { return }
+        isApplying = true
         Task {
-            try? await UNUserNotificationCenter.current().setBadgeCount(clamped)
+            while let count = pendingCount {
+                pendingCount = nil
+                try? await UNUserNotificationCenter.current().setBadgeCount(count)
+            }
+            isApplying = false
         }
     }
 }

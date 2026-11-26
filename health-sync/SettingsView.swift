@@ -831,10 +831,13 @@ struct NotificationPreferencesView: View {
                     .padding(.dsSpacing)
                     .dsCard()
                 } else if let prefs {
-                    channelsCard(prefs)
-                    pushCategoriesCard
-                    scheduleCard
-                    telegramCard(prefs)
+                    Group {
+                        channelsCard(prefs)
+                        pushCategoriesCard
+                        scheduleCard
+                        telegramCard(prefs)
+                    }
+                    .disabled(isSaving)
 
                     Button(isSaving ? "Saving…" : "Save preferences") {
                         Task { await save() }
