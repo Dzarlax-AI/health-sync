@@ -62,7 +62,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         defer { completionHandler() }
         let actionID = response.actionIdentifier
         guard actionID == UNNotificationDefaultActionIdentifier ||
-                actionID == PushNotificationConstants.checkinOpenActionID
+                actionID == PushNotificationConstants.checkinOpenActionID ||
+                actionID == PushNotificationConstants.promptOpenActionID
         else {
             return
         }
@@ -75,14 +76,46 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         guard UserDefaults.standard.bool(forKey: PushNotificationConstants.enabledDefaultsKey) else {
             return
         }
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            guard settings.authorizationStatus == .authorized ||
-                    settings.authorizationStatus == .provisional
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+            guard UserDefaults.standard.bool(forKey: PushNotificationConstants.enabledDefaultsKey),
+                  settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
             else { return }
-            DispatchQueue.main.async {
-                guard UserDefaults.standard.bool(forKey: PushNotificationConstants.enabledDefaultsKey) else { return }
-                application.registerForRemoteNotifications()
+            application.registerForRemoteNotifications()
+
+            if await BadgeAuthorizationUpgrade.requestIfNeeded(
+                authorization: settings.authorizationStatus,
+                badgeSetting: settings.badgeSetting,
+                previouslyRequested: UserDefaults.standard.bool(forKey: BadgeAuthorizationUpgrade.defaultsKey),
+                request: { try await center.requestAuthorization(options: [.badge]) }
+            ) {
+                UserDefaults.standard.set(true, forKey: BadgeAuthorizationUpgrade.defaultsKey)
             }
+        }
+    }
+}
+
+@MainActor
+enum BadgeAuthorizationUpgrade {
+    static let defaultsKey = "health-sync.push.badge-authorization-requested"
+
+    // Existing installations can have alert and sound permission without badges.
+    // Respect a completed request, even when the user chose to leave badges off.
+    static func requestIfNeeded(
+        authorization: UNAuthorizationStatus,
+        badgeSetting: UNNotificationSetting,
+        previouslyRequested: Bool,
+        request: () async throws -> Bool
+    ) async -> Bool {
+        guard !previouslyRequested, badgeSetting == .disabled,
+              authorization == .authorized || authorization == .provisional
+        else { return false }
+        do {
+            _ = try await request()
+            return true
+        } catch {
+            return false
         }
     }
 }

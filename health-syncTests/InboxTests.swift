@@ -296,4 +296,191 @@ struct InboxTests {
 
         #expect(controller.submissionState == .resolved(promptID: promptB.promptID, status: "saved", answerLabel: "OK"))
     }
+
+    @Test
+    func decodesStage3FeedReadEndpointsAndNotificationPreferences() throws {
+        let feedData = """
+        {
+          "items": [
+            {
+              "id": "44444444-4444-4444-4444-444444444444",
+              "kind": "nudge",
+              "local_date": "2026-11-26",
+              "created_at": "2026-11-26T09:00:00Z",
+              "title": "Energy backfill ready",
+              "preview": "Run backfill in Settings.",
+              "action_route": "/settings"
+            }
+          ],
+          "unread_count": 3,
+          "snapshot_at": "2026-11-26T09:05:00Z"
+        }
+        """.data(using: .utf8)!
+        let feed = try JSONDecoder().decode(InboxFeedResponse.self, from: feedData)
+        #expect(feed.unreadCount == 3)
+        #expect(feed.snapshotAt == "2026-11-26T09:05:00Z")
+        #expect(feed.items.first?.actionRoute == "/settings")
+
+        let readRes = try JSONDecoder().decode(
+            InboxReadResponse.self,
+            from: """
+            {"id":"44444444-4444-4444-4444-444444444444","read_at":"2026-11-26T09:06:00Z","unread_count":2}
+            """.data(using: .utf8)!
+        )
+        #expect(readRes.unreadCount == 2)
+
+        let readAllRes = try JSONDecoder().decode(
+            InboxReadAllResponse.self,
+            from: """
+            {"updated":2,"unread_count":0,"before":"2026-11-26T09:05:00Z"}
+            """.data(using: .utf8)!
+        )
+        #expect(readAllRes.updated == 2)
+        #expect(readAllRes.unreadCount == 0)
+
+        let prefs = try JSONDecoder().decode(
+            NotificationPreferencesResponse.self,
+            from: """
+            {
+              "morning_weekday_hour": 8,
+              "morning_weekend_hour": 9,
+              "evening_weekday_hour": 20,
+              "evening_weekend_hour": 21,
+              "daytime_enabled": true,
+              "daytime_start_hour": 9,
+              "daytime_end_hour": 21,
+              "push_morning_report": true,
+              "push_evening_report": true,
+              "push_checkins": true,
+              "push_daytime_updates": true,
+              "push_digests_nudges": true,
+              "telegram_notifications_enabled": false,
+              "inbox_enabled": true,
+              "apns_push_enabled": true,
+              "telegram_configured": true,
+              "active_push_devices_count": 1
+            }
+            """.data(using: .utf8)!
+        )
+        #expect(prefs.pushDigestsNudges == true)
+        #expect(prefs.telegramNotificationsEnabled == false)
+        #expect(prefs.activePushDevicesCount == 1)
+    }
+
+    @Test
+    func controllerSyncsLiveUnreadBadgeAcrossRefreshAnswerAndReset() async {
+        var syncedBadges: [Int] = []
+        let wakePrompt = PendingCheckinPrompt(
+            promptID: "55555555-5555-5555-5555-555555555555",
+            kind: "prompt_wake_feedback",
+            localDate: "2026-11-26",
+            expiresAt: "2026-11-26T16:00:00Z",
+            title: "Did you wake up around 07:15?",
+            options: [
+                InboxPromptOption(id: "confirmed", label: "Accurate"),
+                InboxPromptOption(id: "earlier", label: "Earlier")
+            ]
+        )
+
+        let controller = TodayInboxController(
+            fetchPending: { InboxPendingResponse(prompts: [wakePrompt], unreadCount: 4) },
+            submitAnswer: { _, _ in
+                PromptAnswerResponse(
+                    status: "saved",
+                    answer: "confirmed",
+                    answeredAt: "2026-11-26T08:00:00Z",
+                    timing: "on_time",
+                    unreadCount: 3
+                )
+            },
+            syncBadge: { syncedBadges.append($0) }
+        )
+
+        await controller.refresh()
+        #expect(controller.unreadCount == 4)
+        #expect(syncedBadges == [4])
+
+        await controller.submit(prompt: wakePrompt, optionID: "confirmed")
+        #expect(controller.unreadCount == 3)
+        #expect(syncedBadges == [4, 3])
+
+        controller.reset()
+        #expect(controller.unreadCount == 0)
+        #expect(syncedBadges == [4, 3, 0])
+    }
+
+    @Test
+    func readCountWinsOverAnOlderPendingRefreshAndNextRefreshStillUpdates() async {
+        var badges: [Int] = []
+        var fetches = 0
+        var replyToOldFetch: CheckedContinuation<InboxPendingResponse, Never>?
+        let started = AsyncStream<Void>.makeStream()
+        let controller = TodayInboxController(
+            fetchPending: {
+                fetches += 1
+                if fetches == 1 {
+                    return await withCheckedContinuation {
+                        replyToOldFetch = $0
+                        started.continuation.yield()
+                        started.continuation.finish()
+                    }
+                }
+                return InboxPendingResponse(prompts: [], unreadCount: 2)
+            },
+            syncBadge: { badges.append($0) }
+        )
+        let oldRefresh = Task { await controller.refresh() }
+        var signals = started.stream.makeAsyncIterator()
+        _ = await signals.next()
+        controller.updateUnreadCount(3)
+        replyToOldFetch?.resume(returning: InboxPendingResponse(prompts: [], unreadCount: 4))
+        await oldRefresh.value
+        #expect(controller.unreadCount == 3)
+        #expect(badges == [3])
+
+        await controller.refresh()
+        #expect(controller.unreadCount == 2)
+        #expect(badges == [3, 2])
+    }
+
+    @Test
+    func feedFilterClearsOnlyThePreviousFiltersPageAndCursor() throws {
+        let item = try JSONDecoder().decode(InboxItemSummary.self, from: Data("""
+        {"id":"11111111-1111-4111-8111-111111111111","kind":"morning_report",
+         "local_date":"2026-11-26","created_at":"2026-11-26T08:00:00Z","title":"Report",
+         "read_at":"2026-11-26T08:05:00Z"}
+        """.utf8))
+        var page = InboxFeedPage()
+        page.items = [item]
+        page.nextCursor = "all-cursor"
+        page.snapshotAt = "all-snapshot"
+        let sameFilterChanged = page.select(.all)
+        #expect(!sameFilterChanged)
+        #expect(page.items == [item])
+        #expect(page.nextCursor == "all-cursor")
+
+        let filterChanged = page.select(.unread)
+        #expect(filterChanged)
+        #expect(page.filter.query == "unread")
+        #expect(page.items.isEmpty)
+        #expect(page.nextCursor == nil)
+        #expect(page.snapshotAt == nil)
+    }
+
+
+    @Test
+    func unreadRefreshKeepsInboxCountWithoutRestoringOptedOutIconBadge() async {
+        var iconCounts: [Int] = []
+        var pushesEnabled = true
+        let controller = TodayInboxController(
+            fetchPending: { InboxPendingResponse(prompts: [], unreadCount: 4) },
+            syncBadge: { iconCounts.append(AppBadgeSync.iconCount(unreadCount: $0, pushesEnabled: pushesEnabled)) }
+        )
+        await controller.refresh()
+        pushesEnabled = false
+        await controller.refresh()
+        #expect(controller.unreadCount == 4)
+        #expect(iconCounts == [4, 0])
+    }
+
 }

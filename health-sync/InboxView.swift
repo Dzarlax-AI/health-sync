@@ -34,7 +34,7 @@ struct TodayPendingCheckinCard: View {
 
         VStack(alignment: .leading, spacing: .dsSpacing) {
             HStack {
-                Text("Check-in")
+                Text(verbatim: InboxKindHelper.localizedTitle(for: prompt.kind ?? "prompt_checkin"))
                     .font(.caption.weight(.semibold))
                     .textCase(.uppercase)
                     .foregroundStyle(Color.dsHorizonTextSecondary)
@@ -118,15 +118,17 @@ struct TodayPendingCheckinCard: View {
 
 struct InboxView: View {
     var onPromptAnswered: (@MainActor () async -> Void)?
+    var onUnreadCountChanged: ((Int) -> Void)?
 
-    @State private var items: [InboxItemSummary] = []
-    @State private var nextCursor: String?
+    @State private var page = InboxFeedPage()
+    @State private var unreadCount: Int = 0
     @State private var isLoading = false
     @State private var isLoadingMore = false
+    @State private var isMarkingAllRead = false
     @State private var feedGeneration = UUID()
     @State private var loadError: String?
     @State private var unavailable = false
-    @State private var pendingController = TodayInboxController()
+    @State private var pendingController = TodayInboxController(syncBadge: { _ in })
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -134,6 +136,28 @@ struct InboxView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: .dsSpacing) {
+                    if !unavailable {
+                        Picker("Filter", selection: Binding(
+                            get: { page.filter },
+                            set: { selected in
+                                guard page.select(selected) else { return }
+                                feedGeneration = UUID()
+                                isLoading = true
+                                isLoadingMore = false
+                                loadError = nil
+                                Task { await loadFeed() }
+                            }
+                        )) {
+                            Text("All").tag(InboxFeedPage.Filter.all)
+                            if unreadCount > 0 {
+                                Text("Unread (\(unreadCount))").tag(InboxFeedPage.Filter.unread)
+                            } else {
+                                Text("Unread").tag(InboxFeedPage.Filter.unread)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
                     if pendingController.activePrompt != nil ||
                         pendingController.submissionState != .idle {
                         TodayPendingCheckinCard(
@@ -147,13 +171,13 @@ struct InboxView: View {
                         )
                     }
 
-                    if isLoading && items.isEmpty {
+                    if isLoading && page.items.isEmpty {
                         ProgressView()
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, .dsSpacingXl)
                     } else if unavailable {
                         emptyState(String(localized: "Inbox is not enabled on this server."))
-                    } else if let loadError, items.isEmpty {
+                    } else if let loadError, page.items.isEmpty {
                         VStack(spacing: .dsSpacingSm) {
                             emptyState(loadError)
                             Button("Try again") {
@@ -161,10 +185,14 @@ struct InboxView: View {
                             }
                             .buttonStyle(DSPrimaryButtonStyle())
                         }
-                    } else if items.isEmpty {
-                        emptyState(String(localized: "Morning reports and check-ins will appear here."))
+                    } else if page.items.isEmpty {
+                        emptyState(
+                            page.filter == .unread
+                                ? String(localized: "All caught up — no unread items.")
+                                : String(localized: "Reports, updates, and check-ins will appear here.")
+                        )
                     } else {
-                        ForEach(items) { item in
+                        ForEach(page.items) { item in
                             NavigationLink {
                                 InboxDetailView(
                                     itemID: item.id,
@@ -173,6 +201,11 @@ struct InboxView: View {
                                         if let onPromptAnswered {
                                             await onPromptAnswered()
                                         }
+                                    },
+                                    onUnreadCountChanged: { nextCount in
+                                        feedGeneration = UUID()
+                                        applyUnreadCount(nextCount)
+                                        Task { await loadFeed() }
                                     }
                                 )
                             } label: {
@@ -181,7 +214,7 @@ struct InboxView: View {
                             .buttonStyle(.plain)
                         }
 
-                        if nextCursor != nil {
+                        if page.nextCursor != nil {
                             Button {
                                 Task { await loadMore() }
                             } label: {
@@ -207,6 +240,16 @@ struct InboxView: View {
         }
         .navigationTitle("Inbox")
         .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            if unreadCount > 0 {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Mark all read") {
+                        Task { await markAllRead() }
+                    }
+                    .disabled(isMarkingAllRead)
+                }
+            }
+        }
         .task {
             await reloadAll()
         }
@@ -234,17 +277,24 @@ struct InboxView: View {
         isLoadingMore = false
         loadError = nil
         unavailable = false
+        let requestedFilter = page.filter.query
         do {
-            let feed = try await ServerClient.shared.inbox(limit: 20)
+            let feed = try await ServerClient.shared.inbox(limit: 20, filter: requestedFilter)
             guard generation == feedGeneration else { return }
-            items = feed.items
-            nextCursor = (feed.nextCursor?.isEmpty == false) ? feed.nextCursor : nil
+            page.items = feed.items
+            page.nextCursor = (feed.nextCursor?.isEmpty == false) ? feed.nextCursor : nil
+            page.snapshotAt = feed.snapshotAt
+            if let count = feed.unreadCount {
+                applyUnreadCount(count)
+            }
         } catch let error as ServerError {
             guard generation == feedGeneration else { return }
             if case .http(404, _) = error {
                 unavailable = true
-                items = []
-                nextCursor = nil
+                page.items = []
+                page.nextCursor = nil
+                page.snapshotAt = nil
+                applyUnreadCount(0)
             } else {
                 loadError = error.localizedDescription
             }
@@ -258,14 +308,18 @@ struct InboxView: View {
     }
 
     private func loadMore() async {
-        guard !isLoading, !isLoadingMore, let cursor = nextCursor else { return }
+        guard !isLoading, !isLoadingMore, let cursor = page.nextCursor else { return }
         let generation = feedGeneration
         isLoadingMore = true
+        let requestedFilter = page.filter.query
         do {
-            let more = try await ServerClient.shared.inbox(limit: 20, cursor: cursor)
+            let more = try await ServerClient.shared.inbox(limit: 20, cursor: cursor, filter: requestedFilter)
             guard generation == feedGeneration else { return }
-            items.append(contentsOf: more.items)
-            nextCursor = (more.nextCursor?.isEmpty == false) ? more.nextCursor : nil
+            page.items.append(contentsOf: more.items)
+            page.nextCursor = (more.nextCursor?.isEmpty == false) ? more.nextCursor : nil
+            if let count = more.unreadCount {
+                applyUnreadCount(count)
+            }
         } catch {
             // Keep loaded items visible for retry.
         }
@@ -273,14 +327,45 @@ struct InboxView: View {
             isLoadingMore = false
         }
     }
+
+    private func applyUnreadCount(_ count: Int) {
+        unreadCount = max(0, count)
+        if let onUnreadCountChanged {
+            onUnreadCountChanged(unreadCount)
+        } else {
+            AppBadgeSync.update(unreadCount: unreadCount)
+        }
+    }
+
+    private func markAllRead() async {
+        guard !isMarkingAllRead else { return }
+        isMarkingAllRead = true
+        defer { isMarkingAllRead = false }
+        do {
+            let res = try await ServerClient.shared.markAllInboxRead(before: page.snapshotAt)
+            applyUnreadCount(res.unreadCount)
+            await loadFeed()
+        } catch {
+            // Leave current state visible so user can retry.
+        }
+    }
 }
 
 private struct InboxItemRow: View {
     let item: InboxItemSummary
 
+    private var isUnread: Bool {
+        item.readAt == nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if isUnread {
+                    Circle()
+                        .fill(Color.dsAccent)
+                        .frame(width: 8, height: 8)
+                }
                 Text(verbatim: item.title)
                     .font(.headline)
                     .foregroundStyle(Color.dsHorizonText)
@@ -290,13 +375,18 @@ private struct InboxItemRow: View {
                     .foregroundStyle(Color.dsHorizonTextSecondary)
             }
 
-            if item.kind == "morning_report", let preview = item.preview, !preview.isEmpty {
+            Text(verbatim: InboxKindHelper.localizedTitle(for: item.kind))
+                .font(.caption.weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
+
+            if !InboxKindHelper.isPrompt(item.kind), let preview = item.preview, !preview.isEmpty {
                 Text(verbatim: preview)
                     .font(.subheadline)
                     .foregroundStyle(Color.dsHorizonTextSecondary)
                     .lineLimit(3)
-            } else if item.kind == "prompt_checkin" {
-                Text(verbatim: checkinSubtitle)
+            } else if InboxKindHelper.isPrompt(item.kind) {
+                Text(verbatim: promptSubtitle)
                     .font(.subheadline)
                     .foregroundStyle(Color.dsHorizonTextSecondary)
             }
@@ -306,7 +396,7 @@ private struct InboxItemRow: View {
         .horizonSurface()
     }
 
-    private var checkinSubtitle: String {
+    private var promptSubtitle: String {
         let statusLabel: String
         switch item.status {
         case "answered": statusLabel = String(localized: "Answered")
@@ -325,6 +415,7 @@ private struct InboxItemRow: View {
 struct InboxDetailView: View {
     let itemID: String
     var onPromptAnswered: (@MainActor () async -> Void)?
+    var onUnreadCountChanged: ((Int) -> Void)?
 
     @State private var detail: InboxDetailResponse?
     @State private var isLoading = false
@@ -361,24 +452,30 @@ struct InboxDetailView: View {
                         .horizonSurface()
                     } else if let detail {
                         VStack(alignment: .leading, spacing: .dsSpacing) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(verbatim: detail.title)
-                                    .font(.title3.weight(.semibold))
-                                    .foregroundStyle(Color.dsHorizonText)
-                                Spacer()
-                                Text(verbatim: detail.localDate)
-                                    .font(.caption)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(verbatim: InboxKindHelper.localizedTitle(for: detail.kind))
+                                    .font(.caption.weight(.semibold))
+                                    .textCase(.uppercase)
                                     .foregroundStyle(Color.dsHorizonTextSecondary)
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(verbatim: detail.title)
+                                        .font(.title3.weight(.semibold))
+                                        .foregroundStyle(Color.dsHorizonText)
+                                    Spacer()
+                                    Text(verbatim: detail.localDate)
+                                        .font(.caption)
+                                        .foregroundStyle(Color.dsHorizonTextSecondary)
+                                }
                             }
 
-                            if detail.kind == "morning_report" {
+                            if !InboxKindHelper.isPrompt(detail.kind) {
                                 Text(verbatim: detail.body ?? "")
                                     .font(.body)
                                     .foregroundStyle(Color.dsHorizonText)
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             } else {
-                                checkinDetailSection(detail)
+                                promptDetailSection(detail)
                             }
                         }
                         .padding(.dsSpacing)
@@ -397,7 +494,14 @@ struct InboxDetailView: View {
     }
 
     @ViewBuilder
-    private func checkinDetailSection(_ detail: InboxDetailResponse) -> some View {
+    private func promptDetailSection(_ detail: InboxDetailResponse) -> some View {
+        if let body = detail.body, !body.isEmpty {
+            Text(verbatim: body)
+                .font(.body)
+                .foregroundStyle(Color.dsHorizonText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+
         let statusText: String = {
             switch detail.status {
             case "answered": return String(localized: "Answered")
@@ -450,11 +554,25 @@ struct InboxDetailView: View {
         isLoading = true
         loadError = nil
         do {
-            detail = try await ServerClient.shared.inboxItem(id: itemID)
+            let loaded = try await ServerClient.shared.inboxItem(id: itemID)
+            detail = loaded
+            if loaded.readAt == nil {
+                if let res = try? await ServerClient.shared.markInboxItemRead(id: loaded.id) {
+                    reportUnreadCount(res.unreadCount)
+                }
+            }
         } catch {
             loadError = error.localizedDescription
         }
         isLoading = false
+    }
+
+    private func reportUnreadCount(_ count: Int) {
+        if let onUnreadCountChanged {
+            onUnreadCountChanged(count)
+        } else {
+            AppBadgeSync.update(unreadCount: count)
+        }
     }
 
     private func answerFromDetail(
@@ -467,11 +585,15 @@ struct InboxDetailView: View {
         actionNotice = nil
         do {
             let res = try await ServerClient.shared.answerInboxPrompt(promptID: promptID, answer: option.id)
-            let label = options.first(where: { $0.id == res.answer })?.label ?? res.answer
+            let label = options.first(where: { $0.id == res.answer })?.label
+                ?? CheckinAnswerLabel.localized(res.answer)
             if res.status == "already_answered" {
                 actionNotice = String(localized: "Already answered: \(label)")
             } else {
                 actionNotice = String(localized: "Saved: \(label)")
+            }
+            if let nextUnread = res.unreadCount {
+                reportUnreadCount(nextUnread)
             }
             await load()
             if let onPromptAnswered {

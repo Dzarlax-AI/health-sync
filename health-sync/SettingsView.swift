@@ -415,12 +415,12 @@ struct SettingsView: View {
                 Divider().padding(.leading, .dsSpacing)
                 DSToggleRow(
                     label: "Morning & check-in pushes",
-                    subtitle: "Push notifications for morning reports and check-ins",
+                    subtitle: "Push notifications for reports, updates, and check-ins",
                     isOn: Binding(
                         get: { morningPushEnabled },
                         set: { newValue in
                             if newValue {
-                                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
                                     DispatchQueue.main.async {
                                         morningPushEnabled = granted
                                         if granted {
@@ -437,6 +437,28 @@ struct SettingsView: View {
                         }
                     )
                 )
+                if isServerConfigured {
+                    Divider().padding(.leading, .dsSpacing)
+                    NavigationLink(destination: NotificationPreferencesView()) {
+                        HStack(spacing: .dsSpacing) {
+                            Image(systemName: "bell.badge")
+                                .foregroundStyle(Color.dsHorizonTextSecondary)
+                                .frame(width: 20)
+                            Text("Notification preferences")
+                                .font(.dsBody)
+                                .foregroundStyle(Color.dsHorizonText)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(Color.dsHorizonTextSecondary)
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .padding(.horizontal, .dsSpacing)
+                        .padding(.vertical, 14)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("notification-preferences-link")
+                }
             }
         }
         .dsCard()
@@ -763,4 +785,271 @@ private struct DSSwitchStyle: ToggleStyle {
 
 #Preview {
     SettingsView()
+}
+
+// MARK: - Notification Preferences
+
+struct NotificationPreferencesView: View {
+    @State private var prefs: NotificationPreferencesResponse?
+    @State private var isLoading = false
+    @State private var loadError: String?
+    @State private var isSaving = false
+    @State private var saveNotice: String?
+    @State private var saveIsError = false
+
+    @State private var pushMorningReport = true
+    @State private var pushEveningReport = true
+    @State private var pushCheckins = true
+    @State private var pushDaytimeUpdates = true
+    @State private var pushDigestsNudges = true
+    @State private var telegramEnabled = true
+    @State private var morningWeekdayHour = 8
+    @State private var morningWeekendHour = 9
+    @State private var eveningWeekdayHour = 20
+    @State private var eveningWeekendHour = 21
+    @State private var daytimeEnabled = false
+    @State private var daytimeStartHour = 9
+    @State private var daytimeEndHour = 21
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: .dsSpacingLg) {
+                if isLoading && prefs == nil {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, .dsSpacingXl)
+                } else if let loadError, prefs == nil {
+                    VStack(spacing: .dsSpacingSm) {
+                        Text(verbatim: loadError)
+                            .font(.dsBodySm)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
+                        Button("Try again") {
+                            Task { await load() }
+                        }
+                        .buttonStyle(DSPrimaryButtonStyle())
+                    }
+                    .padding(.dsSpacing)
+                    .dsCard()
+                } else if let prefs {
+                    Group {
+                        channelsCard(prefs)
+                        pushCategoriesCard
+                        scheduleCard
+                        telegramCard(prefs)
+                    }
+                    .disabled(isSaving)
+
+                    Button(isSaving ? "Saving…" : "Save preferences") {
+                        Task { await save() }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .buttonStyle(DSPrimaryButtonStyle())
+                    .disabled(isSaving)
+
+                    if let saveNotice {
+                        Text(verbatim: saveNotice)
+                            .font(.dsBodySm)
+                            .foregroundStyle(saveIsError ? Color.dsDanger : Color.dsGood)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding(.dsSpacing)
+            .padding(.bottom, .dsTabBarClearance)
+        }
+        .background(Color.dsHorizonBackground)
+        .navigationTitle("Notification preferences")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await load()
+        }
+    }
+
+    private func channelsCard(_ prefs: NotificationPreferencesResponse) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeader(title: "Channels")
+            VStack(spacing: 0) {
+                statusRow(
+                    label: "Inbox",
+                    value: prefs.inboxEnabled ? String(localized: "Active") : String(localized: "Off")
+                )
+                Divider().padding(.leading, .dsSpacing)
+                statusRow(
+                    label: "iOS Push",
+                    value: !prefs.apnsPushEnabled
+                        ? String(localized: "Off")
+                        : prefs.activePushDevicesCount > 0
+                            ? String(localized: "\(prefs.activePushDevicesCount) device(s)")
+                            : String(localized: "No iOS devices")
+                )
+                Divider().padding(.leading, .dsSpacing)
+                statusRow(
+                    label: "Telegram",
+                    value: !prefs.telegramConfigured
+                        ? String(localized: "Not configured")
+                        : telegramEnabled
+                            ? String(localized: "Active")
+                            : String(localized: "Off")
+                )
+            }
+        }
+        .dsCard()
+    }
+
+    private func statusRow(label: LocalizedStringKey, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.dsBody)
+                .foregroundStyle(Color.dsHorizonText)
+            Spacer()
+            Text(verbatim: value)
+                .font(.dsBodySm)
+                .foregroundStyle(Color.dsHorizonTextSecondary)
+        }
+        .padding(.horizontal, .dsSpacing)
+        .padding(.vertical, 12)
+    }
+
+    private var pushCategoriesCard: some View {
+        VStack(alignment: .leading, spacing: .dsSpacing) {
+            SectionHeader(title: "iOS push categories")
+            VStack(spacing: 0) {
+                DSToggleRow(label: "Morning report", isOn: $pushMorningReport)
+                Divider().padding(.leading, .dsSpacing)
+                DSToggleRow(label: "Evening report", isOn: $pushEveningReport)
+                Divider().padding(.leading, .dsSpacing)
+                DSToggleRow(label: "Check-ins & quick questions", isOn: $pushCheckins)
+                Divider().padding(.leading, .dsSpacing)
+                DSToggleRow(label: "Daytime sleep & guidance updates", isOn: $pushDaytimeUpdates)
+                Divider().padding(.leading, .dsSpacing)
+                DSToggleRow(label: "Weekly digests & notices", isOn: $pushDigestsNudges)
+            }
+        }
+        .dsCard()
+    }
+
+    private var scheduleCard: some View {
+        VStack(alignment: .leading, spacing: .dsSpacing) {
+            SectionHeader(title: "Schedule")
+            VStack(spacing: 0) {
+                hourStepperRow(label: "Morning (weekday)", value: $morningWeekdayHour)
+                Divider().padding(.leading, .dsSpacing)
+                hourStepperRow(label: "Morning (weekend)", value: $morningWeekendHour)
+                Divider().padding(.leading, .dsSpacing)
+                hourStepperRow(label: "Evening (weekday)", value: $eveningWeekdayHour)
+                Divider().padding(.leading, .dsSpacing)
+                hourStepperRow(label: "Evening (weekend)", value: $eveningWeekendHour)
+                Divider().padding(.leading, .dsSpacing)
+                DSToggleRow(label: "Daytime updates", isOn: $daytimeEnabled)
+                if daytimeEnabled {
+                    Divider().padding(.leading, .dsSpacing)
+                    hourStepperRow(label: "Daytime window start", value: $daytimeStartHour)
+                    Divider().padding(.leading, .dsSpacing)
+                    hourStepperRow(label: "Daytime window end", value: $daytimeEndHour)
+                }
+            }
+        }
+        .dsCard()
+    }
+
+    private func hourStepperRow(label: LocalizedStringKey, value: Binding<Int>) -> some View {
+        Stepper(value: value, in: 0...23) {
+            HStack {
+                Text(label)
+                    .font(.dsBody)
+                    .foregroundStyle(Color.dsHorizonText)
+                Spacer()
+                Text(verbatim: String(format: "%02d:00", value.wrappedValue))
+                    .font(.dsMono)
+                    .foregroundStyle(Color.dsHorizonTextSecondary)
+            }
+        }
+        .padding(.horizontal, .dsSpacing)
+        .padding(.vertical, 10)
+    }
+
+    private func telegramCard(_ prefs: NotificationPreferencesResponse) -> some View {
+        VStack(alignment: .leading, spacing: .dsSpacing) {
+            SectionHeader(title: "Telegram")
+            VStack(alignment: .leading, spacing: 0) {
+                DSToggleRow(
+                    label: "Send notifications to Telegram",
+                    subtitle: "Turn off to stop outbound Telegram reports and prompts while keeping credentials saved.",
+                    isOn: $telegramEnabled
+                )
+                if !telegramEnabled && prefs.activePushDevicesCount == 0 {
+                    HStack(alignment: .top, spacing: .dsSpacingSm) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color.dsWarn)
+                        Text("No active iOS push devices are registered for this profile. Updates will still be saved in your in-app Inbox.")
+                            .font(.dsCaption)
+                            .foregroundStyle(Color.dsHorizonTextSecondary)
+                    }
+                    .padding(.horizontal, .dsSpacing)
+                    .padding(.bottom, .dsSpacing)
+                }
+            }
+        }
+        .dsCard()
+    }
+
+    private func apply(_ loaded: NotificationPreferencesResponse) {
+        prefs = loaded
+        pushMorningReport = loaded.pushMorningReport
+        pushEveningReport = loaded.pushEveningReport
+        pushCheckins = loaded.pushCheckins
+        pushDaytimeUpdates = loaded.pushDaytimeUpdates
+        pushDigestsNudges = loaded.pushDigestsNudges
+        telegramEnabled = loaded.telegramNotificationsEnabled
+        morningWeekdayHour = loaded.morningWeekdayHour
+        morningWeekendHour = loaded.morningWeekendHour
+        eveningWeekdayHour = loaded.eveningWeekdayHour
+        eveningWeekendHour = loaded.eveningWeekendHour
+        daytimeEnabled = loaded.daytimeEnabled
+        daytimeStartHour = loaded.daytimeStartHour
+        daytimeEndHour = loaded.daytimeEndHour
+    }
+
+    private func load() async {
+        isLoading = true
+        loadError = nil
+        do {
+            let loaded = try await ServerClient.shared.notificationPreferences()
+            apply(loaded)
+        } catch {
+            loadError = error.localizedDescription
+        }
+        isLoading = false
+    }
+
+    private func save() async {
+        guard !isSaving else { return }
+        isSaving = true
+        saveNotice = nil
+        saveIsError = false
+        defer { isSaving = false }
+        let req = NotificationPreferencesRequest(
+            morningWeekdayHour: morningWeekdayHour,
+            morningWeekendHour: morningWeekendHour,
+            eveningWeekdayHour: eveningWeekdayHour,
+            eveningWeekendHour: eveningWeekendHour,
+            daytimeEnabled: daytimeEnabled,
+            daytimeStartHour: daytimeStartHour,
+            daytimeEndHour: daytimeEndHour,
+            pushMorningReport: pushMorningReport,
+            pushEveningReport: pushEveningReport,
+            pushCheckins: pushCheckins,
+            pushDaytimeUpdates: pushDaytimeUpdates,
+            pushDigestsNudges: pushDigestsNudges,
+            telegramNotificationsEnabled: telegramEnabled
+        )
+        do {
+            let updated = try await ServerClient.shared.updateNotificationPreferences(req)
+            apply(updated)
+            saveNotice = String(localized: "Notification preferences saved.")
+        } catch {
+            saveIsError = true
+            saveNotice = error.localizedDescription
+        }
+    }
 }

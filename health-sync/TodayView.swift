@@ -61,10 +61,15 @@ struct TodayView: View {
                 _ = await (core, insights, inbox)
             }
             .navigationDestination(isPresented: $showInbox) {
-                InboxView(onPromptAnswered: {
-                    await load()
-                    await inboxController.refresh()
-                })
+                InboxView(
+                    onPromptAnswered: {
+                        await load()
+                        await inboxController.refresh()
+                    },
+                    onUnreadCountChanged: { count in
+                        inboxController.updateUnreadCount(count)
+                    }
+                )
             }
             .navigationDestination(item: $deepLinkedInboxItemID) { itemID in
                 InboxDetailView(
@@ -72,6 +77,9 @@ struct TodayView: View {
                     onPromptAnswered: {
                         await load()
                         await inboxController.refresh(clearResolved: true)
+                    },
+                    onUnreadCountChanged: { count in
+                        inboxController.updateUnreadCount(count)
                     }
                 )
             }
@@ -139,6 +147,7 @@ struct TodayView: View {
                 syncStatus: visibleSyncStatus,
                 openSyncStatus: { selection = .settings },
                 showInbox: true,
+                inboxUnreadCount: inboxController.unreadCount,
                 openInbox: { showInbox = true }
             )
             .frame(width: width, alignment: .leading)
@@ -151,6 +160,7 @@ struct TodayView: View {
                 syncStatus: visibleSyncStatus,
                 openSyncStatus: { selection = .settings },
                 showInbox: inboxController.supported,
+                inboxUnreadCount: inboxController.unreadCount,
                 openInbox: { showInbox = true }
             )
                 .frame(width: width, alignment: .leading)
