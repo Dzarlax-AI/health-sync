@@ -225,12 +225,14 @@ struct PushNotificationTests {
         let bindingB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
         var releasePostA: CheckedContinuation<PushDeviceRegisterResponse, Error>?
-        var deleted: [(bindingID: String, endpoint: URL, apiKey: String)] = []
+        var attemptA: UUID?
+        var cancelled: [(attemptID: UUID, endpoint: URL, apiKey: String)] = []
 
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, endpoint, _ in
                 if endpoint == endpointA {
+                    attemptA = req.registrationAttemptID
                     return try await withCheckedThrowingContinuation { cont in
                         releasePostA = cont
                     }
@@ -243,8 +245,9 @@ struct PushNotificationTests {
                     apnsEnv: req.apnsEnv
                 )
             },
-            deleteCall: { _, bindingID, endpoint, apiKey in
-                deleted.append((bindingID, endpoint, apiKey))
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { _, id, endpoint, apiKey in
+                cancelled.append((id, endpoint, apiKey))
             },
             configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
             isPushEnabled: { true },
@@ -278,12 +281,12 @@ struct PushNotificationTests {
         ))
         await postATask.value
 
-        // Must NOT overwrite profile B's registration AND must DELETE bindingA on server A.
+        // Keep B active and cancel the exact abandoned attempt at A.
         #expect(manager.activeBindingIDForCurrentProfile() == bindingB)
-        #expect(deleted.count == 1)
-        #expect(deleted.first?.bindingID == bindingA)
-        #expect(deleted.first?.endpoint == endpointA)
-        #expect(deleted.first?.apiKey == "key-a")
+        #expect(cancelled.count == 1)
+        #expect(cancelled.first?.attemptID == attemptA)
+        #expect(cancelled.first?.endpoint == endpointA)
+        #expect(cancelled.first?.apiKey == "key-a")
         #expect(manager.loadPendingDeregistrations().isEmpty)
     }
 
@@ -295,18 +298,19 @@ struct PushNotificationTests {
         let bindingA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
         var releasePost: CheckedContinuation<PushDeviceRegisterResponse, Error>?
-        var deletedBindings: [String] = []
+        var attemptID: UUID?
+        var cancelled: [UUID] = []
 
         let manager = PushRegistrationManager(
             keychain: keychain,
-            registerCall: { _, _, _ in
-                try await withCheckedThrowingContinuation { cont in
+            registerCall: { request, _, _ in
+                attemptID = request.registrationAttemptID
+                return try await withCheckedThrowingContinuation { cont in
                     releasePost = cont
                 }
             },
-            deleteCall: { _, bindingID, _, _ in
-                deletedBindings.append(bindingID)
-            },
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { _, id, _, _ in cancelled.append(id) },
             configSnapshot: { self.makeConfig(endpoint: endpointA, apiKey: "key-a") },
             isPushEnabled: { pushEnabled },
             resolveAPNsEnv: { "sandbox" },
@@ -338,9 +342,10 @@ struct PushNotificationTests {
         ))
         await postTask.value
 
-        // Must NOT re-save local registration AND must DELETE bindingA on the server.
+        // Recover by cancelling the saved attempt without restoring local opt-in.
         #expect(manager.loadActiveRegistration() == nil)
-        #expect(deletedBindings == [bindingA])
+        #expect(cancelled.count == 1)
+        #expect(cancelled.first == attemptID)
         #expect(manager.loadPendingDeregistrations().isEmpty)
     }
 
@@ -491,6 +496,8 @@ struct PushNotificationTests {
         let bindingA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         let bindingB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
+        var attemptsA: [UUID] = []
+        var cancelledAttempts: [UUID] = []
         var postACount = 0
         var releaseFirstPostA: CheckedContinuation<PushDeviceRegisterResponse, Error>?
         var deleted: [(bindingID: String, endpoint: URL, apiKey: String)] = []
@@ -501,6 +508,7 @@ struct PushNotificationTests {
             registerCall: { req, endpoint, _ in
                 if endpoint == endpointA {
                     postACount += 1
+                    attemptsA.append(try #require(req.registrationAttemptID))
                     if postACount == 1 {
                         return try await withCheckedThrowingContinuation { cont in
                             releaseFirstPostA = cont
@@ -526,6 +534,7 @@ struct PushNotificationTests {
             deleteCall: { _, bindingID, endpoint, apiKey in
                 deleted.append((bindingID, endpoint, apiKey))
             },
+            cancelAttemptCall: { _, id, _, _ in cancelledAttempts.append(id) },
             configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
             isPushEnabled: { enabled },
             resolveAPNsEnv: { "sandbox" },
@@ -584,7 +593,9 @@ struct PushNotificationTests {
             #expect(manager.loadPendingDeregistrations().map(\.bindingID) == [bindingA])
             enabled = false
             await manager.disablePushNotifications()
-            #expect(deleted.map(\.bindingID) == [bindingB, bindingA])
+            #expect(deleted.map(\.bindingID) == [bindingB])
+            #expect(cancelledAttempts.count == 2)
+            #expect(Set(cancelledAttempts) == Set(attemptsA))
         }
         #expect(manager.loadPendingDeregistrations().isEmpty)
     }
@@ -996,15 +1007,19 @@ struct PushNotificationTests {
         let keychain = InMemoryKeychainAccess()
         var enabled = true
         var deleted: [String] = []
+        var cancelled: [UUID] = []
+        var attemptID: UUID?
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { request, _, _ in
-                PushDeviceRegisterResponse(
+                attemptID = request.registrationAttemptID
+                return PushDeviceRegisterResponse(
                     deviceID: request.deviceID, bindingID: binding, enabled: true,
                     registrationVersion: 1, apnsEnv: "sandbox"
                 )
             },
             deleteCall: { _, bindingID, _, _ in deleted.append(bindingID) },
+            cancelAttemptCall: { _, id, _, _ in cancelled.append(id) },
             configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
             isPushEnabled: { enabled },
             resolveAPNsEnv: { "sandbox" },
@@ -1033,7 +1048,14 @@ struct PushNotificationTests {
 
         keychain.failedWrites.removeAll()
         await manager.handleAppBecameActive()
-        #expect(deleted == [binding])
+        if failedAccount == PushNotificationConstants.activeRegistrationAccount {
+            #expect(deleted.isEmpty)
+            #expect(cancelled.count == 1)
+            #expect(cancelled.first == attemptID)
+        } else {
+            #expect(deleted == [binding])
+            #expect(cancelled.isEmpty)
+        }
         #expect(manager.loadActiveRegistration() == nil)
         #expect(manager.loadPendingDeregistrations().isEmpty)
     }
@@ -1341,4 +1363,140 @@ struct PushNotificationTests {
         #expect(serverBinding == refreshedBinding)
         #expect(manager.activeBindingIDForCurrentProfile() == refreshedBinding)
     }
+    @Test
+    func delayedAliasResponseCancelsOnlyItsOwnRegistrationVersion() async throws {
+        let original = URL(string: "https://server.example.com")!
+        let alias = URL(string: "https://server.example.com:443")!
+        var selected = original
+        let binding = UUID().uuidString
+        var serverAttempt: UUID?
+        var firstAttempt: UUID?
+        var releaseOriginal: CheckedContinuation<Void, Never>?
+        var holdOriginal = true
+        var bindingDeletes: [String] = []
+        var cancelled: [UUID] = []
+
+        let manager = PushRegistrationManager(
+            keychain: InMemoryKeychainAccess(),
+            registerCall: { request, endpoint, _ in
+                let id = try #require(request.registrationAttemptID)
+                serverAttempt = id
+                if endpoint == original {
+                    firstAttempt = id
+                    if holdOriginal {
+                        await withCheckedContinuation { releaseOriginal = $0 }
+                    }
+                }
+                return PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: binding, enabled: true,
+                    registrationVersion: endpoint == original ? 1 : 2, apnsEnv: "sandbox"
+                )
+            },
+            deleteCall: { _, id, _, _ in
+                bindingDeletes.append(id)
+                serverAttempt = nil
+            },
+            cancelAttemptCall: { _, id, endpoint, _ in
+                #expect(endpoint == original)
+                cancelled.append(id)
+                if serverAttempt == id { serverAttempt = nil }
+            },
+            configSnapshot: { self.makeConfig(endpoint: selected, apiKey: "same-tenant") },
+            isPushEnabled: { true }, resolveAPNsEnv: { "sandbox" }, localeProvider: { "en" }
+        )
+
+        let registration = Task { await manager.syncRegistration(tokenHex: String(repeating: "f", count: 64)) }
+        guard await waitForSignal({ releaseOriginal != nil }) else {
+            holdOriginal = false
+            await registration.value
+            Issue.record("Original registration did not reach the held response")
+            return
+        }
+
+        selected = alias
+        await manager.handleConfigurationChanged(pushEnabled: true)
+        let expectedActiveAttempt = serverAttempt
+        releaseOriginal?.resume()
+        await registration.value
+
+        let staleAttempt = try #require(firstAttempt)
+        #expect(expectedActiveAttempt != nil && expectedActiveAttempt != staleAttempt)
+        #expect(cancelled == [staleAttempt])
+        #expect(bindingDeletes.isEmpty)
+        #expect(serverAttempt == expectedActiveAttempt)
+        #expect(manager.loadActiveRegistration()?.registrationAttemptID == expectedActiveAttempt)
+    }
+
+    @Test
+    func staleRefreshUpgradesQueuedBindingCleanupToWaitForReplacement() async throws {
+        let endpoint = URL(string: "https://server.example.com")!
+        let binding = UUID().uuidString
+        let firstToken = String(repeating: "a", count: 64)
+        let rotatedToken = String(repeating: "b", count: 64)
+        var enabled = true
+        var requests = 0
+        var holdRefresh = true
+        var waitingForRegistration = false
+        var staleAttempt: UUID?
+        var releaseRefresh: CheckedContinuation<Void, Never>?
+        var bindingDeletes: [String] = []
+        var cancelled: [UUID] = []
+
+        let manager = PushRegistrationManager(
+            keychain: InMemoryKeychainAccess(),
+            registerCall: { request, _, _ in
+                requests += 1
+                if requests == 2 {
+                    staleAttempt = request.registrationAttemptID
+                    if holdRefresh {
+                        await withCheckedContinuation { releaseRefresh = $0 }
+                    }
+                }
+                if requests == 3 { throw URLError(.notConnectedToInternet) }
+                return PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: binding, enabled: true,
+                    registrationVersion: Int64(requests), apnsEnv: "sandbox"
+                )
+            },
+            deleteCall: { _, id, _, _ in bindingDeletes.append(id) },
+            cancelAttemptCall: { _, id, _, _ in cancelled.append(id) },
+            configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
+            isPushEnabled: { enabled }, resolveAPNsEnv: { "sandbox" }, localeProvider: { "en" },
+            onRegistrationWait: { waitingForRegistration = true }
+        )
+        await manager.syncRegistration(tokenHex: firstToken)
+        let refresh = Task { await manager.syncRegistration(tokenHex: rotatedToken) }
+        guard await waitForSignal({ releaseRefresh != nil }) else {
+            holdRefresh = false
+            await refresh.value
+            Issue.record("Refresh did not reach the held response")
+            return
+        }
+        enabled = false
+        await manager.disablePushNotifications()
+        let initialCleanup = manager.loadPendingDeregistrations().first
+        #expect(initialCleanup?.bindingID == binding)
+        #expect(initialCleanup?.waitsForReplacement != true)
+
+        enabled = true
+        let replacement = Task { await manager.syncRegistration(tokenHex: rotatedToken) }
+        #expect(await waitForSignal { waitingForRegistration })
+        releaseRefresh?.resume()
+        await refresh.value
+        await replacement.value
+
+        let waiting = manager.loadPendingDeregistrations()
+        #expect(requests == 3)
+        #expect(waiting.count == 2)
+        #expect(waiting.allSatisfy { $0.bindingID == binding && $0.waitsForReplacement == true })
+        #expect(waiting.contains { $0.registrationAttemptID == staleAttempt })
+        #expect(bindingDeletes.isEmpty && cancelled.isEmpty)
+
+        await manager.syncRegistration(tokenHex: rotatedToken)
+        #expect(requests == 4)
+        #expect(manager.activeBindingIDForCurrentProfile() == binding)
+        #expect(manager.loadPendingDeregistrations().isEmpty)
+        #expect(bindingDeletes.isEmpty && cancelled.isEmpty)
+    }
+
 }

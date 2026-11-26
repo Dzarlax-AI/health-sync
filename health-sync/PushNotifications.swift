@@ -99,6 +99,19 @@ struct PendingPushDeregistration: Codable, Equatable {
     let apiKey: String
     let queuedAt: Date
     var waitsForReplacement: Bool? = nil
+    var registrationAttemptID: UUID? = nil
+
+    var fingerprint: String {
+        UserDefaultsSyncConfiguration.fingerprint(endpoint: endpoint, apiKey: apiKey)
+    }
+
+    func matchesBinding(_ other: Self) -> Bool {
+        deviceID == other.deviceID && bindingID == other.bindingID && fingerprint == other.fingerprint
+    }
+
+    func matchesTarget(_ other: Self) -> Bool {
+        matchesBinding(other) && registrationAttemptID == other.registrationAttemptID
+    }
 }
 
 enum PushDestination: Equatable, Identifiable {
@@ -616,9 +629,8 @@ final class PushRegistrationManager {
                 let stillSameProfile = (try? configSnapshot())?.fingerprint == fingerprint
                 let pushStillEnabled = isPushEnabled()
 
-                // If the user switched away from this profile or disabled pushes while
-                // POST was in flight, do NOT persist the stale registration — enqueue
-                // DELETE for the committed binding_id on the original server immediately.
+                // An obsolete response can share its binding with a newer
+                // registration. Cleanup must target only the attempt that produced it.
                 let isCurrentResponse = pushStillEnabled && stillSameProfile && capturedEpoch == registrationEpoch
                 let cleanup = PendingPushDeregistration(
                     deviceID: response.deviceID,
@@ -626,7 +638,8 @@ final class PushRegistrationManager {
                     endpoint: capturedConfig.endpoint,
                     apiKey: capturedConfig.apiKey,
                     queuedAt: now(),
-                    waitsForReplacement: pushStillEnabled && stillSameProfile
+                    waitsForReplacement: pushStillEnabled && stillSameProfile,
+                    registrationAttemptID: attempt.id
                 )
                 if isCurrentResponse {
                     let record = ActivePushRegistration(
@@ -648,7 +661,7 @@ final class PushRegistrationManager {
                         unsupportedRetryState = nil
                         unsupportedRetryAfter = nil
                         shouldDrainDeregistrations = loadPendingDeregistrations().contains {
-                            UserDefaultsSyncConfiguration.fingerprint(endpoint: $0.endpoint, apiKey: $0.apiKey) == fingerprint
+                            $0.fingerprint == fingerprint
                         }
                     } catch {
                         if preserveDeregistration(cleanup) {
@@ -746,7 +759,7 @@ final class PushRegistrationManager {
         for item in unsavedDeregistrations {
             do {
                 try enqueueDeregistration(item)
-                unsavedDeregistrations.removeAll { sameBinding($0, item) }
+                unsavedDeregistrations.removeAll { $0.matchesTarget(item) }
             } catch {
                 lastRegistrationError = error.localizedDescription
                 break
@@ -754,22 +767,16 @@ final class PushRegistrationManager {
         }
         let snapshot = loadPendingDeregistrations()
 
-        for item in snapshot {
-            let dedupKey = "\(item.deviceID):\(item.bindingID)"
-            guard inFlightDeregistrations[dedupKey] == nil else { continue }
-
-            // Re-check the live queue in case an earlier iteration's await
-            // allowed a POST to purge this entry via saveActiveRegistration.
-            guard loadPendingDeregistrations().contains(where: {
-                $0.deviceID == item.deviceID && $0.bindingID == item.bindingID
-            }) else {
+        for pending in snapshot {
+            // A competing POST may have removed the entry or upgraded its
+            // replacement hold while a previous DELETE was awaiting its response.
+            guard let item = loadPendingDeregistrations().first(where: { $0.matchesTarget(pending) }) else {
                 continue
             }
-
-            let itemFingerprint = UserDefaultsSyncConfiguration.fingerprint(
-                endpoint: item.endpoint,
-                apiKey: item.apiKey
-            )
+            let itemFingerprint = item.fingerprint
+            let selector = item.registrationAttemptID.map { "attempt:\($0)" } ?? "binding:\(item.bindingID)"
+            let dedupKey = "\(itemFingerprint):\(item.deviceID):\(selector)"
+            guard inFlightDeregistrations[dedupKey] == nil else { continue }
 
             // Defer DELETE while a POST for the same profile is in flight so
             // it cannot race and disable a binding_id that POST is receiving.
@@ -788,8 +795,9 @@ final class PushRegistrationManager {
                 let active = loadActiveRegistration()
                 if active?.endpointFingerprint == itemFingerprint,
                    active?.deviceID == item.deviceID,
-                   active?.bindingID == item.bindingID {
-                    removePendingDeregistration(deviceID: item.deviceID, bindingID: item.bindingID)
+                   active?.bindingID == item.bindingID,
+                   item.registrationAttemptID == nil || item.registrationAttemptID == active?.registrationAttemptID {
+                    removePendingDeregistrations { $0.matchesTarget(item) }
                     continue
                 }
                 if item.waitsForReplacement == true,
@@ -801,10 +809,12 @@ final class PushRegistrationManager {
             let deleteTask = Task { @MainActor [self] in
                 defer { self.inFlightDeregistrations.removeValue(forKey: dedupKey) }
                 do {
-                    try await self.deleteCall(item.deviceID, item.bindingID, item.endpoint, item.apiKey)
-                    // Remove ONLY this processed entry from the live queue so
-                    // items added concurrently while DELETE was in flight are preserved.
-                    self.removePendingDeregistration(deviceID: item.deviceID, bindingID: item.bindingID)
+                    if let attemptID = item.registrationAttemptID {
+                        try await self.cancelAttemptCall(item.deviceID, attemptID, item.endpoint, item.apiKey)
+                    } else {
+                        try await self.deleteCall(item.deviceID, item.bindingID, item.endpoint, item.apiKey)
+                    }
+                    self.removePendingDeregistrations { $0.matchesTarget(item) }
                 } catch {
                     // Proxy failures and denied requests do not confirm cleanup.
                 }
@@ -944,35 +954,43 @@ final class PushRegistrationManager {
             try enqueueDeregistration(entry)
             return true
         } catch {
-            if !unsavedDeregistrations.contains(where: { sameBinding($0, entry) }) {
-                unsavedDeregistrations.append(entry)
-            }
+            Self.mergeDeregistration(entry, into: &unsavedDeregistrations)
             lastRegistrationError = error.localizedDescription
             return false
         }
     }
 
-    private func sameBinding(_ lhs: PendingPushDeregistration, _ rhs: PendingPushDeregistration) -> Bool {
-        lhs.deviceID == rhs.deviceID && lhs.bindingID == rhs.bindingID
+    private static func mergeDeregistration(_ entry: PendingPushDeregistration, into queue: inout [PendingPushDeregistration]) {
+        if entry.waitsForReplacement == true {
+            // Preserve the hold for any older binding-wide cleanup of the
+            // same registration, as well as repeated cleanup of this attempt.
+            for index in queue.indices where queue[index].matchesBinding(entry) {
+                queue[index].waitsForReplacement = true
+            }
+        }
+        if !queue.contains(where: { $0.matchesTarget(entry) }) {
+            queue.append(entry)
+        }
     }
 
     private func enqueueDeregistration(_ entry: PendingPushDeregistration) throws {
         var queue = try readPendingDeregistrations()
-        if !queue.contains(where: { sameBinding($0, entry) }) {
-            queue.append(entry)
+        let previous = queue
+        Self.mergeDeregistration(entry, into: &queue)
+        if queue != previous {
             try savePendingDeregistrations(queue)
         }
     }
 
-    private func removePendingDeregistration(deviceID: String, bindingID: String) {
+    private func removePendingDeregistrations(where shouldRemove: (PendingPushDeregistration) -> Bool) {
         do {
             var live = try readPendingDeregistrations()
             let count = live.count
-            live.removeAll { $0.deviceID == deviceID && $0.bindingID == bindingID }
+            live.removeAll(where: shouldRemove)
             if count != live.count {
                 try savePendingDeregistrations(live)
             }
-            unsavedDeregistrations.removeAll { $0.deviceID == deviceID && $0.bindingID == bindingID }
+            unsavedDeregistrations.removeAll(where: shouldRemove)
         } catch {
             lastRegistrationError = error.localizedDescription
         }
@@ -985,7 +1003,12 @@ final class PushRegistrationManager {
         }
         let encoded = try JSONEncoder().encode(record)
         try store.writeData(encoded, account: PushNotificationConstants.activeRegistrationAccount)
-        removePendingDeregistration(deviceID: record.deviceID, bindingID: record.bindingID)
+        removePendingDeregistrations {
+            $0.fingerprint == record.endpointFingerprint && $0.deviceID == record.deviceID &&
+                $0.bindingID == record.bindingID &&
+                ($0.registrationAttemptID == nil || $0.registrationAttemptID == record.registrationAttemptID ||
+                    $0.waitsForReplacement == true)
+        }
     }
 
     private func savePendingDeregistrations(_ items: [PendingPushDeregistration]) throws {
