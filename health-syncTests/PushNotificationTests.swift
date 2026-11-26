@@ -6,6 +6,7 @@ import Testing
 @MainActor
 private final class InMemoryKeychainAccess: KeychainAccess {
     var items: [String: Data] = [:]
+    var failedWrites: Set<String> = []
 
     func copy(_ query: [CFString: Any]) -> (OSStatus, Any?) {
         guard let account = query[kSecAttrAccount] as? String else { return (errSecParam, nil) }
@@ -15,6 +16,7 @@ private final class InMemoryKeychainAccess: KeychainAccess {
 
     func update(_ query: [CFString: Any], attributes: [CFString: Any]) -> OSStatus {
         guard let account = query[kSecAttrAccount] as? String else { return errSecParam }
+        guard !failedWrites.contains(account) else { return errSecInteractionNotAllowed }
         guard items[account] != nil else { return errSecItemNotFound }
         guard let data = attributes[kSecValueData] as? Data else { return errSecParam }
         items[account] = data
@@ -25,6 +27,7 @@ private final class InMemoryKeychainAccess: KeychainAccess {
         guard let account = attributes[kSecAttrAccount] as? String,
               let data = attributes[kSecValueData] as? Data
         else { return errSecParam }
+        guard !failedWrites.contains(account) else { return errSecInteractionNotAllowed }
         items[account] = data
         return errSecSuccess
     }
@@ -38,6 +41,15 @@ private final class InMemoryKeychainAccess: KeychainAccess {
 
 @MainActor
 struct PushNotificationTests {
+    private func waitForSignal(_ arrived: () -> Bool) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while !arrived(), clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return arrived()
+    }
+
     private func makeConfig(endpoint: URL, apiKey: String) -> SyncConfiguration {
         SyncConfiguration(
             endpoint: endpoint,
@@ -166,9 +178,9 @@ struct PushNotificationTests {
         activeKey = "key-b"
         await manager.handleConfigurationChanged(pushEnabled: true)
         #expect(deleteAttempts.count == 1)
-        #expect(deleteAttempts[0].bindingID == bindingA)
-        #expect(deleteAttempts[0].endpoint == endpointA)
-        #expect(deleteAttempts[0].apiKey == "key-a")
+        #expect(deleteAttempts.first?.bindingID == bindingA)
+        #expect(deleteAttempts.first?.endpoint == endpointA)
+        #expect(deleteAttempts.first?.apiKey == "key-a")
         #expect(manager.loadPendingDeregistrations().count == 1)
         #expect(manager.activeBindingIDForCurrentProfile() == bindingB)
 
@@ -244,7 +256,10 @@ struct PushNotificationTests {
 
         let tokenHex = String(repeating: "c", count: 64)
         let postATask = Task { await manager.syncRegistration(tokenHex: tokenHex) }
-        while releasePostA == nil { await Task.yield() }
+        guard await waitForSignal({ releasePostA != nil }) else {
+            Issue.record("Timed out waiting for the held request")
+            return
+        }
 
         // User switches to server B while server A's POST is still in flight.
         activeEndpoint = endpointB
@@ -266,9 +281,9 @@ struct PushNotificationTests {
         // Must NOT overwrite profile B's registration AND must DELETE bindingA on server A.
         #expect(manager.activeBindingIDForCurrentProfile() == bindingB)
         #expect(deleted.count == 1)
-        #expect(deleted[0].bindingID == bindingA)
-        #expect(deleted[0].endpoint == endpointA)
-        #expect(deleted[0].apiKey == "key-a")
+        #expect(deleted.first?.bindingID == bindingA)
+        #expect(deleted.first?.endpoint == endpointA)
+        #expect(deleted.first?.apiKey == "key-a")
         #expect(manager.loadPendingDeregistrations().isEmpty)
     }
 
@@ -302,7 +317,10 @@ struct PushNotificationTests {
 
         let tokenHex = String(repeating: "d", count: 64)
         let postTask = Task { await manager.syncRegistration(tokenHex: tokenHex) }
-        while releasePost == nil { await Task.yield() }
+        guard await waitForSignal({ releasePost != nil }) else {
+            Issue.record("Timed out waiting for the held request")
+            return
+        }
 
         // User disables pushes while POST is still in flight.
         pushEnabled = false
@@ -340,6 +358,7 @@ struct PushNotificationTests {
         var releaseDeleteA: CheckedContinuation<Void, Error>?
         var deletedBindings: [String] = []
         var failDeleteB = true
+        var pushEnabled = true
 
         let manager = PushRegistrationManager(
             keychain: keychain,
@@ -363,7 +382,7 @@ struct PushNotificationTests {
                 deletedBindings.append(bindingID)
             },
             configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
-            isPushEnabled: { true },
+            isPushEnabled: { pushEnabled },
             resolveAPNsEnv: { "sandbox" },
             bundleIDProvider: { "com.dzarlax.health-sync" },
             localeProvider: { "en" },
@@ -377,12 +396,16 @@ struct PushNotificationTests {
         activeEndpoint = endpointB
         activeKey = "key-b"
         let switchAToB = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
-        while releaseDeleteA == nil { await Task.yield() }
+        guard await waitForSignal({ releaseDeleteA != nil }) else {
+            Issue.record("Timed out waiting for the held request")
+            return
+        }
 
         // While DELETE(bindingA) is awaiting, register on B and disable pushes:
         // bindingB is appended to Keychain and fails 503 so it stays queued.
         await manager.syncRegistration(tokenHex: tokenHex, drainDeregistrations: false)
         #expect(manager.activeBindingIDForCurrentProfile() == bindingB)
+        pushEnabled = false
         await manager.disablePushNotifications()
         #expect(manager.loadPendingDeregistrations().map(\.bindingID).contains(bindingB))
 
@@ -454,13 +477,14 @@ struct PushNotificationTests {
         #expect(manager.activeBindingIDForCurrentProfile() == bindingID)
     }
 
-    @Test
-    func rapidProfileSwitchABAReusingBindingDoesNotDeleteActiveRegistration() async {
+    @Test(arguments: [true, false])
+    func rapidProfileSwitchABAReusingBindingDoesNotDeleteActiveRegistration(followupSucceeds: Bool) async {
         let keychain = InMemoryKeychainAccess()
         let endpointA = URL(string: "https://server-a.example.com")!
         let endpointB = URL(string: "https://server-b.example.com")!
         var activeEndpoint = endpointA
         var activeKey = "key-a"
+        var enabled = true
 
         // Matches server UpsertPushDevice behavior: active device on server A
         // keeps the same binding_id across both POST requests.
@@ -471,6 +495,7 @@ struct PushNotificationTests {
         var releaseFirstPostA: CheckedContinuation<PushDeviceRegisterResponse, Error>?
         var deleted: [(bindingID: String, endpoint: URL, apiKey: String)] = []
 
+        var registrationWaits = 0
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, endpoint, _ in
@@ -481,6 +506,7 @@ struct PushNotificationTests {
                             releaseFirstPostA = cont
                         }
                     }
+                    guard followupSucceeds else { throw URLError(.notConnectedToInternet) }
                     return PushDeviceRegisterResponse(
                         deviceID: req.deviceID,
                         bindingID: bindingA,
@@ -501,18 +527,22 @@ struct PushNotificationTests {
                 deleted.append((bindingID, endpoint, apiKey))
             },
             configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
-            isPushEnabled: { true },
+            isPushEnabled: { enabled },
             resolveAPNsEnv: { "sandbox" },
             bundleIDProvider: { "com.dzarlax.health-sync" },
             localeProvider: { "en" },
-            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            onRegistrationWait: { registrationWaits += 1 }
         )
 
         let tokenHex = String(repeating: "a", count: 64)
 
         // 1. Start POST #1 on profile A and hold it in flight.
         let firstPostATask = Task { await manager.syncRegistration(tokenHex: tokenHex) }
-        while releaseFirstPostA == nil { await Task.yield() }
+        guard await waitForSignal({ releaseFirstPostA != nil }) else {
+            Issue.record("Timed out waiting for the held request")
+            return
+        }
 
         // 2. Switch A -> B: registers bindingB on server B.
         activeEndpoint = endpointB
@@ -526,10 +556,10 @@ struct PushNotificationTests {
         activeEndpoint = endpointA
         activeKey = "key-a"
         let switchBackTask = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
-        for _ in 0..<5 { await Task.yield() }
+        #expect(await waitForSignal { registrationWaits == 1 })
         #expect(postACount == 1)
         #expect(deleted.count == 1)
-        #expect(deleted[0].bindingID == bindingB)
+        #expect(deleted.first?.bindingID == bindingB)
 
         // 4. Delayed POST #1 from the earlier epoch finally returns the same bindingA.
         // It must NOT delete bindingA, and the serialized follow-up POST #2 must
@@ -545,11 +575,17 @@ struct PushNotificationTests {
         await firstPostATask.value
         await switchBackTask.value
 
-        // Must keep bindingA active on iOS AND must NOT send DELETE for bindingA!
         #expect(postACount == 2)
-        #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
-        #expect(deleted.count == 1)
-        #expect(deleted[0].bindingID == bindingB)
+        if followupSucceeds {
+            #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
+            #expect(deleted.map(\.bindingID) == [bindingB])
+        } else {
+            #expect(manager.activeBindingIDForCurrentProfile() == nil)
+            #expect(manager.loadPendingDeregistrations().map(\.bindingID) == [bindingA])
+            enabled = false
+            await manager.disablePushNotifications()
+            #expect(deleted.map(\.bindingID) == [bindingB, bindingA])
+        }
         #expect(manager.loadPendingDeregistrations().isEmpty)
     }
 
@@ -569,6 +605,7 @@ struct PushNotificationTests {
         var releaseDeleteA: CheckedContinuation<Void, Error>?
         var events: [String] = []
 
+        var registrationWaits = 0
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, endpoint, _ in
@@ -608,7 +645,8 @@ struct PushNotificationTests {
             resolveAPNsEnv: { "sandbox" },
             bundleIDProvider: { "com.dzarlax.health-sync" },
             localeProvider: { "en" },
-            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            onRegistrationWait: { registrationWaits += 1 }
         )
 
         let tokenHex = String(repeating: "b", count: 64)
@@ -621,13 +659,16 @@ struct PushNotificationTests {
         activeEndpoint = endpointB
         activeKey = "key-b"
         let switchAToB = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
-        while releaseDeleteA == nil { await Task.yield() }
+        guard await waitForSignal({ releaseDeleteA != nil }) else {
+            Issue.record("Timed out waiting for the held request")
+            return
+        }
 
         // 3. Switch back B -> A while DELETE(bindingA1) is still in flight.
         activeEndpoint = endpointA
         activeKey = "key-a"
         let switchBToA = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
-        for _ in 0..<5 { await Task.yield() }
+        #expect(await waitForSignal { registrationWaits == 1 })
 
         // POST #2 for server A must wait for the in-flight DELETE(bindingA1) to finish.
         #expect(events == ["post-a:\(bindingA1)"])
@@ -731,7 +772,10 @@ struct PushNotificationTests {
         activeEndpoint = endpointA
         activeKey = "key-a"
         let switchBackTask = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
-        while releasePostA == nil { await Task.yield() }
+        guard await waitForSignal({ releasePostA != nil }) else {
+            Issue.record("Timed out waiting for the held request")
+            return
+        }
 
         // 4. Server A is now reachable; foreground return triggers drain while
         // POST(A) is still awaiting its response (local active registration is still nil).
@@ -830,7 +874,10 @@ struct PushNotificationTests {
         activeEndpoint = endpointA
         activeKey = "key-a"
         let switchBackTask = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
-        while releasePostA == nil { await Task.yield() }
+        guard await waitForSignal({ releasePostA != nil }) else {
+            Issue.record("Timed out waiting for the held request")
+            return
+        }
 
         // Drain while POST(A) is in flight -> must defer DELETE(bindingA1).
         serverAOnline = true
@@ -867,6 +914,7 @@ struct PushNotificationTests {
         var serverActiveToken: String?
         var releaseFirstPost: CheckedContinuation<PushDeviceRegisterResponse, Error>?
 
+        var registrationWaits = 0
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, _, _ in
@@ -893,18 +941,22 @@ struct PushNotificationTests {
             resolveAPNsEnv: { "sandbox" },
             bundleIDProvider: { "com.dzarlax.health-sync" },
             localeProvider: { "en" },
-            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            onRegistrationWait: { registrationWaits += 1 }
         )
 
         // 1. Start POST for token1 and hold it in flight.
         let post1Task = Task { await manager.syncRegistration(tokenHex: token1) }
-        while releaseFirstPost == nil { await Task.yield() }
+        guard await waitForSignal({ releaseFirstPost != nil }) else {
+            Issue.record("Timed out waiting for the held request")
+            return
+        }
 
         // 2. While token1's POST is in flight, APNs rotates token1 -> token2 -> token3.
         let post2Task = Task { await manager.syncRegistration(tokenHex: token2) }
-        await Task.yield()
+        #expect(await waitForSignal { registrationWaits == 1 })
         let post3Task = Task { await manager.syncRegistration(tokenHex: token3) }
-        for _ in 0..<5 { await Task.yield() }
+        #expect(await waitForSignal { registrationWaits == 2 })
 
         // No second POST may start concurrently while token1 is still in flight.
         #expect(sentTokens == [token1])
@@ -933,4 +985,139 @@ struct PushNotificationTests {
         await manager.syncRegistration(tokenHex: token3)
         #expect(sentTokens == [token1, token3])
     }
+
+    @Test(arguments: [
+        PushNotificationConstants.pendingDeregistrationsAccount,
+        PushNotificationConstants.activeRegistrationAccount
+    ])
+    func keychainFailureRetainsBindingUntilOptOutCleanupCanRetry(failedAccount: String) async {
+        let endpoint = URL(string: "https://server.example.com")!
+        let binding = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let keychain = InMemoryKeychainAccess()
+        var enabled = true
+        var deleted: [String] = []
+        let manager = PushRegistrationManager(
+            keychain: keychain,
+            registerCall: { request, _, _ in
+                PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: binding, enabled: true,
+                    registrationVersion: 1, apnsEnv: "sandbox"
+                )
+            },
+            deleteCall: { _, bindingID, _, _ in deleted.append(bindingID) },
+            configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
+            isPushEnabled: { enabled },
+            resolveAPNsEnv: { "sandbox" },
+            localeProvider: { "en" }
+        )
+
+        if failedAccount == PushNotificationConstants.activeRegistrationAccount {
+            keychain.failedWrites.insert(failedAccount)
+        }
+        await manager.syncRegistration(tokenHex: String(repeating: "a", count: 64))
+        if failedAccount == PushNotificationConstants.activeRegistrationAccount {
+            #expect(manager.loadActiveRegistration() == nil)
+            #expect(manager.loadPendingDeregistrations().map(\.bindingID) == [binding])
+        } else {
+            #expect(manager.loadActiveRegistration()?.bindingID == binding)
+            keychain.failedWrites.insert(failedAccount)
+        }
+
+        enabled = false
+        await manager.disablePushNotifications()
+        if failedAccount == PushNotificationConstants.pendingDeregistrationsAccount {
+            #expect(manager.loadActiveRegistration()?.bindingID == binding)
+            #expect(manager.activeBindingIDForCurrentProfile() == nil)
+            #expect(deleted.isEmpty)
+        }
+
+        keychain.failedWrites.removeAll()
+        await manager.handleAppBecameActive()
+        #expect(deleted == [binding])
+        #expect(manager.loadActiveRegistration() == nil)
+        #expect(manager.loadPendingDeregistrations().isEmpty)
+    }
+
+    @Test
+    func offlineOptOutStillRetriesCleanupAfterSevenDays() async {
+        let endpoint = URL(string: "https://server.example.com")!
+        let binding = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        var enabled = true
+        var date = Date(timeIntervalSince1970: 1_700_000_000)
+        var deleted: [String] = []
+        var connected = false
+        let manager = PushRegistrationManager(
+            keychain: InMemoryKeychainAccess(),
+            registerCall: { request, _, _ in
+                PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: binding, enabled: true,
+                    registrationVersion: 1, apnsEnv: "sandbox"
+                )
+            },
+            deleteCall: { _, bindingID, _, _ in
+                guard connected else { throw URLError(.notConnectedToInternet) }
+                deleted.append(bindingID)
+            },
+            configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
+            isPushEnabled: { enabled },
+            now: { date }
+        )
+        await manager.syncRegistration(tokenHex: String(repeating: "a", count: 64))
+        enabled = false
+        await manager.disablePushNotifications()
+        #expect(manager.loadPendingDeregistrations().map(\.bindingID) == [binding])
+
+        date.addTimeInterval(8 * 24 * 60 * 60)
+        connected = true
+        await manager.handleAppBecameActive()
+        #expect(deleted == [binding])
+        #expect(manager.loadPendingDeregistrations().isEmpty)
+    }
+
+    @Test
+    func callbackTasksReadLatestTokenInsteadOfCapturedToken() async {
+        let endpoint = URL(string: "https://server.example.com")!
+        var sentTokens: [String] = []
+        let manager = PushRegistrationManager(
+            keychain: InMemoryKeychainAccess(),
+            registerCall: { request, _, _ in
+                sentTokens.append(request.apnsToken)
+                return PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: UUID().uuidString,
+                    enabled: true, registrationVersion: 1, apnsEnv: "sandbox"
+                )
+            },
+            configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
+            isPushEnabled: { true },
+            resolveAPNsEnv: { "sandbox" },
+            localeProvider: { "en" }
+        )
+        manager.handleDeviceToken(Data(repeating: 0x11, count: 32))
+        manager.handleDeviceToken(Data(repeating: 0x22, count: 32))
+        await manager.handleAppBecameActive()
+
+        #expect(sentTokens == [String(repeating: "22", count: 32)])
+    }
+
+    @Test
+    func testRuntimeRejectsPushDeregistration() async {
+        guard SyncRuntime.isTestMode else {
+            Issue.record("Expected the test runtime")
+            return
+        }
+        do {
+            try await ServerClient.shared.deletePushDeviceBinding(
+                deviceID: UUID().uuidString,
+                bindingID: UUID().uuidString,
+                endpoint: URL(string: "https://example.invalid")!,
+                apiKey: "test-key"
+            )
+            Issue.record("Unexpected successful request in test mode")
+        } catch ServerError.missingConfig {
+            // The runtime guard stopped the request before the transport.
+        } catch {
+            Issue.record("Unexpected failure: \(error)")
+        }
+    }
+
 }

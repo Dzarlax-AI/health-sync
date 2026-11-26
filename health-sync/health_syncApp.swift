@@ -36,6 +36,7 @@ struct HealthSyncApp: App {
                                         settings.authorizationStatus == .provisional
                                 else { return }
                                 DispatchQueue.main.async {
+                                    guard UserDefaults.standard.bool(forKey: PushNotificationConstants.enabledDefaultsKey) else { return }
                                     UIApplication.shared.registerForRemoteNotifications()
                                 }
                             }

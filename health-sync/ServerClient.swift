@@ -448,6 +448,7 @@ final class ServerClient {
         endpoint: URL,
         apiKey: String
     ) async throws {
+        guard !SyncRuntime.isTestMode else { throw ServerError.missingConfig }
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
         let basePath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
         let route = "/api/push/devices/\(deviceID)"
@@ -469,7 +470,7 @@ final class ServerClient {
            let location = http.value(forHTTPHeaderField: "Location") {
             throw ServerError.redirected(to: location)
         }
-        guard (200...299).contains(http.statusCode) else {
+        guard http.statusCode == 204 else {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw ServerError.http(http.statusCode, body)
         }

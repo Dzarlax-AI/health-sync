@@ -80,6 +80,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                     settings.authorizationStatus == .provisional
             else { return }
             DispatchQueue.main.async {
+                guard UserDefaults.standard.bool(forKey: PushNotificationConstants.enabledDefaultsKey) else { return }
                 application.registerForRemoteNotifications()
             }
         }
