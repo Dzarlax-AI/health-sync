@@ -1070,14 +1070,15 @@ final class PushRegistrationManager {
                             try? forgetRegistrationAttempt(attempt)
                         }
                         if let relayMeta = relayAttemptMeta {
-                            relayCoordinator.enqueueGrantRevocation(
+                            if (try? relayCoordinator.enqueueGrantRevocation(
                                 grantID: relayMeta.grantID,
                                 relayOrigin: relayMeta.relayURL.absoluteString
-                            )
-                            relayCoordinator.clearPendingGrantAttempt(
-                                forFingerprint: fingerprint,
-                                clientGrantKey: relayMeta.attempt.clientGrantKey
-                            )
+                            )) != nil {
+                                relayCoordinator.clearPendingGrantAttempt(
+                                    forFingerprint: fingerprint,
+                                    clientGrantKey: relayMeta.attempt.clientGrantKey
+                                )
+                            }
                         }
                         lastRegistrationError = error.localizedDescription
                     }
@@ -1086,14 +1087,15 @@ final class PushRegistrationManager {
                         try? forgetRegistrationAttempt(attempt)
                     }
                     if let relayMeta = relayAttemptMeta {
-                        relayCoordinator.enqueueGrantRevocation(
+                        if (try? relayCoordinator.enqueueGrantRevocation(
                             grantID: relayMeta.grantID,
                             relayOrigin: relayMeta.relayURL.absoluteString
-                        )
-                        relayCoordinator.clearPendingGrantAttempt(
-                            forFingerprint: fingerprint,
-                            clientGrantKey: relayMeta.attempt.clientGrantKey
-                        )
+                        )) != nil {
+                            relayCoordinator.clearPendingGrantAttempt(
+                                forFingerprint: fingerprint,
+                                clientGrantKey: relayMeta.attempt.clientGrantKey
+                            )
+                        }
                     }
                     shouldDrainDeregistrations = true
                 }
@@ -1391,7 +1393,7 @@ final class PushRegistrationManager {
             if active.transportMode == "relay",
                let grantID = active.relayGrantID,
                let relayOrigin = active.relayOrigin {
-                relayCoordinator.enqueueGrantRevocation(grantID: grantID, relayOrigin: relayOrigin)
+                try relayCoordinator.enqueueGrantRevocation(grantID: grantID, relayOrigin: relayOrigin)
             }
             try enqueueDeregistration(PendingPushDeregistration(
                 deviceID: active.deviceID,

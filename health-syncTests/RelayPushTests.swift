@@ -57,6 +57,7 @@ private final class MockRelayHTTPTransport: RelayHTTPTransport, @unchecked Senda
 @MainActor
 private final class InMemoryRelayKeychain: KeychainAccess {
     var items: [String: Data] = [:]
+    var failedWrites: Set<String> = []
 
     func copy(_ query: [CFString: Any]) -> (OSStatus, Any?) {
         guard let account = query[kSecAttrAccount] as? String else { return (errSecParam, nil) }
@@ -66,6 +67,7 @@ private final class InMemoryRelayKeychain: KeychainAccess {
 
     func update(_ query: [CFString: Any], attributes: [CFString: Any]) -> OSStatus {
         guard let account = query[kSecAttrAccount] as? String else { return errSecParam }
+        guard !failedWrites.contains(account) else { return errSecInteractionNotAllowed }
         guard items[account] != nil else { return errSecItemNotFound }
         guard let data = attributes[kSecValueData] as? Data else { return errSecParam }
         items[account] = data
@@ -76,6 +78,7 @@ private final class InMemoryRelayKeychain: KeychainAccess {
         guard let account = attributes[kSecAttrAccount] as? String,
               let data = attributes[kSecValueData] as? Data
         else { return errSecParam }
+        guard !failedWrites.contains(account) else { return errSecInteractionNotAllowed }
         items[account] = data
         return errSecSuccess
     }
@@ -344,7 +347,11 @@ final class RelayPushTests: XCTestCase {
                     // Simulate network drop AFTER Relay committed grant.
                     throw URLError(.networkConnectionLost)
                 }
-                let resp = try JSONEncoder().encode(RelayGrantCreateResponse(grantID: fixedGrantID, expiresAt: nil))
+                let resp = try JSONEncoder().encode(RelayGrantCreateResponse(
+                    grantID: fixedGrantID,
+                    expiresAt: nil,
+                    tokenHash: RelayGrantCoordinator.sha256Hex(self.tokenA)
+                ))
                 return (200, resp)
             }
             if method == "PUT", path.hasSuffix("/v1/attest/token") {
@@ -532,7 +539,11 @@ final class RelayPushTests: XCTestCase {
                     return (200, Data(#"{"key_id":"ok"}"#.utf8))
                 }
                 if method == "POST", path.hasSuffix("/v1/grants") {
-                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(grantID: initialGrantID, expiresAt: nil))
+                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(
+                        grantID: initialGrantID,
+                        expiresAt: nil,
+                        tokenHash: RelayGrantCoordinator.sha256Hex(self.tokenA)
+                    ))
                     return (200, resp)
                 }
                 if method == "PUT", path.hasSuffix("/v1/attest/token") {
@@ -654,7 +665,11 @@ final class RelayPushTests: XCTestCase {
                     return (200, Data(#"{"key_id":"ok"}"#.utf8))
                 }
                 if method == "POST", path.hasSuffix("/v1/grants") {
-                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(grantID: initialGrantID, expiresAt: nil))
+                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(
+                        grantID: initialGrantID,
+                        expiresAt: nil,
+                        tokenHash: RelayGrantCoordinator.sha256Hex(self.tokenA)
+                    ))
                     return (200, resp)
                 }
                 if method == "PUT", path.hasSuffix("/refresh") {
@@ -773,7 +788,11 @@ final class RelayPushTests: XCTestCase {
             if method == "POST", path.hasSuffix("/v1/grants") {
                 grantCreates += 1
                 let gid = grantCreates == 1 ? oldGrantID : newGrantID
-                let resp = try JSONEncoder().encode(RelayGrantCreateResponse(grantID: gid, expiresAt: nil))
+                let resp = try JSONEncoder().encode(RelayGrantCreateResponse(
+                    grantID: gid,
+                    expiresAt: nil,
+                    tokenHash: RelayGrantCoordinator.sha256Hex(self.tokenA)
+                ))
                 return (200, resp)
             }
             if method == "PUT", path.hasSuffix("/v1/grants/\(oldGrantID)/refresh") {
@@ -838,7 +857,7 @@ final class RelayPushTests: XCTestCase {
             let newGrantID = UUID().uuidString.lowercased()
             var grantCreates = 0
 
-            relayTransport.handler = { method, url, _, _ in
+            relayTransport.handler = { method, url, body, _ in
                 let path = url.path
                 if path.hasSuffix("/v1/attest/challenge") {
                     let data = try JSONEncoder().encode(RelayChallengeResponse(
@@ -854,7 +873,13 @@ final class RelayPushTests: XCTestCase {
                 if method == "POST", path.hasSuffix("/v1/grants") {
                     grantCreates += 1
                     let gid = grantCreates == 1 ? oldGrantID : newGrantID
-                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(grantID: gid, expiresAt: nil))
+                    let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+                    let tok = (json?["apns_token"] as? String) ?? self.tokenA
+                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(
+                        grantID: gid,
+                        expiresAt: nil,
+                        tokenHash: RelayGrantCoordinator.sha256Hex(tok)
+                    ))
                     return (200, resp)
                 }
                 if method == "PUT", path.hasSuffix("/v1/attest/token") {
@@ -908,5 +933,273 @@ final class RelayPushTests: XCTestCase {
             XCTAssertEqual(serverRegs[1].relayGrantID, newGrantID)
             XCTAssertEqual(mgr.loadActiveRegistration()?.relayGrantID, newGrantID)
         }
+    }
+
+    func testRelayGrantRecoveryWithTokenRotationBeforeRetryConfirmsLatestTokenOnRelay() async {
+        // Case A: First POST /v1/grants commits token A on Relay, response is lost,
+        // iPhone rotates to token B before retry, and Relay replay still reports stale token A
+        // -> iOS MUST explicitly refresh the grant with token B before saving ActivePushRegistration!
+        do {
+            let kc = InMemoryRelayKeychain()
+            let attest = MockAppAttestProvider()
+            let relayTransport = MockRelayHTTPTransport()
+            let grantID = UUID().uuidString.lowercased()
+            var createCalls = 0
+            var relayActiveToken = ""
+            var refreshTokens: [String] = []
+
+            relayTransport.handler = { method, url, body, _ in
+                let path = url.path
+                if path.hasSuffix("/v1/attest/challenge") {
+                    let data = try JSONEncoder().encode(RelayChallengeResponse(
+                        challengeID: UUID().uuidString.lowercased(),
+                        nonce: "nonce-\(UUID().uuidString)",
+                        expiresAt: nil
+                    ))
+                    return (200, data)
+                }
+                if path.hasSuffix("/v1/attest/register") {
+                    return (200, Data(#"{"key_id":"ok"}"#.utf8))
+                }
+                if method == "POST", path.hasSuffix("/v1/grants") {
+                    createCalls += 1
+                    let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+                    let tok = (json?["apns_token"] as? String) ?? ""
+                    if createCalls == 1 {
+                        relayActiveToken = tok // committed token A, then network dropped
+                        throw URLError(.networkConnectionLost)
+                    }
+                    // Simulate replay returning stale token_hash (token A) instead of B.
+                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(
+                        grantID: grantID,
+                        expiresAt: nil,
+                        tokenHash: RelayGrantCoordinator.sha256Hex(relayActiveToken)
+                    ))
+                    return (200, resp)
+                }
+                if method == "PUT", path.hasSuffix("/v1/grants/\(grantID)/refresh") {
+                    let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+                    let tok = (json?["apns_token"] as? String) ?? ""
+                    relayActiveToken = tok
+                    refreshTokens.append(tok)
+                    return (200, Data(#"{"grant_id":"\#(grantID)"}"#.utf8))
+                }
+                return (404, Data())
+            }
+
+            let coordinator = RelayGrantCoordinator(keychain: kc, appAttest: attest, transport: relayTransport)
+            var serverPosts = 0
+            let mgr = PushRegistrationManager(
+                keychain: kc,
+                registerCall: { req, _, _ in
+                    serverPosts += 1
+                    return PushDeviceRegisterResponse(
+                        deviceID: req.deviceID,
+                        bindingID: req.bindingID ?? UUID().uuidString.lowercased(),
+                        enabled: true,
+                        registrationVersion: 1,
+                        apnsEnv: req.apnsEnv,
+                        inboxContractVersion: 2
+                    )
+                },
+                deleteCall: { _, _, _, _ in },
+                cancelAttemptCall: { _, _, _, _ in },
+                fetchPreferencesCall: { _, _ in
+                    self.makePreferences(
+                        apnsPushEnabled: true,
+                        apnsPushConfigured: true,
+                        apnsTransportMode: "relay",
+                        apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                    )
+                },
+                relayCoordinator: coordinator,
+                configSnapshot: { self.makeConfig() },
+                isPushEnabled: { true },
+                resolveAPNsEnv: { "production" },
+                resetBadge: {}
+            )
+
+            // 1. Attempt with token A loses response after Relay commit.
+            await mgr.syncRegistration(tokenHex: tokenA)
+            XCTAssertEqual(relayActiveToken, tokenA)
+            XCTAssertEqual(serverPosts, 0)
+
+            // 2. Retry with rotated token B must confirm token B on Relay via refresh before saving registration!
+            await mgr.syncRegistration(tokenHex: tokenB)
+            XCTAssertEqual(relayActiveToken, tokenB)
+            XCTAssertEqual(refreshTokens, [tokenB])
+            XCTAssertEqual(serverPosts, 1)
+            XCTAssertEqual(mgr.loadActiveRegistration()?.tokenHash, RelayGrantCoordinator.sha256Hex(tokenB))
+        }
+
+        // Case B: POST /v1/grants succeeds with token A, POST /api/push/devices fails,
+        // token rotates to B before retry -> obtainGrant MUST refresh grant with token B before registering on server!
+        do {
+            let kc = InMemoryRelayKeychain()
+            let attest = MockAppAttestProvider()
+            let relayTransport = MockRelayHTTPTransport()
+            let grantID = UUID().uuidString.lowercased()
+            var relayActiveToken = ""
+            var refreshTokens: [String] = []
+
+            relayTransport.handler = { method, url, body, _ in
+                let path = url.path
+                if path.hasSuffix("/v1/attest/challenge") {
+                    let data = try JSONEncoder().encode(RelayChallengeResponse(
+                        challengeID: UUID().uuidString.lowercased(),
+                        nonce: "nonce-\(UUID().uuidString)",
+                        expiresAt: nil
+                    ))
+                    return (200, data)
+                }
+                if path.hasSuffix("/v1/attest/register") {
+                    return (200, Data(#"{"key_id":"ok"}"#.utf8))
+                }
+                if method == "POST", path.hasSuffix("/v1/grants") {
+                    let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+                    relayActiveToken = (json?["apns_token"] as? String) ?? ""
+                    let resp = try JSONEncoder().encode(RelayGrantCreateResponse(
+                        grantID: grantID,
+                        expiresAt: nil,
+                        tokenHash: RelayGrantCoordinator.sha256Hex(relayActiveToken)
+                    ))
+                    return (200, resp)
+                }
+                if method == "PUT", path.hasSuffix("/v1/grants/\(grantID)/refresh") {
+                    let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+                    let tok = (json?["apns_token"] as? String) ?? ""
+                    relayActiveToken = tok
+                    refreshTokens.append(tok)
+                    return (200, Data(#"{"grant_id":"\#(grantID)"}"#.utf8))
+                }
+                return (404, Data())
+            }
+
+            let coordinator = RelayGrantCoordinator(keychain: kc, appAttest: attest, transport: relayTransport)
+            var serverAttempts = 0
+            let mgr = PushRegistrationManager(
+                keychain: kc,
+                registerCall: { req, _, _ in
+                    serverAttempts += 1
+                    if serverAttempts == 1 {
+                        throw URLError(.timedOut)
+                    }
+                    return PushDeviceRegisterResponse(
+                        deviceID: req.deviceID,
+                        bindingID: req.bindingID ?? UUID().uuidString.lowercased(),
+                        enabled: true,
+                        registrationVersion: 1,
+                        apnsEnv: req.apnsEnv,
+                        inboxContractVersion: 2
+                    )
+                },
+                deleteCall: { _, _, _, _ in },
+                cancelAttemptCall: { _, _, _, _ in },
+                fetchPreferencesCall: { _, _ in
+                    self.makePreferences(
+                        apnsPushEnabled: true,
+                        apnsPushConfigured: true,
+                        apnsTransportMode: "relay",
+                        apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                    )
+                },
+                relayCoordinator: coordinator,
+                configSnapshot: { self.makeConfig() },
+                isPushEnabled: { true },
+                resolveAPNsEnv: { "production" },
+                resetBadge: {}
+            )
+
+            // 1. Grant created with token A, server POST fails.
+            await mgr.syncRegistration(tokenHex: tokenA)
+            XCTAssertEqual(relayActiveToken, tokenA)
+            XCTAssertNil(mgr.loadActiveRegistration())
+
+            // 2. Token rotates to B -> retry MUST refresh grant with token B on Relay!
+            await mgr.syncRegistration(tokenHex: tokenB)
+            XCTAssertEqual(relayActiveToken, tokenB)
+            XCTAssertEqual(refreshTokens, [tokenB])
+            XCTAssertEqual(mgr.loadActiveRegistration()?.tokenHash, RelayGrantCoordinator.sha256Hex(tokenB))
+        }
+    }
+
+    func testKeychainFailureWritingRevocationQueuePreservesPendingAttemptUntilWriteSucceeds() async {
+        let kc = InMemoryRelayKeychain()
+        let attest = MockAppAttestProvider()
+        let relayTransport = MockRelayHTTPTransport()
+        var capturedClientGrantKey: String?
+        var cancelledClientGrantKeys: [String] = []
+
+        relayTransport.handler = { method, url, body, _ in
+            let path = url.path
+            if path.hasSuffix("/v1/attest/challenge") {
+                let data = try JSONEncoder().encode(RelayChallengeResponse(
+                    challengeID: UUID().uuidString.lowercased(),
+                    nonce: "nonce-\(UUID().uuidString)",
+                    expiresAt: nil
+                ))
+                return (200, data)
+            }
+            if path.hasSuffix("/v1/attest/register") {
+                return (200, Data(#"{"key_id":"ok"}"#.utf8))
+            }
+            if method == "POST", path.hasSuffix("/v1/grants") {
+                let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+                capturedClientGrantKey = json?["client_grant_key"] as? String
+                throw URLError(.timedOut)
+            }
+            if method == "DELETE", path.contains("/v1/grants/by-client-key/") {
+                let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+                if let resID = json?["resource_id"] as? String {
+                    cancelledClientGrantKeys.append(resID)
+                }
+                return (200, Data(#"{"cancelled":true}"#.utf8))
+            }
+            return (404, Data())
+        }
+
+        let coordinator = RelayGrantCoordinator(keychain: kc, appAttest: attest, transport: relayTransport)
+        var pushEnabled = true
+        let mgr = PushRegistrationManager(
+            keychain: kc,
+            registerCall: { _, _, _ in throw ServerError.http(500, "unexpected") },
+            deleteCall: { _, _, _, _ in },
+            cancelAttemptCall: { _, _, _, _ in },
+            fetchPreferencesCall: { _, _ in
+                self.makePreferences(
+                    apnsPushEnabled: true,
+                    apnsPushConfigured: true,
+                    apnsTransportMode: "relay",
+                    apnsRelayURL: RelayPushConstants.trustedProductionOrigin
+                )
+            },
+            relayCoordinator: coordinator,
+            configSnapshot: { self.makeConfig() },
+            isPushEnabled: { pushEnabled },
+            resolveAPNsEnv: { "production" },
+            resetBadge: {}
+        )
+
+        // 1. POST /v1/grants times out -> pending attempt is persisted in Keychain.
+        await mgr.syncRegistration(tokenHex: tokenA)
+        XCTAssertNotNil(capturedClientGrantKey)
+        XCTAssertEqual(coordinator.loadPendingGrantAttempts().count, 1)
+
+        // 2. Simulate Keychain write failure ONLY for pendingRevocationsAccount when user disables pushes.
+        kc.failedWrites.insert(RelayPushConstants.pendingRevocationsAccount)
+        pushEnabled = false
+        await mgr.disablePushNotifications()
+
+        // Pending attempt MUST STILL BE PRESERVED in Keychain because revocation queue write failed!
+        XCTAssertEqual(coordinator.loadPendingGrantAttempts().count, 1)
+        XCTAssertTrue(coordinator.loadPendingRevocations().isEmpty)
+        XCTAssertTrue(cancelledClientGrantKeys.isEmpty)
+
+        // 3. Keychain recovers -> next drain moves the attempt to revocation queue and cancels it on Relay!
+        kc.failedWrites.remove(RelayPushConstants.pendingRevocationsAccount)
+        await mgr.drainPendingDeregistrations()
+        XCTAssertEqual(cancelledClientGrantKeys, [capturedClientGrantKey!])
+        XCTAssertTrue(coordinator.loadPendingGrantAttempts().isEmpty)
+        XCTAssertTrue(coordinator.loadPendingRevocations().isEmpty)
     }
 }
