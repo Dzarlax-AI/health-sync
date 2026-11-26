@@ -1277,4 +1277,68 @@ struct PushNotificationTests {
         #expect(posts == 1)
     }
 
+
+    @Test(arguments: [true, false])
+    func optOutThenOptInRecoversLostRefreshResponse(reusesBinding: Bool) async {
+        let endpoint = URL(string: "https://server.example.com")!
+        let originalBinding = UUID().uuidString
+        let refreshedBinding = reusesBinding ? originalBinding : UUID().uuidString
+        let token1 = String(repeating: "a", count: 64)
+        let token2 = String(repeating: "b", count: 64)
+        var enabled = true
+        var serverBinding: String?
+        var received: Set<UUID> = []
+        var releaseRefresh: CheckedContinuation<Void, Never>?
+        var waited = false
+        var bindingDeletes: [String] = []
+
+        let manager = PushRegistrationManager(
+            keychain: InMemoryKeychainAccess(),
+            registerCall: { request, _, _ in
+                let id = try #require(request.registrationAttemptID)
+                if received.insert(id).inserted {
+                    serverBinding = request.apnsToken == token1 ? originalBinding : refreshedBinding
+                    if request.apnsToken == token2 && releaseRefresh == nil {
+                        await withCheckedContinuation { releaseRefresh = $0 }
+                        throw URLError(.timedOut)
+                    }
+                } else if serverBinding == nil {
+                    throw ServerError.http(409, "registration attempt is superseded")
+                }
+                return PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: try #require(serverBinding), enabled: true,
+                    registrationVersion: Int64(received.count), apnsEnv: request.apnsEnv
+                )
+            },
+            deleteCall: { _, id, _, _ in
+                bindingDeletes.append(id)
+                if id == serverBinding { serverBinding = nil }
+            },
+            cancelAttemptCall: { _, _, _, _ in },
+            configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
+            isPushEnabled: { enabled },
+            resolveAPNsEnv: { "sandbox" },
+            localeProvider: { "en" },
+            onRegistrationWait: { waited = true }
+        )
+        await manager.syncRegistration(tokenHex: token1)
+        let refresh = Task { await manager.syncRegistration(tokenHex: token2) }
+        guard await waitForSignal({ releaseRefresh != nil }) else {
+            Issue.record("Refresh did not start")
+            return
+        }
+        enabled = false
+        await manager.disablePushNotifications()
+        enabled = true
+        let retry = Task { await manager.syncRegistration(tokenHex: token2) }
+        #expect(await waitForSignal { waited })
+        releaseRefresh?.resume()
+        await refresh.value
+        await retry.value
+        #expect(received.count == 2)
+        #expect(bindingDeletes == (reusesBinding ? [] : [originalBinding]))
+        #expect(manager.loadPendingDeregistrations().isEmpty)
+        #expect(serverBinding == refreshedBinding)
+        #expect(manager.activeBindingIDForCurrentProfile() == refreshedBinding)
+    }
 }

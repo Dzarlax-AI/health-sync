@@ -648,7 +648,6 @@ final class PushRegistrationManager {
                         unsupportedRetryState = nil
                         unsupportedRetryAfter = nil
                         shouldDrainDeregistrations = loadPendingDeregistrations().contains {
-                            $0.waitsForReplacement == true &&
                             UserDefaultsSyncConfiguration.fingerprint(endpoint: $0.endpoint, apiKey: $0.apiKey) == fingerprint
                         }
                     } catch {
@@ -779,24 +778,24 @@ final class PushRegistrationManager {
                 continue
             }
 
-            // Never deregister a binding that is currently active on the
-            // selected profile while push notifications are enabled.
-            if isPushEnabled(),
-               let currentFingerprint = (try? configSnapshot())?.fingerprint,
-               currentFingerprint == itemFingerprint,
-               let active = loadActiveRegistration(),
-               active.endpointFingerprint == itemFingerprint,
-               active.deviceID == item.deviceID,
-               active.bindingID == item.bindingID {
-                removePendingDeregistration(deviceID: item.deviceID, bindingID: item.bindingID)
-                continue
-            }
+            if isPushEnabled(), (try? configSnapshot())?.fingerprint == itemFingerprint {
+                // The POST may have committed even though its response was lost.
+                // Its version can reuse this binding ID, so wait for recovery
+                // or precise attempt cancellation before sending a binding DELETE.
+                guard let attempts = try? readRegistrationAttempts(),
+                      attempts[itemFingerprint] == nil else { continue }
 
-            if item.waitsForReplacement == true,
-               isPushEnabled(),
-               (try? configSnapshot())?.fingerprint == itemFingerprint,
-               loadActiveRegistration()?.endpointFingerprint != itemFingerprint {
-                continue
+                let active = loadActiveRegistration()
+                if active?.endpointFingerprint == itemFingerprint,
+                   active?.deviceID == item.deviceID,
+                   active?.bindingID == item.bindingID {
+                    removePendingDeregistration(deviceID: item.deviceID, bindingID: item.bindingID)
+                    continue
+                }
+                if item.waitsForReplacement == true,
+                   active?.endpointFingerprint != itemFingerprint {
+                    continue
+                }
             }
 
             let deleteTask = Task { @MainActor [self] in
