@@ -137,11 +137,13 @@ struct PushNotificationTests {
         let bindingA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         let bindingB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
+        var bindingsByAttempt: [UUID: String] = [:]
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, endpoint, _ in
                 registerRequests.append(req)
                 let binding = endpoint == endpointA ? bindingA : bindingB
+                bindingsByAttempt[try #require(req.registrationAttemptID)] = binding
                 return PushDeviceRegisterResponse(
                     deviceID: req.deviceID,
                     bindingID: binding,
@@ -150,7 +152,9 @@ struct PushNotificationTests {
                     apnsEnv: req.apnsEnv
                 )
             },
-            deleteCall: { deviceID, bindingID, endpoint, apiKey in
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { deviceID, id, endpoint, apiKey in
+                let bindingID = try #require(bindingsByAttempt[id])
                 deleteAttempts.append((deviceID, bindingID, endpoint, apiKey))
                 if failDeletes {
                     throw ServerError.http(503, "offline")
@@ -365,10 +369,12 @@ struct PushNotificationTests {
         var failDeleteB = true
         var pushEnabled = true
 
+        var bindingsByAttempt: [UUID: String] = [:]
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, endpoint, _ in
-                PushDeviceRegisterResponse(
+                bindingsByAttempt[try #require(req.registrationAttemptID)] = endpoint == endpointA ? bindingA : bindingB
+                return PushDeviceRegisterResponse(
                     deviceID: req.deviceID,
                     bindingID: endpoint == endpointA ? bindingA : bindingB,
                     enabled: true,
@@ -376,7 +382,9 @@ struct PushNotificationTests {
                     apnsEnv: req.apnsEnv
                 )
             },
-            deleteCall: { _, bindingID, _, _ in
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { _, id, _, _ in
+                let bindingID = try #require(bindingsByAttempt[id])
                 if bindingID == bindingA {
                     try await withCheckedThrowingContinuation { cont in
                         releaseDeleteA = cont
@@ -500,7 +508,8 @@ struct PushNotificationTests {
         var cancelledAttempts: [UUID] = []
         var postACount = 0
         var releaseFirstPostA: CheckedContinuation<PushDeviceRegisterResponse, Error>?
-        var deleted: [(bindingID: String, endpoint: URL, apiKey: String)] = []
+        var attemptB: UUID?
+        var cancelledOnB: [UUID] = []
 
         var registrationWaits = 0
         let manager = PushRegistrationManager(
@@ -523,6 +532,7 @@ struct PushNotificationTests {
                         apnsEnv: req.apnsEnv
                     )
                 }
+                attemptB = try #require(req.registrationAttemptID)
                 return PushDeviceRegisterResponse(
                     deviceID: req.deviceID,
                     bindingID: bindingB,
@@ -531,10 +541,15 @@ struct PushNotificationTests {
                     apnsEnv: req.apnsEnv
                 )
             },
-            deleteCall: { _, bindingID, endpoint, apiKey in
-                deleted.append((bindingID, endpoint, apiKey))
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { _, id, endpoint, apiKey in
+                if endpoint == endpointB {
+                    #expect(apiKey == "key-b")
+                    cancelledOnB.append(id)
+                } else {
+                    cancelledAttempts.append(id)
+                }
             },
-            cancelAttemptCall: { _, id, _, _ in cancelledAttempts.append(id) },
             configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
             isPushEnabled: { enabled },
             resolveAPNsEnv: { "sandbox" },
@@ -567,8 +582,8 @@ struct PushNotificationTests {
         let switchBackTask = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
         #expect(await waitForSignal { registrationWaits == 1 })
         #expect(postACount == 1)
-        #expect(deleted.count == 1)
-        #expect(deleted.first?.bindingID == bindingB)
+        #expect(cancelledOnB.count == 1)
+        #expect(cancelledOnB.first == attemptB)
 
         // 4. Delayed POST #1 from the earlier epoch finally returns the same bindingA.
         // It must NOT delete bindingA, and the serialized follow-up POST #2 must
@@ -587,13 +602,13 @@ struct PushNotificationTests {
         #expect(postACount == 2)
         if followupSucceeds {
             #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
-            #expect(deleted.map(\.bindingID) == [bindingB])
+            #expect(cancelledOnB.count == 1)
         } else {
             #expect(manager.activeBindingIDForCurrentProfile() == nil)
             #expect(manager.loadPendingDeregistrations().map(\.bindingID) == [bindingA])
             enabled = false
             await manager.disablePushNotifications()
-            #expect(deleted.map(\.bindingID) == [bindingB])
+            #expect(cancelledOnB.count == 1)
             #expect(cancelledAttempts.count == 2)
             #expect(Set(cancelledAttempts) == Set(attemptsA))
         }
@@ -617,11 +632,13 @@ struct PushNotificationTests {
         var events: [String] = []
 
         var registrationWaits = 0
+        var bindingsByAttempt: [UUID: String] = [:]
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, endpoint, _ in
                 if endpoint == endpointA {
                     let binding = serverADisabled ? bindingA2 : bindingA1
+                    bindingsByAttempt[try #require(req.registrationAttemptID)] = binding
                     events.append("post-a:\(binding)")
                     return PushDeviceRegisterResponse(
                         deviceID: req.deviceID,
@@ -631,6 +648,7 @@ struct PushNotificationTests {
                         apnsEnv: req.apnsEnv
                     )
                 }
+                bindingsByAttempt[try #require(req.registrationAttemptID)] = bindingB
                 events.append("post-b:\(bindingB)")
                 return PushDeviceRegisterResponse(
                     deviceID: req.deviceID,
@@ -640,7 +658,9 @@ struct PushNotificationTests {
                     apnsEnv: req.apnsEnv
                 )
             },
-            deleteCall: { _, bindingID, endpoint, _ in
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { _, id, endpoint, _ in
+                let bindingID = try #require(bindingsByAttempt[id])
                 if endpoint == endpointA {
                     try await withCheckedThrowingContinuation { cont in
                         releaseDeleteA = cont
@@ -716,6 +736,7 @@ struct PushNotificationTests {
         var releasePostA: CheckedContinuation<PushDeviceRegisterResponse, Error>?
         var deleteCallsAfterPostStarted = 0
 
+        var bindingsByAttempt: [UUID: String] = [:]
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, endpoint, _ in
@@ -726,6 +747,7 @@ struct PushNotificationTests {
                             releasePostA = cont
                         }
                     }
+                    bindingsByAttempt[try #require(req.registrationAttemptID)] = bindingA
                     return PushDeviceRegisterResponse(
                         deviceID: req.deviceID,
                         bindingID: bindingA,
@@ -734,6 +756,7 @@ struct PushNotificationTests {
                         apnsEnv: req.apnsEnv
                     )
                 }
+                bindingsByAttempt[try #require(req.registrationAttemptID)] = bindingB
                 return PushDeviceRegisterResponse(
                     deviceID: req.deviceID,
                     bindingID: bindingB,
@@ -742,7 +765,9 @@ struct PushNotificationTests {
                     apnsEnv: req.apnsEnv
                 )
             },
-            deleteCall: { _, bindingID, endpoint, _ in
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { _, id, endpoint, _ in
+                let bindingID = try #require(bindingsByAttempt[id])
                 if endpoint == endpointA {
                     if !serverAOnline {
                         throw ServerError.http(503, "server A offline")
@@ -830,6 +855,7 @@ struct PushNotificationTests {
         var releasePostA: CheckedContinuation<PushDeviceRegisterResponse, Error>?
         var deletedOnA: [String] = []
 
+        var bindingsByAttempt: [UUID: String] = [:]
         let manager = PushRegistrationManager(
             keychain: keychain,
             registerCall: { req, endpoint, _ in
@@ -840,6 +866,7 @@ struct PushNotificationTests {
                             releasePostA = cont
                         }
                     }
+                    bindingsByAttempt[try #require(req.registrationAttemptID)] = bindingA1
                     return PushDeviceRegisterResponse(
                         deviceID: req.deviceID,
                         bindingID: bindingA1,
@@ -848,6 +875,7 @@ struct PushNotificationTests {
                         apnsEnv: req.apnsEnv
                     )
                 }
+                bindingsByAttempt[try #require(req.registrationAttemptID)] = bindingB
                 return PushDeviceRegisterResponse(
                     deviceID: req.deviceID,
                     bindingID: bindingB,
@@ -856,7 +884,9 @@ struct PushNotificationTests {
                     apnsEnv: req.apnsEnv
                 )
             },
-            deleteCall: { _, bindingID, endpoint, _ in
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { _, id, endpoint, _ in
+                let bindingID = try #require(bindingsByAttempt[id])
                 if endpoint == endpointA {
                     if !serverAOnline {
                         throw ServerError.http(503, "server A offline")
@@ -1048,14 +1078,9 @@ struct PushNotificationTests {
 
         keychain.failedWrites.removeAll()
         await manager.handleAppBecameActive()
-        if failedAccount == PushNotificationConstants.activeRegistrationAccount {
-            #expect(deleted.isEmpty)
-            #expect(cancelled.count == 1)
-            #expect(cancelled.first == attemptID)
-        } else {
-            #expect(deleted == [binding])
-            #expect(cancelled.isEmpty)
-        }
+        #expect(deleted.isEmpty)
+        #expect(cancelled.count == 1)
+        #expect(cancelled.first == attemptID)
         #expect(manager.loadActiveRegistration() == nil)
         #expect(manager.loadPendingDeregistrations().isEmpty)
     }
@@ -1066,19 +1091,22 @@ struct PushNotificationTests {
         let binding = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         var enabled = true
         var date = Date(timeIntervalSince1970: 1_700_000_000)
-        var deleted: [String] = []
+        var registrationAttempt: UUID?
+        var cancelled: [UUID] = []
         var connected = false
         let manager = PushRegistrationManager(
             keychain: InMemoryKeychainAccess(),
             registerCall: { request, _, _ in
-                PushDeviceRegisterResponse(
+                registrationAttempt = try #require(request.registrationAttemptID)
+                return PushDeviceRegisterResponse(
                     deviceID: request.deviceID, bindingID: binding, enabled: true,
                     registrationVersion: 1, apnsEnv: "sandbox"
                 )
             },
-            deleteCall: { _, bindingID, _, _ in
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { _, attemptID, _, _ in
                 guard connected else { throw URLError(.notConnectedToInternet) }
-                deleted.append(bindingID)
+                cancelled.append(attemptID)
             },
             configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
             isPushEnabled: { enabled },
@@ -1092,7 +1120,8 @@ struct PushNotificationTests {
         date.addTimeInterval(8 * 24 * 60 * 60)
         connected = true
         await manager.handleAppBecameActive()
-        #expect(deleted == [binding])
+        #expect(cancelled.count == 1)
+        #expect(cancelled.first == registrationAttempt)
         #expect(manager.loadPendingDeregistrations().isEmpty)
     }
 
@@ -1312,12 +1341,14 @@ struct PushNotificationTests {
         var received: Set<UUID> = []
         var releaseRefresh: CheckedContinuation<Void, Never>?
         var waited = false
-        var bindingDeletes: [String] = []
+        var initialAttempt: UUID?
+        var cancelled: [UUID] = []
 
         let manager = PushRegistrationManager(
             keychain: InMemoryKeychainAccess(),
             registerCall: { request, _, _ in
                 let id = try #require(request.registrationAttemptID)
+                if request.apnsToken == token1 { initialAttempt = id }
                 if received.insert(id).inserted {
                     serverBinding = request.apnsToken == token1 ? originalBinding : refreshedBinding
                     if request.apnsToken == token2 && releaseRefresh == nil {
@@ -1332,11 +1363,8 @@ struct PushNotificationTests {
                     registrationVersion: Int64(received.count), apnsEnv: request.apnsEnv
                 )
             },
-            deleteCall: { _, id, _, _ in
-                bindingDeletes.append(id)
-                if id == serverBinding { serverBinding = nil }
-            },
-            cancelAttemptCall: { _, _, _, _ in },
+            deleteCall: { _, _, _, _ in Issue.record("Unexpected binding-wide cleanup") },
+            cancelAttemptCall: { _, id, _, _ in cancelled.append(id) },
             configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
             isPushEnabled: { enabled },
             resolveAPNsEnv: { "sandbox" },
@@ -1358,7 +1386,8 @@ struct PushNotificationTests {
         await refresh.value
         await retry.value
         #expect(received.count == 2)
-        #expect(bindingDeletes == (reusesBinding ? [] : [originalBinding]))
+        #expect(cancelled.count == (reusesBinding ? 0 : 1))
+        if !reusesBinding { #expect(cancelled.first == initialAttempt) }
         #expect(manager.loadPendingDeregistrations().isEmpty)
         #expect(serverBinding == refreshedBinding)
         #expect(manager.activeBindingIDForCurrentProfile() == refreshedBinding)
@@ -1425,6 +1454,60 @@ struct PushNotificationTests {
         #expect(bindingDeletes.isEmpty)
         #expect(serverAttempt == expectedActiveAttempt)
         #expect(manager.loadActiveRegistration()?.registrationAttemptID == expectedActiveAttempt)
+    }
+
+    @Test
+    func confirmedAliasCleanupAfterTransientFailureCancelsOnlyOriginalAttempt() async throws {
+        let original = URL(string: "https://server.example.com")!
+        let alias = URL(string: "https://server.example.com:443")!
+        let binding = UUID().uuidString
+        let token = String(repeating: "f", count: 64)
+        var selected = original
+        var cleanupOnline = false
+        var serverAttempt: UUID?
+        var bindingDeletes: [String] = []
+        var cancelled: [UUID] = []
+
+        let manager = PushRegistrationManager(
+            keychain: InMemoryKeychainAccess(),
+            registerCall: { request, endpoint, _ in
+                serverAttempt = try #require(request.registrationAttemptID)
+                return PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: binding, enabled: true,
+                    registrationVersion: endpoint == original ? 1 : 2, apnsEnv: "sandbox"
+                )
+            },
+            deleteCall: { _, id, _, _ in
+                guard cleanupOnline else { throw URLError(.notConnectedToInternet) }
+                bindingDeletes.append(id)
+                serverAttempt = nil
+            },
+            cancelAttemptCall: { _, id, endpoint, _ in
+                #expect(endpoint == original)
+                guard cleanupOnline else { throw URLError(.notConnectedToInternet) }
+                cancelled.append(id)
+                if serverAttempt == id { serverAttempt = nil }
+            },
+            configSnapshot: { self.makeConfig(endpoint: selected, apiKey: "same-tenant") },
+            isPushEnabled: { true }, resolveAPNsEnv: { "sandbox" }, localeProvider: { "en" }
+        )
+
+        await manager.syncRegistration(tokenHex: token)
+        let originalAttempt = try #require(manager.loadActiveRegistration()?.registrationAttemptID)
+        selected = alias
+        await manager.handleConfigurationChanged(pushEnabled: true)
+        let replacementAttempt = try #require(manager.loadActiveRegistration()?.registrationAttemptID)
+        #expect(replacementAttempt != originalAttempt)
+        #expect(manager.loadPendingDeregistrations().count == 1)
+
+        cleanupOnline = true
+        await manager.handleAppBecameActive()
+
+        #expect(cancelled == [originalAttempt])
+        #expect(bindingDeletes.isEmpty)
+        #expect(serverAttempt == replacementAttempt)
+        #expect(manager.activeBindingIDForCurrentProfile() == binding)
+        #expect(manager.loadPendingDeregistrations().isEmpty)
     }
 
     @Test

@@ -941,7 +941,8 @@ final class PushRegistrationManager {
                 bindingID: active.bindingID,
                 endpoint: active.endpoint,
                 apiKey: active.apiKey,
-                queuedAt: now()
+                queuedAt: now(),
+                registrationAttemptID: active.registrationAttemptID
             ))
             try saveActiveRegistration(nil)
         } catch {
@@ -1004,10 +1005,10 @@ final class PushRegistrationManager {
         let encoded = try JSONEncoder().encode(record)
         try store.writeData(encoded, account: PushNotificationConstants.activeRegistrationAccount)
         removePendingDeregistrations {
+            // A successful POST is authoritative for this binding. Same-profile
+            // POSTs are serialized, and any old attempt is now superseded.
             $0.fingerprint == record.endpointFingerprint && $0.deviceID == record.deviceID &&
-                $0.bindingID == record.bindingID &&
-                ($0.registrationAttemptID == nil || $0.registrationAttemptID == record.registrationAttemptID ||
-                    $0.waitsForReplacement == true)
+                $0.bindingID == record.bindingID
         }
     }
 
