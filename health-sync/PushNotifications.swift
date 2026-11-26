@@ -7,6 +7,9 @@ import UserNotifications
 enum PushNotificationConstants {
     static let checkinCategoryID = "CHECKIN_MORNING"
     static let checkinOpenActionID = "checkin.open"
+    static let promptOpenCategoryID = "PROMPT_OPEN"
+    static let promptOpenActionID = "prompt.open"
+    static let inboxContractVersion = 2
     static let enabledDefaultsKey = "morningPushEnabled"
 
     static let deviceIDAccount = "health-sync.push.device-id"
@@ -19,12 +22,24 @@ enum PushNotificationConstants {
     static let unsupportedRetryInterval: TimeInterval = 15 * 60
 }
 
+enum AppBadgeSync {
+    @MainActor
+    static func update(unreadCount: Int) {
+        guard !SyncRuntime.isTestMode else { return }
+        let clamped = max(0, unreadCount)
+        Task {
+            try? await UNUserNotificationCenter.current().setBadgeCount(clamped)
+        }
+    }
+}
+
 struct PushDeviceRegisterRequest: Codable, Equatable {
     let deviceID: String
     let apnsToken: String
     let apnsEnv: String
     let bundleID: String
     let locale: String
+    var inboxContractVersion: Int? = PushNotificationConstants.inboxContractVersion
     var registrationAttemptID: UUID? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -33,6 +48,7 @@ struct PushDeviceRegisterRequest: Codable, Equatable {
         case apnsEnv = "apns_env"
         case bundleID = "bundle_id"
         case locale
+        case inboxContractVersion = "inbox_contract_version"
         case registrationAttemptID = "registration_attempt_id"
     }
 }
@@ -43,6 +59,7 @@ struct PushDeviceRegisterResponse: Decodable, Equatable {
     let enabled: Bool
     let registrationVersion: Int64
     let apnsEnv: String
+    var inboxContractVersion: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
@@ -50,6 +67,7 @@ struct PushDeviceRegisterResponse: Decodable, Equatable {
         case enabled
         case registrationVersion = "registration_version"
         case apnsEnv = "apns_env"
+        case inboxContractVersion = "inbox_contract_version"
     }
 }
 
@@ -63,6 +81,7 @@ struct ActivePushRegistration: Codable, Equatable {
     let apnsEnv: String
     let locale: String
     let confirmedAt: Date
+    var inboxContractVersion: Int? = nil
     var registrationAttemptID: UUID? = nil
 }
 
@@ -117,11 +136,13 @@ struct PendingPushDeregistration: Codable, Equatable {
 enum PushDestination: Equatable, Identifiable {
     case morningReport(itemID: String)
     case checkinPrompt(promptID: String)
+    case inboxItem(kind: String, itemID: String)
 
     var id: String {
         switch self {
         case .morningReport(let id): return "mr-\(id)"
         case .checkinPrompt(let id): return "ci-\(id)"
+        case .inboxItem(let kind, let id): return "\(kind)-\(id)"
         }
     }
 
@@ -129,6 +150,7 @@ enum PushDestination: Equatable, Identifiable {
         switch self {
         case .morningReport(let id): return id
         case .checkinPrompt(let id): return id
+        case .inboxItem(_, let id): return id
         }
     }
 }
@@ -204,6 +226,17 @@ enum PushNotificationPayload {
                   !promptID.isEmpty
             else { return nil }
             return .checkinPrompt(promptID: promptID)
+        case "evening_report", "sleep_update", "guidance_change", "weekly_digest", "nudge":
+            guard let itemID = (userInfo["inbox_item_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !itemID.isEmpty
+            else { return nil }
+            return .inboxItem(kind: kind, itemID: itemID)
+        case "prompt_wake_feedback", "prompt_context":
+            let rawID = (userInfo["inbox_item_id"] as? String) ?? (userInfo["prompt_id"] as? String)
+            guard let itemID = rawID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !itemID.isEmpty
+            else { return nil }
+            return .inboxItem(kind: kind, itemID: itemID)
         default:
             return nil
         }
@@ -316,6 +349,7 @@ final class PushRegistrationManager {
     private let localeProvider: () -> String
     private let now: () -> Date
     private let onRegistrationWait: (() -> Void)?
+    private let resetBadge: @MainActor () -> Void
     private struct InFlightDeregistration {
         let endpointFingerprint: String
         let task: Task<Void, Never>
@@ -366,7 +400,8 @@ final class PushRegistrationManager {
             }
         },
         now: @escaping () -> Date = { Date() },
-        onRegistrationWait: (() -> Void)? = nil
+        onRegistrationWait: (() -> Void)? = nil,
+        resetBadge: @escaping @MainActor () -> Void = { AppBadgeSync.update(unreadCount: 0) }
     ) {
         self.store = PushKeychainStorage(access: keychain ?? PushSystemKeychainAccess())
         self.registerCall = registerCall
@@ -379,6 +414,7 @@ final class PushRegistrationManager {
         self.localeProvider = localeProvider
         self.now = now
         self.onRegistrationWait = onRegistrationWait
+        self.resetBadge = resetBadge
     }
 
     static func registerNotificationCategories(center: UNUserNotificationCenter = .current()) {
@@ -393,7 +429,18 @@ final class PushRegistrationManager {
             intentIdentifiers: [],
             options: []
         )
-        center.setNotificationCategories([checkinCategory])
+        let promptOpenAction = UNNotificationAction(
+            identifier: PushNotificationConstants.promptOpenActionID,
+            title: String(localized: "Answer"),
+            options: [.foreground]
+        )
+        let promptOpenCategory = UNNotificationCategory(
+            identifier: PushNotificationConstants.promptOpenCategoryID,
+            actions: [promptOpenAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        center.setNotificationCategories([checkinCategory, promptOpenCategory])
     }
 
     func ensureDeviceID() throws -> String {
@@ -559,7 +606,8 @@ final class PushRegistrationManager {
             let request: PushDeviceRegisterRequest
             do {
                 let deviceID = try ensureDeviceID()
-                let requestHash = Self.sha256Hex([deviceID, tokenHash, env, bundleID, locale].joined(separator: "\0"))
+                let contractVersion = PushNotificationConstants.inboxContractVersion
+                let requestHash = Self.sha256Hex([deviceID, tokenHash, env, bundleID, locale, String(contractVersion)].joined(separator: "\0"))
                 var attempts = try readRegistrationAttempts()
                 if let previous = attempts[fingerprint] {
                     if previous.cancellationRequested || previous.requestHash != requestHash ||
@@ -578,6 +626,7 @@ final class PushRegistrationManager {
                        active.tokenHash == tokenHash,
                        active.apnsEnv == env,
                        active.locale == locale,
+                       active.inboxContractVersion == contractVersion,
                        currentNow.timeIntervalSince(active.confirmedAt) < PushNotificationConstants.heartbeatRefreshInterval {
                         continue
                     }
@@ -596,7 +645,9 @@ final class PushRegistrationManager {
                 }
                 request = PushDeviceRegisterRequest(
                     deviceID: deviceID, apnsToken: latestTokenHex, apnsEnv: env,
-                    bundleID: bundleID, locale: locale, registrationAttemptID: attempt.id
+                    bundleID: bundleID, locale: locale,
+                    inboxContractVersion: contractVersion,
+                    registrationAttemptID: attempt.id
                 )
             } catch {
                 lastRegistrationError = error.localizedDescription
@@ -652,6 +703,7 @@ final class PushRegistrationManager {
                         apnsEnv: response.apnsEnv,
                         locale: locale,
                         confirmedAt: now(),
+                        inboxContractVersion: response.inboxContractVersion ?? PushNotificationConstants.inboxContractVersion,
                         registrationAttemptID: attempt.id
                     )
                     do {
@@ -722,6 +774,7 @@ final class PushRegistrationManager {
         registrationEpoch = capturedEpoch
         unsupportedRetryState = nil
         unsupportedRetryAfter = nil
+        resetBadge()
         reconcileActiveRegistration()
         await drainPendingDeregistrations()
         guard capturedEpoch == registrationEpoch else { return }
@@ -734,6 +787,7 @@ final class PushRegistrationManager {
         registrationEpoch = UUID()
         unsupportedRetryState = nil
         unsupportedRetryAfter = nil
+        resetBadge()
         await drainPendingDeregistrations()
     }
 

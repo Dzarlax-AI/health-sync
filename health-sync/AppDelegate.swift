@@ -62,7 +62,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         defer { completionHandler() }
         let actionID = response.actionIdentifier
         guard actionID == UNNotificationDefaultActionIdentifier ||
-                actionID == PushNotificationConstants.checkinOpenActionID
+                actionID == PushNotificationConstants.checkinOpenActionID ||
+                actionID == PushNotificationConstants.promptOpenActionID
         else {
             return
         }

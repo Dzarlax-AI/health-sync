@@ -66,6 +66,7 @@ final class ServerClient {
     private let decoder: JSONDecoder
     private var cachedLang: String?
     private var cachedLangFingerprint: String?
+    private let healthInboxContractHeader = "X-Health-Inbox-Contract"
 
     private struct ClientConfiguration: Sendable, Equatable {
         let base: URL
@@ -99,7 +100,8 @@ final class ServerClient {
     }
 
     private func makeRequest(path: String, query: [URLQueryItem] = [],
-                             configuration: ClientConfiguration) throws -> URLRequest {
+                             configuration: ClientConfiguration,
+                             inboxContract: Bool = false) throws -> URLRequest {
         let base = configuration.base
         let key = configuration.key
         guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
@@ -118,13 +120,16 @@ final class ServerClient {
         default:
             break
         }
+        if inboxContract {
+            req.setValue("2", forHTTPHeaderField: healthInboxContractHeader)
+        }
         return req
     }
 
-    private func get<T: Decodable>(_ type: T.Type, path: String, query: [URLQueryItem] = []) async throws -> T {
+    private func get<T: Decodable>(_ type: T.Type, path: String, query: [URLQueryItem] = [], inboxContract: Bool = false) async throws -> T {
         if SyncRuntime.isTestMode { throw ServerError.missingConfig }
         let requestConfiguration = try config()
-        let req = try makeRequest(path: path, query: query, configuration: requestConfiguration)
+        let req = try makeRequest(path: path, query: query, configuration: requestConfiguration, inboxContract: inboxContract)
         let (data, response) = try await session.data(for: req)
         guard let currentConfiguration = try? config(),
               currentConfiguration.fingerprint == requestConfiguration.fingerprint else {
@@ -160,11 +165,19 @@ final class ServerClient {
         }
     }
 
-    private func post<Body: Encodable, T: Decodable>(_ type: T.Type, path: String, body: Body) async throws -> T {
+    private func post<Body: Encodable, T: Decodable>(_ type: T.Type, path: String, body: Body, inboxContract: Bool = false) async throws -> T {
+        try await send(type, method: "POST", path: path, body: body, inboxContract: inboxContract)
+    }
+
+    private func put<Body: Encodable, T: Decodable>(_ type: T.Type, path: String, body: Body, inboxContract: Bool = false) async throws -> T {
+        try await send(type, method: "PUT", path: path, body: body, inboxContract: inboxContract)
+    }
+
+    private func send<Body: Encodable, T: Decodable>(_ type: T.Type, method: String, path: String, body: Body, inboxContract: Bool = false) async throws -> T {
         if SyncRuntime.isTestMode { throw ServerError.missingConfig }
         let requestConfiguration = try config()
-        var req = try makeRequest(path: path, configuration: requestConfiguration)
-        req.httpMethod = "POST"
+        var req = try makeRequest(path: path, configuration: requestConfiguration, inboxContract: inboxContract)
+        req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(body)
 
@@ -361,7 +374,7 @@ final class ServerClient {
         try await get(UserSettings.self, path: "/api/settings")
     }
 
-    func inbox(limit: Int = 20, cursor: String? = nil) async throws -> InboxFeedResponse {
+    func inbox(limit: Int = 20, cursor: String? = nil, filter: String? = nil, kind: String? = nil) async throws -> InboxFeedResponse {
         let lang = await serverLang()
         var query = [
             URLQueryItem(name: "lang", value: lang),
@@ -370,7 +383,13 @@ final class ServerClient {
         if let cursor, !cursor.isEmpty {
             query.append(URLQueryItem(name: "cursor", value: cursor))
         }
-        return try await get(InboxFeedResponse.self, path: "/api/inbox", query: query)
+        if let filter, !filter.isEmpty {
+            query.append(URLQueryItem(name: "filter", value: filter))
+        }
+        if let kind, !kind.isEmpty {
+            query.append(URLQueryItem(name: "kind", value: kind))
+        }
+        return try await get(InboxFeedResponse.self, path: "/api/inbox", query: query, inboxContract: true)
     }
 
     func pendingInboxPrompts() async throws -> InboxPendingResponse {
@@ -378,7 +397,8 @@ final class ServerClient {
         return try await get(
             InboxPendingResponse.self,
             path: "/api/inbox/pending",
-            query: [URLQueryItem(name: "lang", value: lang)]
+            query: [URLQueryItem(name: "lang", value: lang)],
+            inboxContract: true
         )
     }
 
@@ -387,7 +407,8 @@ final class ServerClient {
         return try await get(
             InboxDetailResponse.self,
             path: "/api/inbox/\(id)",
-            query: [URLQueryItem(name: "lang", value: lang)]
+            query: [URLQueryItem(name: "lang", value: lang)],
+            inboxContract: true
         )
     }
 
@@ -395,8 +416,36 @@ final class ServerClient {
         try await post(
             PromptAnswerResponse.self,
             path: "/api/prompts/\(promptID)/answer",
-            body: PromptAnswerRequest(answer: answer, channel: "ios_app")
+            body: PromptAnswerRequest(answer: answer, channel: "ios_app"),
+            inboxContract: true
         )
+    }
+
+    func markInboxItemRead(id: String) async throws -> InboxReadResponse {
+        struct EmptyBody: Encodable {}
+        return try await post(
+            InboxReadResponse.self,
+            path: "/api/inbox/\(id)/read",
+            body: EmptyBody(),
+            inboxContract: true
+        )
+    }
+
+    func markAllInboxRead(before: String? = nil) async throws -> InboxReadAllResponse {
+        try await post(
+            InboxReadAllResponse.self,
+            path: "/api/inbox/read-all",
+            body: InboxReadAllRequest(before: before),
+            inboxContract: true
+        )
+    }
+
+    func notificationPreferences() async throws -> NotificationPreferencesResponse {
+        try await get(NotificationPreferencesResponse.self, path: "/api/notifications/preferences")
+    }
+
+    func updateNotificationPreferences(_ body: NotificationPreferencesRequest) async throws -> NotificationPreferencesResponse {
+        try await put(NotificationPreferencesResponse.self, path: "/api/notifications/preferences", body: body)
     }
 
     /// Registers an APNs device binding against an explicit (endpoint, apiKey)

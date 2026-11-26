@@ -7,6 +7,7 @@ struct TodayPageHeader: View {
     let syncStatus: SyncStatus
     let openSyncStatus: () -> Void
     var showInbox: Bool = false
+    var inboxUnreadCount: Int = 0
     var openInbox: (() -> Void)? = nil
 
     var body: some View {
@@ -31,9 +32,24 @@ struct TodayPageHeader: View {
                             .foregroundStyle(Color.dsHorizonText)
                             .frame(width: 34, height: 34)
                             .background(Color.dsHorizonSurfaceTint, in: Circle())
+                            .overlay(alignment: .topTrailing) {
+                                if inboxUnreadCount > 0 {
+                                    Text(verbatim: inboxUnreadCount > 99 ? "99+" : "\(inboxUnreadCount)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(Color.dsAccentForeground)
+                                        .padding(.horizontal, 4)
+                                        .frame(minWidth: 16, minHeight: 16)
+                                        .background(Color.dsAccent, in: Capsule())
+                                        .offset(x: 4, y: -4)
+                                }
+                            }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Inbox")
+                    .accessibilityLabel(
+                        inboxUnreadCount > 0
+                            ? Text("Inbox, \(inboxUnreadCount) unread")
+                            : Text("Inbox")
+                    )
                     .accessibilityIdentifier("today-open-inbox")
                 }
                 TodayHeaderSyncButton(status: syncStatus, action: openSyncStatus)

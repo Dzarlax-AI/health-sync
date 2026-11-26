@@ -1582,4 +1582,115 @@ struct PushNotificationTests {
         #expect(bindingDeletes.isEmpty && cancelled.isEmpty)
     }
 
+    @Test
+    func stage3PayloadsRouteAllNineKindsAndRejectMismatchedBinding() {
+        let binding = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let wrongBinding = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        let itemID = "11111111-1111-4111-8111-111111111111"
+
+        let reportKinds = ["evening_report", "sleep_update", "guidance_change", "weekly_digest", "nudge"]
+        for kind in reportKinds {
+            let payload: [AnyHashable: Any] = [
+                "v": 1,
+                "kind": kind,
+                "inbox_item_id": itemID,
+                "reg_id": binding
+            ]
+            #expect(
+                PushNotificationPayload.parseDestination(userInfo: payload, expectedBindingID: binding)
+                    == .inboxItem(kind: kind, itemID: itemID)
+            )
+            #expect(
+                PushNotificationPayload.parseDestination(userInfo: payload, expectedBindingID: wrongBinding) == nil
+            )
+        }
+
+        for promptKind in ["prompt_wake_feedback", "prompt_context"] {
+            let payload: [AnyHashable: Any] = [
+                "v": 1,
+                "kind": promptKind,
+                "inbox_item_id": itemID,
+                "prompt_id": itemID,
+                "reg_id": binding
+            ]
+            let dest = PushNotificationPayload.parseDestination(userInfo: payload, expectedBindingID: binding)
+            #expect(dest == .inboxItem(kind: promptKind, itemID: itemID))
+            #expect(dest?.itemID == itemID)
+        }
+    }
+
+    @Test
+    func registrationUpgradesV1CacheToV2AndResetsBadgeOnSwitchOrDisable() async throws {
+        let keychain = InMemoryKeychainAccess()
+        let endpointA = URL(string: "https://server-a.example.com")!
+        let endpointB = URL(string: "https://server-b.example.com")!
+        var activeEndpoint = endpointA
+        var activeKey = "key-a"
+        var enabled = true
+        var sentContractVersions: [Int?] = []
+        var badgeResetCount = 0
+
+        let token = String(repeating: "7", count: 64)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let configA = makeConfig(endpoint: endpointA, apiKey: "key-a")
+
+        // Seed a TestFlight 33 (v1) active registration without inboxContractVersion
+        // confirmed only 1 hour ago (well within 24h heartbeat).
+        let legacyRecord = ActivePushRegistration(
+            deviceID: "11111111-1111-4111-8111-111111111111",
+            bindingID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            endpoint: endpointA,
+            apiKey: "key-a",
+            endpointFingerprint: configA.fingerprint,
+            tokenHash: "legacy",
+            apnsEnv: "sandbox",
+            locale: "en",
+            confirmedAt: now.addingTimeInterval(-3600),
+            inboxContractVersion: nil
+        )
+        let storage = PushKeychainStorage(access: keychain)
+        try storage.writeData(Data(legacyRecord.deviceID.utf8), account: PushNotificationConstants.deviceIDAccount)
+        try storage.writeData(try JSONEncoder().encode(legacyRecord), account: PushNotificationConstants.activeRegistrationAccount)
+
+        let manager = PushRegistrationManager(
+            keychain: keychain,
+            registerCall: { req, _, _ in
+                sentContractVersions.append(req.inboxContractVersion)
+                return PushDeviceRegisterResponse(
+                    deviceID: req.deviceID,
+                    bindingID: activeEndpoint == endpointA ? "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" : "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    enabled: true,
+                    registrationVersion: 2,
+                    apnsEnv: req.apnsEnv,
+                    inboxContractVersion: req.inboxContractVersion
+                )
+            },
+            deleteCall: { _, _, _, _ in },
+            cancelAttemptCall: { _, _, _, _ in },
+            configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
+            isPushEnabled: { enabled },
+            resolveAPNsEnv: { "sandbox" },
+            bundleIDProvider: { "com.dzarlax.health-sync" },
+            localeProvider: { "en" },
+            now: { now },
+            resetBadge: { badgeResetCount += 1 }
+        )
+
+        // Upgrading from TestFlight 33 must immediately register with inbox_contract_version: 2.
+        await manager.syncRegistration(tokenHex: token)
+        #expect(sentContractVersions == [2])
+        #expect(manager.loadActiveRegistration()?.inboxContractVersion == 2)
+
+        // Switching profile resets app icon badge to 0.
+        activeEndpoint = endpointB
+        activeKey = "key-b"
+        await manager.handleConfigurationChanged(pushEnabled: true)
+        #expect(badgeResetCount == 1)
+
+        // Disabling push resets app icon badge to 0 again.
+        enabled = false
+        await manager.disablePushNotifications()
+        #expect(badgeResetCount == 2)
+    }
+
 }
