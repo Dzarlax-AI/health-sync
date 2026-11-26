@@ -407,6 +407,7 @@ final class ServerClient {
         endpoint: URL,
         apiKey: String
     ) async throws -> PushDeviceRegisterResponse {
+        guard !SyncRuntime.isTestMode else { throw ServerError.missingConfig }
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
         let basePath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
         let route = "/api/push/devices"
@@ -448,12 +449,37 @@ final class ServerClient {
         endpoint: URL,
         apiKey: String
     ) async throws {
+        try await deletePushRegistration(
+            deviceID: deviceID, selector: URLQueryItem(name: "binding_id", value: bindingID),
+            endpoint: endpoint, apiKey: apiKey
+        )
+    }
+
+    func cancelPushRegistrationAttempt(
+        deviceID: String,
+        attemptID: UUID,
+        endpoint: URL,
+        apiKey: String
+    ) async throws {
+        try await deletePushRegistration(
+            deviceID: deviceID,
+            selector: URLQueryItem(name: "registration_attempt_id", value: attemptID.uuidString.lowercased()),
+            endpoint: endpoint, apiKey: apiKey
+        )
+    }
+
+    private func deletePushRegistration(
+        deviceID: String,
+        selector: URLQueryItem,
+        endpoint: URL,
+        apiKey: String
+    ) async throws {
         guard !SyncRuntime.isTestMode else { throw ServerError.missingConfig }
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
         let basePath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
         let route = "/api/push/devices/\(deviceID)"
         components?.path = basePath.isEmpty ? route : "/\(basePath)\(route)"
-        components?.queryItems = [URLQueryItem(name: "binding_id", value: bindingID)]
+        components?.queryItems = [selector]
         guard let url = components?.url else {
             throw ServerError.invalidURL
         }

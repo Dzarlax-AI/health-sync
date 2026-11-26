@@ -1120,4 +1120,161 @@ struct PushNotificationTests {
         }
     }
 
+    @Test
+    func lostRegistrationResponseReplaysSameDurableAttemptAfterRestart() async throws {
+        let endpoint = URL(string: "https://server.example.com")!
+        let bindingID = UUID().uuidString
+        let keychain = InMemoryKeychainAccess()
+        var attemptsSent: [UUID] = []
+        var committed: Set<UUID> = []
+        let register: PushRegistrationManager.RegisterCall = { request, _, _ in
+            let id = try #require(request.registrationAttemptID)
+            #expect(keychain.items[PushNotificationConstants.registrationAttemptsAccount] != nil)
+            attemptsSent.append(id)
+            if committed.insert(id).inserted { throw URLError(.networkConnectionLost) }
+            return PushDeviceRegisterResponse(
+                deviceID: request.deviceID, bindingID: bindingID,
+                enabled: true, registrationVersion: 1, apnsEnv: request.apnsEnv
+            )
+        }
+        func makeManager() -> PushRegistrationManager {
+            PushRegistrationManager(
+                keychain: keychain,
+                registerCall: register,
+                configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "key-a") },
+                isPushEnabled: { true }, resolveAPNsEnv: { "sandbox" }, localeProvider: { "en" }
+            )
+        }
+
+        let token = String(repeating: "a", count: 64)
+        let beforeRestart = makeManager()
+        await beforeRestart.syncRegistration(tokenHex: token)
+        #expect(beforeRestart.loadActiveRegistration() == nil)
+        let id = try #require(attemptsSent.first)
+        #expect(id.uuid.6 >> 4 == 7)
+
+        let afterRestart = makeManager()
+        await afterRestart.syncRegistration(tokenHex: token)
+        #expect(attemptsSent == [id, id])
+        #expect(committed == [id])
+        #expect(afterRestart.activeBindingIDForCurrentProfile() == bindingID)
+        #expect(keychain.items[PushNotificationConstants.registrationAttemptsAccount] == nil)
+    }
+
+    @Test(arguments: [true, false])
+    func lostRegistrationResponseCancelsOriginalAttemptAfterOfflineRestart(switchProfile: Bool) async throws {
+        let endpointA = URL(string: "https://server-a.example.com")!
+        let endpointB = URL(string: "https://server-b.example.com")!
+        let keychain = InMemoryKeychainAccess()
+        var enabled = true
+        var endpoint = endpointA
+        var connected = false
+        var requests: [UUID] = []
+        var committed: Set<UUID> = []
+        var cancelled: [UUID] = []
+        let register: PushRegistrationManager.RegisterCall = { request, _, _ in
+            let id = try #require(request.registrationAttemptID)
+            requests.append(id)
+            committed.insert(id)
+            throw URLError(.networkConnectionLost)
+        }
+        let cancel: PushRegistrationManager.CancelAttemptCall = { _, attemptID, target, apiKey in
+            #expect(target == endpointA)
+            #expect(apiKey == "key-a")
+            guard connected else { throw URLError(.notConnectedToInternet) }
+            committed.remove(attemptID)
+            cancelled.append(attemptID)
+        }
+        func makeManager() -> PushRegistrationManager {
+            PushRegistrationManager(
+                keychain: keychain, registerCall: register, cancelAttemptCall: cancel,
+                configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: endpoint == endpointA ? "key-a" : "key-b") },
+                isPushEnabled: { enabled }, resolveAPNsEnv: { "sandbox" }, localeProvider: { "en" }
+            )
+        }
+
+        let manager = makeManager()
+        await manager.syncRegistration(tokenHex: String(repeating: "b", count: 64))
+        let id = try #require(requests.first)
+        if switchProfile {
+            endpoint = endpointB
+            await manager.drainPendingDeregistrations()
+        } else {
+            enabled = false
+            await manager.disablePushNotifications()
+        }
+        #expect(requests == [id])
+        #expect(committed == [id])
+        #expect(keychain.items[PushNotificationConstants.registrationAttemptsAccount] != nil)
+
+        connected = true
+        let afterRestart = makeManager()
+        await afterRestart.handleAppBecameActive()
+        #expect(requests == [id])
+        #expect(cancelled == [id])
+        #expect(committed.isEmpty)
+        #expect(keychain.items[PushNotificationConstants.registrationAttemptsAccount] == nil)
+    }
+
+    @Test
+    func lostPostIsCancelledBeforeSubmittingRotatedToken() async throws {
+        let endpoint = URL(string: "https://server.example.com")!
+        var events: [String] = []
+        var attempts: [UUID] = []
+        var cancelled: [UUID] = []
+        let manager = PushRegistrationManager(
+            keychain: InMemoryKeychainAccess(),
+            registerCall: { request, _, _ in
+                let id = try #require(request.registrationAttemptID)
+                attempts.append(id)
+                events.append("post")
+                if attempts.count == 1 { throw URLError(.timedOut) }
+                return PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: UUID().uuidString,
+                    enabled: true, registrationVersion: 1, apnsEnv: request.apnsEnv
+                )
+            },
+            cancelAttemptCall: { _, id, _, _ in
+                events.append("cancel")
+                cancelled.append(id)
+            },
+            configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
+            isPushEnabled: { true }, resolveAPNsEnv: { "sandbox" }, localeProvider: { "en" }
+        )
+        await manager.syncRegistration(tokenHex: String(repeating: "c", count: 64))
+        await manager.syncRegistration(tokenHex: String(repeating: "d", count: 64))
+        let original = try #require(attempts.first)
+        #expect(events == ["post", "cancel", "post"])
+        #expect(cancelled == [original])
+        #expect(attempts.last != original)
+        #expect(manager.loadActiveRegistration()?.registrationAttemptID == attempts.last)
+    }
+
+    @Test
+    func journalWriteFailurePreventsRegistrationPOST() async {
+        let endpoint = URL(string: "https://server.example.com")!
+        let keychain = InMemoryKeychainAccess()
+        keychain.failedWrites.insert(PushNotificationConstants.registrationAttemptsAccount)
+        var posts = 0
+        let manager = PushRegistrationManager(
+            keychain: keychain,
+            registerCall: { request, _, _ in
+                posts += 1
+                return PushDeviceRegisterResponse(
+                    deviceID: request.deviceID, bindingID: UUID().uuidString,
+                    enabled: true, registrationVersion: 1, apnsEnv: request.apnsEnv
+                )
+            },
+            configSnapshot: { self.makeConfig(endpoint: endpoint, apiKey: "test-key") },
+            isPushEnabled: { true }
+        )
+        let token = String(repeating: "b", count: 64)
+        await manager.syncRegistration(tokenHex: token)
+        #expect(posts == 0)
+        #expect(manager.loadActiveRegistration() == nil)
+        keychain.failedWrites.removeAll()
+        await manager.syncRegistration(tokenHex: token)
+        #expect(posts == 1)
+    }
+
 }

@@ -12,17 +12,20 @@ enum PushNotificationConstants {
     static let deviceIDAccount = "health-sync.push.device-id"
     static let activeRegistrationAccount = "health-sync.push.active-registration"
     static let pendingDeregistrationsAccount = "health-sync.push.pending-deregistrations"
+    static let registrationAttemptsAccount = "health-sync.push.registration-attempts"
+    static let registrationAttemptLifetime: TimeInterval = 7 * 24 * 60 * 60
 
     static let heartbeatRefreshInterval: TimeInterval = 24 * 60 * 60
     static let unsupportedRetryInterval: TimeInterval = 15 * 60
 }
 
-struct PushDeviceRegisterRequest: Encodable, Equatable {
+struct PushDeviceRegisterRequest: Codable, Equatable {
     let deviceID: String
     let apnsToken: String
     let apnsEnv: String
     let bundleID: String
     let locale: String
+    var registrationAttemptID: UUID? = nil
 
     enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
@@ -30,6 +33,7 @@ struct PushDeviceRegisterRequest: Encodable, Equatable {
         case apnsEnv = "apns_env"
         case bundleID = "bundle_id"
         case locale
+        case registrationAttemptID = "registration_attempt_id"
     }
 }
 
@@ -59,6 +63,33 @@ struct ActivePushRegistration: Codable, Equatable {
     let apnsEnv: String
     let locale: String
     let confirmedAt: Date
+    var registrationAttemptID: UUID? = nil
+}
+
+private struct PendingPushRegistrationAttempt: Codable {
+    let id: UUID
+    let deviceID: String
+    let endpoint: URL
+    let apiKey: String
+    let fingerprint: String
+    let requestHash: String
+    let createdAt: Date
+    var cancellationRequested: Bool
+
+    static func makeID(at date: Date) -> UUID {
+        let timestamp = UInt64(date.timeIntervalSince1970 * 1_000)
+        let (_, _, _, _, _, _, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, fifteenth, sixteenth) = UUID().uuid
+        return UUID(uuid: (
+            UInt8(truncatingIfNeeded: timestamp >> 40),
+            UInt8(truncatingIfNeeded: timestamp >> 32),
+            UInt8(truncatingIfNeeded: timestamp >> 24),
+            UInt8(truncatingIfNeeded: timestamp >> 16),
+            UInt8(truncatingIfNeeded: timestamp >> 8),
+            UInt8(truncatingIfNeeded: timestamp),
+            (seventh & 0x0f) | 0x70, eighth, (ninth & 0x3f) | 0x80,
+            tenth, eleventh, twelfth, thirteenth, fourteenth, fifteenth, sixteenth
+        ))
+    }
 }
 
 struct PendingPushDeregistration: Codable, Equatable {
@@ -253,6 +284,7 @@ private struct PushSystemKeychainAccess: KeychainAccess {
 final class PushRegistrationManager {
     typealias RegisterCall = @MainActor (PushDeviceRegisterRequest, URL, String) async throws -> PushDeviceRegisterResponse
     typealias DeleteCall = @MainActor (String, String, URL, String) async throws -> Void
+    typealias CancelAttemptCall = @MainActor (String, UUID, URL, String) async throws -> Void
     typealias ConfigSnapshot = @MainActor () throws -> SyncConfiguration
 
     static let shared = PushRegistrationManager()
@@ -263,6 +295,7 @@ final class PushRegistrationManager {
     private let store: PushKeychainStorage
     private let registerCall: RegisterCall
     private let deleteCall: DeleteCall
+    private let cancelAttemptCall: CancelAttemptCall
     private let configSnapshot: ConfigSnapshot
     private let isPushEnabled: @MainActor () -> Bool
     private let resolveAPNsEnv: () -> String
@@ -298,6 +331,14 @@ final class PushRegistrationManager {
                 apiKey: apiKey
             )
         },
+        cancelAttemptCall: @escaping CancelAttemptCall = { deviceID, attemptID, endpoint, apiKey in
+            try await ServerClient.shared.cancelPushRegistrationAttempt(
+                deviceID: deviceID,
+                attemptID: attemptID,
+                endpoint: endpoint,
+                apiKey: apiKey
+            )
+        },
         configSnapshot: @escaping ConfigSnapshot = { try UserDefaultsSyncConfiguration.shared.snapshot() },
         isPushEnabled: @escaping @MainActor () -> Bool = {
             UserDefaults.standard.bool(forKey: PushNotificationConstants.enabledDefaultsKey)
@@ -317,6 +358,7 @@ final class PushRegistrationManager {
         self.store = PushKeychainStorage(access: keychain ?? PushSystemKeychainAccess())
         self.registerCall = registerCall
         self.deleteCall = deleteCall
+        self.cancelAttemptCall = cancelAttemptCall
         self.configSnapshot = configSnapshot
         self.isPushEnabled = isPushEnabled
         self.resolveAPNsEnv = resolveAPNsEnv
@@ -496,38 +538,63 @@ final class PushRegistrationManager {
 
             let env = resolveAPNsEnv()
             let locale = localeProvider()
+            let bundleID = bundleIDProvider()
             let tokenHash = Self.sha256Hex(latestTokenHex)
-
-            if let active = loadActiveRegistration(),
-               active.endpointFingerprint == fingerprint,
-               active.tokenHash == tokenHash,
-               active.apnsEnv == env,
-               active.locale == locale,
-               currentNow.timeIntervalSince(active.confirmedAt) < PushNotificationConstants.heartbeatRefreshInterval {
+            let capturedEpoch = expectedEpoch
+            let capturedConfig = refreshedConfig
+            let attempt: PendingPushRegistrationAttempt
+            let request: PushDeviceRegisterRequest
+            do {
+                let deviceID = try ensureDeviceID()
+                let requestHash = Self.sha256Hex([deviceID, tokenHash, env, bundleID, locale].joined(separator: "\0"))
+                var attempts = try readRegistrationAttempts()
+                if let previous = attempts[fingerprint] {
+                    if previous.cancellationRequested || previous.requestHash != requestHash ||
+                        currentNow.timeIntervalSince(previous.createdAt) >= PushNotificationConstants.registrationAttemptLifetime {
+                        try requestCancellation(previous)
+                        await cancelRegistrationAttempt(fingerprint: fingerprint)
+                        if (try readRegistrationAttempts())[fingerprint] == nil {
+                            pendingRegistrationFingerprints.insert(fingerprint)
+                        }
+                        continue
+                    }
+                    attempt = previous
+                } else {
+                    if let active = loadActiveRegistration(),
+                       active.endpointFingerprint == fingerprint,
+                       active.tokenHash == tokenHash,
+                       active.apnsEnv == env,
+                       active.locale == locale,
+                       currentNow.timeIntervalSince(active.confirmedAt) < PushNotificationConstants.heartbeatRefreshInterval {
+                        continue
+                    }
+                    attempt = PendingPushRegistrationAttempt(
+                        id: PendingPushRegistrationAttempt.makeID(at: currentNow),
+                        deviceID: deviceID,
+                        endpoint: capturedConfig.endpoint,
+                        apiKey: capturedConfig.apiKey,
+                        fingerprint: fingerprint,
+                        requestHash: requestHash,
+                        createdAt: currentNow,
+                        cancellationRequested: false
+                    )
+                    attempts[fingerprint] = attempt
+                    try saveRegistrationAttempts(attempts)
+                }
+                request = PushDeviceRegisterRequest(
+                    deviceID: deviceID, apnsToken: latestTokenHex, apnsEnv: env,
+                    bundleID: bundleID, locale: locale, registrationAttemptID: attempt.id
+                )
+            } catch {
+                lastRegistrationError = error.localizedDescription
                 continue
             }
 
-            let capturedEpoch = expectedEpoch
-            let capturedConfig = refreshedConfig
-
-            // Hold mutual exclusion against DELETE for the same profile across the
-            // entire POST suspension window so a queued DELETE cannot run while
-            // POST is in flight and disable a binding_id the server just reused.
+            // Hold mutual exclusion against DELETE across the POST suspension.
             inFlightRegistrations[fingerprint, default: 0] += 1
             let registerResult: Result<PushDeviceRegisterResponse, Error>
             do {
-                let deviceID = try ensureDeviceID()
-                let response = try await registerCall(
-                    PushDeviceRegisterRequest(
-                        deviceID: deviceID,
-                        apnsToken: latestTokenHex,
-                        apnsEnv: env,
-                        bundleID: bundleIDProvider(),
-                        locale: locale
-                    ),
-                    capturedConfig.endpoint,
-                    capturedConfig.apiKey
-                )
+                let response = try await registerCall(request, attempt.endpoint, attempt.apiKey)
                 registerResult = .success(response)
             } catch {
                 registerResult = .failure(error)
@@ -571,10 +638,12 @@ final class PushRegistrationManager {
                         tokenHash: tokenHash,
                         apnsEnv: response.apnsEnv,
                         locale: locale,
-                        confirmedAt: now()
+                        confirmedAt: now(),
+                        registrationAttemptID: attempt.id
                     )
                     do {
                         try saveActiveRegistration(record)
+                        try forgetRegistrationAttempt(attempt)
                         lastRegistrationError = nil
                         unsupportedRetryState = nil
                         unsupportedRetryAfter = nil
@@ -583,16 +652,33 @@ final class PushRegistrationManager {
                             UserDefaultsSyncConfiguration.fingerprint(endpoint: $0.endpoint, apiKey: $0.apiKey) == fingerprint
                         }
                     } catch {
-                        preserveDeregistration(cleanup)
+                        if preserveDeregistration(cleanup) {
+                            try? forgetRegistrationAttempt(attempt)
+                        }
                         lastRegistrationError = error.localizedDescription
                     }
                 } else {
-                    preserveDeregistration(cleanup)
+                    if preserveDeregistration(cleanup) {
+                        try? forgetRegistrationAttempt(attempt)
+                    }
                     shouldDrainDeregistrations = true
                 }
 
             case .failure(let error):
                 let stillSameProfile = (try? configSnapshot())?.fingerprint == fingerprint
+                if let serverError = error as? ServerError, case .http(409, _) = serverError {
+                    // The server has rejected this attempt as cancelled, expired, or superseded.
+                    // Cancel idempotently before a later pass issues a replacement.
+                    do {
+                        try requestCancellation(attempt)
+                        shouldDrainDeregistrations = true
+                    } catch {
+                        lastRegistrationError = error.localizedDescription
+                    }
+                }
+                if !isPushEnabled() || !stillSameProfile {
+                    shouldDrainDeregistrations = true
+                }
                 if capturedEpoch == registrationEpoch, stillSameProfile {
                     if let serverError = error as? ServerError, case .http(404, _) = serverError {
                         let retryAt = now().addingTimeInterval(PushNotificationConstants.unsupportedRetryInterval)
@@ -657,6 +743,7 @@ final class PushRegistrationManager {
 
     func drainPendingDeregistrations() async {
         reconcileActiveRegistration()
+        await drainRegistrationAttempts()
         for item in unsavedDeregistrations {
             do {
                 try enqueueDeregistration(item)
@@ -731,6 +818,88 @@ final class PushRegistrationManager {
         }
     }
 
+    private func readRegistrationAttempts() throws -> [String: PendingPushRegistrationAttempt] {
+        guard let data = try store.readData(account: PushNotificationConstants.registrationAttemptsAccount) else {
+            return [:]
+        }
+        return try JSONDecoder().decode([String: PendingPushRegistrationAttempt].self, from: data)
+    }
+
+    private func saveRegistrationAttempts(_ attempts: [String: PendingPushRegistrationAttempt]) throws {
+        let data = attempts.isEmpty ? nil : try JSONEncoder().encode(attempts)
+        try store.writeData(data, account: PushNotificationConstants.registrationAttemptsAccount)
+    }
+
+    private func forgetRegistrationAttempt(_ attempt: PendingPushRegistrationAttempt) throws {
+        var attempts = try readRegistrationAttempts()
+        guard attempts[attempt.fingerprint]?.id == attempt.id else { return }
+        attempts.removeValue(forKey: attempt.fingerprint)
+        try saveRegistrationAttempts(attempts)
+    }
+
+    private func requestCancellation(_ attempt: PendingPushRegistrationAttempt) throws {
+        var attempts = try readRegistrationAttempts()
+        guard var current = attempts[attempt.fingerprint],
+              current.id == attempt.id, !current.cancellationRequested else { return }
+        current.cancellationRequested = true
+        attempts[attempt.fingerprint] = current
+        try saveRegistrationAttempts(attempts)
+    }
+
+    private func drainRegistrationAttempts() async {
+        do {
+            for attempt in try readRegistrationAttempts().values {
+                let fingerprint = attempt.fingerprint
+                guard inFlightRegistrations[fingerprint, default: 0] == 0,
+                      (try readRegistrationAttempts())[fingerprint]?.id == attempt.id else { continue }
+
+                if !attempt.cancellationRequested && isPushEnabled() {
+                    let currentFingerprint: String?
+                    do {
+                        currentFingerprint = try configSnapshot().fingerprint
+                    } catch is APIKeyError {
+                        continue
+                    } catch {
+                        currentFingerprint = nil
+                    }
+                    if currentFingerprint == fingerprint {
+                        if loadActiveRegistration()?.registrationAttemptID == attempt.id {
+                            try forgetRegistrationAttempt(attempt)
+                        }
+                        continue
+                    }
+                }
+                try requestCancellation(attempt)
+                await cancelRegistrationAttempt(fingerprint: fingerprint)
+            }
+        } catch {
+            lastRegistrationError = error.localizedDescription
+        }
+    }
+
+    private func cancelRegistrationAttempt(fingerprint: String) async {
+        guard inFlightRegistrations[fingerprint, default: 0] == 0,
+              let attempt = (try? readRegistrationAttempts())?[fingerprint],
+              attempt.cancellationRequested else { return }
+
+        let key = "attempt:\(attempt.id)"
+        if let existing = inFlightDeregistrations[key] {
+            await existing.task.value
+            return
+        }
+        let task = Task { @MainActor [self] in
+            defer { inFlightDeregistrations.removeValue(forKey: key) }
+            do {
+                try await cancelAttemptCall(attempt.deviceID, attempt.id, attempt.endpoint, attempt.apiKey)
+                try forgetRegistrationAttempt(attempt)
+            } catch {
+                // Keep the saved intent until the server confirms cleanup.
+            }
+        }
+        inFlightDeregistrations[key] = InFlightDeregistration(endpointFingerprint: fingerprint, task: task)
+        await task.value
+    }
+
     private func waitForInFlightDeregistrations(forFingerprint fingerprint: String) async {
         while let pending = inFlightDeregistrations.values.first(where: { $0.endpointFingerprint == fingerprint }) {
             onRegistrationWait?()
@@ -771,14 +940,16 @@ final class PushRegistrationManager {
         }
     }
 
-    private func preserveDeregistration(_ entry: PendingPushDeregistration) {
+    private func preserveDeregistration(_ entry: PendingPushDeregistration) -> Bool {
         do {
             try enqueueDeregistration(entry)
+            return true
         } catch {
             if !unsavedDeregistrations.contains(where: { sameBinding($0, entry) }) {
                 unsavedDeregistrations.append(entry)
             }
             lastRegistrationError = error.localizedDescription
+            return false
         }
     }
 
