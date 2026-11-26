@@ -641,4 +641,210 @@ struct PushNotificationTests {
         #expect(manager.activeBindingIDForCurrentProfile() == bindingA2)
         #expect(manager.loadPendingDeregistrations().isEmpty)
     }
+
+    @Test
+    func pendingDeleteDoesNotRunDuringInFlightPostForSameProfileAndIsPurgedWhenBindingReused() async {
+        let keychain = InMemoryKeychainAccess()
+        let endpointA = URL(string: "https://server-a.example.com")!
+        let endpointB = URL(string: "https://server-b.example.com")!
+        var activeEndpoint = endpointA
+        var activeKey = "key-a"
+
+        let bindingA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let bindingB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+        var serverAOnline = true
+        var serverADisabled = false
+        var holdNextPostA = false
+        var releasePostA: CheckedContinuation<PushDeviceRegisterResponse, Error>?
+        var deleteCallsAfterPostStarted = 0
+
+        let manager = PushRegistrationManager(
+            keychain: keychain,
+            registerCall: { req, endpoint, _ in
+                if endpoint == endpointA {
+                    if holdNextPostA {
+                        holdNextPostA = false
+                        return try await withCheckedThrowingContinuation { cont in
+                            releasePostA = cont
+                        }
+                    }
+                    return PushDeviceRegisterResponse(
+                        deviceID: req.deviceID,
+                        bindingID: bindingA,
+                        enabled: true,
+                        registrationVersion: 1,
+                        apnsEnv: req.apnsEnv
+                    )
+                }
+                return PushDeviceRegisterResponse(
+                    deviceID: req.deviceID,
+                    bindingID: bindingB,
+                    enabled: true,
+                    registrationVersion: 1,
+                    apnsEnv: req.apnsEnv
+                )
+            },
+            deleteCall: { _, bindingID, endpoint, _ in
+                if endpoint == endpointA {
+                    if !serverAOnline {
+                        throw ServerError.http(503, "server A offline")
+                    }
+                    if releasePostA != nil {
+                        deleteCallsAfterPostStarted += 1
+                    }
+                    if bindingID == bindingA {
+                        serverADisabled = true
+                    }
+                }
+            },
+            configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
+            isPushEnabled: { true },
+            resolveAPNsEnv: { "sandbox" },
+            bundleIDProvider: { "com.dzarlax.health-sync" },
+            localeProvider: { "en" },
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+
+        let tokenHex = String(repeating: "7", count: 64)
+
+        // 1. Register bindingA on server A.
+        await manager.syncRegistration(tokenHex: tokenHex)
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
+
+        // 2. Switch A -> B while server A is offline -> DELETE(bindingA) stays queued.
+        serverAOnline = false
+        activeEndpoint = endpointB
+        activeKey = "key-b"
+        await manager.handleConfigurationChanged(pushEnabled: true)
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingB)
+        #expect(manager.loadPendingDeregistrations().map(\.bindingID) == [bindingA])
+
+        // 3. Switch B -> A: initial drain still hits 503 for server A, then
+        // POST(A) starts and suspends waiting for server A's response.
+        holdNextPostA = true
+        activeEndpoint = endpointA
+        activeKey = "key-a"
+        let switchBackTask = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
+        while releasePostA == nil { await Task.yield() }
+
+        // 4. Server A is now reachable; foreground return triggers drain while
+        // POST(A) is still awaiting its response (local active registration is still nil).
+        serverAOnline = true
+        await manager.drainPendingDeregistrations()
+        #expect(deleteCallsAfterPostStarted == 0)
+        #expect(!serverADisabled)
+
+        // 5. Server A's POST response arrives reusing bindingA.
+        let deviceID = try! manager.ensureDeviceID()
+        releasePostA?.resume(returning: PushDeviceRegisterResponse(
+            deviceID: deviceID,
+            bindingID: bindingA,
+            enabled: true,
+            registrationVersion: 1,
+            apnsEnv: "sandbox"
+        ))
+        await switchBackTask.value
+
+        // Active registration is saved, server A was NEVER disabled, and queue is empty.
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingA)
+        #expect(deleteCallsAfterPostStarted == 0)
+        #expect(!serverADisabled)
+        #expect(manager.loadPendingDeregistrations().isEmpty)
+    }
+
+    @Test
+    func deferredDeleteRunsAfterInFlightPostReturnsNewBinding() async {
+        let keychain = InMemoryKeychainAccess()
+        let endpointA = URL(string: "https://server-a.example.com")!
+        let endpointB = URL(string: "https://server-b.example.com")!
+        var activeEndpoint = endpointA
+        var activeKey = "key-a"
+
+        let bindingA1 = "11111111-1111-4111-8111-111111111111"
+        let bindingA2 = "22222222-2222-4222-8222-222222222222"
+        let bindingB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+        var serverAOnline = true
+        var holdNextPostA = false
+        var releasePostA: CheckedContinuation<PushDeviceRegisterResponse, Error>?
+        var deletedOnA: [String] = []
+
+        let manager = PushRegistrationManager(
+            keychain: keychain,
+            registerCall: { req, endpoint, _ in
+                if endpoint == endpointA {
+                    if holdNextPostA {
+                        holdNextPostA = false
+                        return try await withCheckedThrowingContinuation { cont in
+                            releasePostA = cont
+                        }
+                    }
+                    return PushDeviceRegisterResponse(
+                        deviceID: req.deviceID,
+                        bindingID: bindingA1,
+                        enabled: true,
+                        registrationVersion: 1,
+                        apnsEnv: req.apnsEnv
+                    )
+                }
+                return PushDeviceRegisterResponse(
+                    deviceID: req.deviceID,
+                    bindingID: bindingB,
+                    enabled: true,
+                    registrationVersion: 1,
+                    apnsEnv: req.apnsEnv
+                )
+            },
+            deleteCall: { _, bindingID, endpoint, _ in
+                if endpoint == endpointA {
+                    if !serverAOnline {
+                        throw ServerError.http(503, "server A offline")
+                    }
+                    deletedOnA.append(bindingID)
+                }
+            },
+            configSnapshot: { self.makeConfig(endpoint: activeEndpoint, apiKey: activeKey) },
+            isPushEnabled: { true },
+            resolveAPNsEnv: { "sandbox" },
+            bundleIDProvider: { "com.dzarlax.health-sync" },
+            localeProvider: { "en" },
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+
+        let tokenHex = String(repeating: "8", count: 64)
+
+        await manager.syncRegistration(tokenHex: tokenHex)
+        serverAOnline = false
+        activeEndpoint = endpointB
+        activeKey = "key-b"
+        await manager.handleConfigurationChanged(pushEnabled: true)
+        #expect(manager.loadPendingDeregistrations().map(\.bindingID) == [bindingA1])
+
+        holdNextPostA = true
+        activeEndpoint = endpointA
+        activeKey = "key-a"
+        let switchBackTask = Task { await manager.handleConfigurationChanged(pushEnabled: true) }
+        while releasePostA == nil { await Task.yield() }
+
+        // Drain while POST(A) is in flight -> must defer DELETE(bindingA1).
+        serverAOnline = true
+        await manager.drainPendingDeregistrations()
+        #expect(deletedOnA.isEmpty)
+
+        // POST(A) returns a brand-new bindingA2 -> deferred DELETE(bindingA1) now runs cleanly.
+        let deviceID = try! manager.ensureDeviceID()
+        releasePostA?.resume(returning: PushDeviceRegisterResponse(
+            deviceID: deviceID,
+            bindingID: bindingA2,
+            enabled: true,
+            registrationVersion: 2,
+            apnsEnv: "sandbox"
+        ))
+        await switchBackTask.value
+
+        #expect(manager.activeBindingIDForCurrentProfile() == bindingA2)
+        #expect(deletedOnA == [bindingA1])
+        #expect(manager.loadPendingDeregistrations().isEmpty)
+    }
 }

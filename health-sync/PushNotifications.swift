@@ -278,6 +278,8 @@ final class PushRegistrationManager {
     private var registrationEpoch = UUID()
     private var unsupportedRetryState: (fingerprint: String, retryAfter: Date)?
     private var inFlightDeregistrations: [String: InFlightDeregistration] = [:]
+    private var inFlightRegistrations: [String: Int] = [:]
+    private var deferredDeregistrationFingerprints: Set<String> = []
 
     init(
         keychain: KeychainAccess? = nil,
@@ -435,6 +437,11 @@ final class PushRegistrationManager {
         let capturedEpoch = initialEpoch
         let capturedConfig = refreshedConfig
 
+        // Hold mutual exclusion against DELETE for the same profile across the
+        // entire POST suspension window so a queued DELETE cannot run while
+        // POST is in flight and disable a binding_id the server just reused.
+        inFlightRegistrations[capturedConfig.fingerprint, default: 0] += 1
+        let registerResult: Result<PushDeviceRegisterResponse, Error>
         do {
             let deviceID = try ensureDeviceID()
             let response = try await registerCall(
@@ -448,14 +455,31 @@ final class PushRegistrationManager {
                 capturedConfig.endpoint,
                 capturedConfig.apiKey
             )
+            registerResult = .success(response)
+        } catch {
+            registerResult = .failure(error)
+        }
 
+        // Decrement and commit local state synchronously (no `await` in between)
+        // before running any deferred or newly-queued deregistrations.
+        let remainingRegistrations = (inFlightRegistrations[capturedConfig.fingerprint] ?? 1) - 1
+        if remainingRegistrations <= 0 {
+            inFlightRegistrations.removeValue(forKey: capturedConfig.fingerprint)
+        } else {
+            inFlightRegistrations[capturedConfig.fingerprint] = remainingRegistrations
+        }
+
+        var shouldDrainDeregistrations = false
+
+        switch registerResult {
+        case .success(let response):
             let stillSameProfile = (try? configSnapshot())?.fingerprint == capturedConfig.fingerprint
             let pushStillEnabled = isPushEnabled()
 
             // If the user switched away from this profile or disabled pushes while
             // POST was in flight, do NOT persist the stale registration — enqueue
             // DELETE for the committed binding_id on the original server immediately.
-            guard pushStillEnabled, stillSameProfile else {
+            if !pushStillEnabled || !stillSameProfile {
                 enqueueDeregistration(PendingPushDeregistration(
                     deviceID: response.deviceID,
                     bindingID: response.bindingID,
@@ -463,48 +487,53 @@ final class PushRegistrationManager {
                     apiKey: capturedConfig.apiKey,
                     queuedAt: now()
                 ))
-                await drainPendingDeregistrations()
-                return
+                shouldDrainDeregistrations = true
+            } else if capturedEpoch == registrationEpoch {
+                let record = ActivePushRegistration(
+                    deviceID: response.deviceID,
+                    bindingID: response.bindingID,
+                    endpoint: capturedConfig.endpoint,
+                    apiKey: capturedConfig.apiKey,
+                    endpointFingerprint: capturedConfig.fingerprint,
+                    tokenHash: tokenHash,
+                    apnsEnv: response.apnsEnv,
+                    locale: locale,
+                    confirmedAt: now()
+                )
+                do {
+                    try saveActiveRegistration(record)
+                    lastRegistrationError = nil
+                    unsupportedRetryState = nil
+                    unsupportedRetryAfter = nil
+                } catch {
+                    lastRegistrationError = error.localizedDescription
+                }
             }
+            // Rapid A -> B -> A or disable -> re-enable (`capturedEpoch != registrationEpoch`
+            // while `pushStillEnabled && stillSameProfile`): drop the stale response
+            // without deleting or overwriting the current epoch's state.
 
-            // Rapid A -> B -> A or disable -> re-enable: the user wants pushes
-            // enabled on this exact profile again, and the server reuses
-            // binding_id while a registration stays active. Drop the stale
-            // response without deleting or overwriting the current epoch's state.
-            guard capturedEpoch == registrationEpoch else {
-                return
+        case .failure(let error):
+            let stillSameProfile = (try? configSnapshot())?.fingerprint == capturedConfig.fingerprint
+            if capturedEpoch == registrationEpoch, stillSameProfile {
+                if let serverError = error as? ServerError, case .http(404, _) = serverError {
+                    let retryAt = now().addingTimeInterval(PushNotificationConstants.unsupportedRetryInterval)
+                    unsupportedRetryState = (capturedConfig.fingerprint, retryAt)
+                    unsupportedRetryAfter = retryAt
+                    lastRegistrationError = nil
+                } else {
+                    lastRegistrationError = error.localizedDescription
+                }
             }
+        }
 
-            let record = ActivePushRegistration(
-                deviceID: response.deviceID,
-                bindingID: response.bindingID,
-                endpoint: capturedConfig.endpoint,
-                apiKey: capturedConfig.apiKey,
-                endpointFingerprint: capturedConfig.fingerprint,
-                tokenHash: tokenHash,
-                apnsEnv: response.apnsEnv,
-                locale: locale,
-                confirmedAt: now()
-            )
-            try saveActiveRegistration(record)
-            lastRegistrationError = nil
-            unsupportedRetryState = nil
-            unsupportedRetryAfter = nil
-        } catch let error as ServerError {
-            let stillSameProfile = (try? configSnapshot())?.fingerprint == capturedConfig.fingerprint
-            guard capturedEpoch == registrationEpoch, stillSameProfile else { return }
-            if case .http(404, _) = error {
-                let retryAt = now().addingTimeInterval(PushNotificationConstants.unsupportedRetryInterval)
-                unsupportedRetryState = (capturedConfig.fingerprint, retryAt)
-                unsupportedRetryAfter = retryAt
-                lastRegistrationError = nil
-            } else {
-                lastRegistrationError = error.localizedDescription
-            }
-        } catch {
-            let stillSameProfile = (try? configSnapshot())?.fingerprint == capturedConfig.fingerprint
-            guard capturedEpoch == registrationEpoch, stillSameProfile else { return }
-            lastRegistrationError = error.localizedDescription
+        if remainingRegistrations <= 0,
+           deferredDeregistrationFingerprints.remove(capturedConfig.fingerprint) != nil {
+            shouldDrainDeregistrations = true
+        }
+
+        if shouldDrainDeregistrations {
+            await drainPendingDeregistrations()
         }
     }
 
@@ -560,10 +589,25 @@ final class PushRegistrationManager {
             let dedupKey = "\(item.deviceID):\(item.bindingID)"
             guard inFlightDeregistrations[dedupKey] == nil else { continue }
 
+            // Re-check the live queue in case an earlier iteration's await
+            // allowed a POST to purge this entry via saveActiveRegistration.
+            guard loadPendingDeregistrations().contains(where: {
+                $0.deviceID == item.deviceID && $0.bindingID == item.bindingID
+            }) else {
+                continue
+            }
+
             let itemFingerprint = UserDefaultsSyncConfiguration.fingerprint(
                 endpoint: item.endpoint,
                 apiKey: item.apiKey
             )
+
+            // Defer DELETE while a POST for the same profile is in flight so
+            // it cannot race and disable a binding_id that POST is receiving.
+            if inFlightRegistrations[itemFingerprint, default: 0] > 0 {
+                deferredDeregistrationFingerprints.insert(itemFingerprint)
+                continue
+            }
 
             // Never deregister a binding that is currently active on the
             // selected profile while push notifications are enabled.
