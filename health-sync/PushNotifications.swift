@@ -47,9 +47,22 @@ enum AppBadgeSync {
     }
 }
 
+enum PushServerStatus: Equatable {
+    case unknown
+    case direct
+    case relay
+    case notConfiguredOnServer
+    case untrustedRelayURL
+    case appAttestUnsupported
+}
+
 struct PushDeviceRegisterRequest: Codable, Equatable {
     let deviceID: String
-    let apnsToken: String
+    var transport: String? = nil
+    var bindingID: String? = nil
+    let apnsToken: String?
+    var relayGrantID: String? = nil
+    var relayGrantSecret: String? = nil
     let apnsEnv: String
     let bundleID: String
     let locale: String
@@ -58,12 +71,42 @@ struct PushDeviceRegisterRequest: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
+        case transport
+        case bindingID = "binding_id"
         case apnsToken = "apns_token"
+        case relayGrantID = "relay_grant_id"
+        case relayGrantSecret = "relay_grant_secret"
         case apnsEnv = "apns_env"
         case bundleID = "bundle_id"
         case locale
         case inboxContractVersion = "inbox_contract_version"
         case registrationAttemptID = "registration_attempt_id"
+    }
+
+    init(
+        deviceID: String,
+        apnsToken: String?,
+        apnsEnv: String,
+        bundleID: String,
+        locale: String,
+        inboxContractVersion: Int? = PushNotificationConstants.inboxContractVersion,
+        registrationAttemptID: UUID? = nil,
+        transport: String? = nil,
+        bindingID: String? = nil,
+        relayGrantID: String? = nil,
+        relayGrantSecret: String? = nil
+    ) {
+        self.deviceID = deviceID
+        self.transport = transport
+        self.bindingID = bindingID
+        self.apnsToken = apnsToken
+        self.relayGrantID = relayGrantID
+        self.relayGrantSecret = relayGrantSecret
+        self.apnsEnv = apnsEnv
+        self.bundleID = bundleID
+        self.locale = locale
+        self.inboxContractVersion = inboxContractVersion
+        self.registrationAttemptID = registrationAttemptID
     }
 }
 
@@ -97,6 +140,12 @@ struct ActivePushRegistration: Codable, Equatable {
     let confirmedAt: Date
     var inboxContractVersion: Int? = nil
     var registrationAttemptID: UUID? = nil
+    var transportMode: String? = nil
+    var relayGrantID: String? = nil
+    var relayClientGrantKey: UUID? = nil
+    var relayOrigin: String? = nil
+    var relayLastRefreshedAt: Date? = nil
+    var relayAttestKeyID: String? = nil
 }
 
 private struct PendingPushRegistrationAttempt: Codable {
@@ -326,7 +375,7 @@ final class PushKeychainStorage {
 }
 
 @MainActor
-private struct PushSystemKeychainAccess: KeychainAccess {
+struct PushSystemKeychainAccess: KeychainAccess {
     func copy(_ query: [CFString: Any]) -> (OSStatus, Any?) {
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -345,17 +394,21 @@ final class PushRegistrationManager {
     typealias RegisterCall = @MainActor (PushDeviceRegisterRequest, URL, String) async throws -> PushDeviceRegisterResponse
     typealias DeleteCall = @MainActor (String, String, URL, String) async throws -> Void
     typealias CancelAttemptCall = @MainActor (String, UUID, URL, String) async throws -> Void
+    typealias FetchPreferencesCall = @MainActor (URL, String) async throws -> NotificationPreferencesResponse
     typealias ConfigSnapshot = @MainActor () throws -> SyncConfiguration
 
     static let shared = PushRegistrationManager()
 
     private(set) var lastRegistrationError: String?
     private(set) var unsupportedRetryAfter: Date?
+    private(set) var pushServerStatus: PushServerStatus = .unknown
 
     private let store: PushKeychainStorage
+    private let relayCoordinator: RelayGrantCoordinator
     private let registerCall: RegisterCall
     private let deleteCall: DeleteCall
     private let cancelAttemptCall: CancelAttemptCall
+    private let fetchPreferencesCall: FetchPreferencesCall?
     private let configSnapshot: ConfigSnapshot
     private let isPushEnabled: @MainActor () -> Bool
     private let resolveAPNsEnv: () -> String
@@ -400,6 +453,8 @@ final class PushRegistrationManager {
                 apiKey: apiKey
             )
         },
+        fetchPreferencesCall: FetchPreferencesCall? = nil,
+        relayCoordinator: RelayGrantCoordinator? = nil,
         configSnapshot: @escaping ConfigSnapshot = { try UserDefaultsSyncConfiguration.shared.snapshot() },
         isPushEnabled: @escaping @MainActor () -> Bool = {
             UserDefaults.standard.bool(forKey: PushNotificationConstants.enabledDefaultsKey)
@@ -417,10 +472,13 @@ final class PushRegistrationManager {
         onRegistrationWait: (() -> Void)? = nil,
         resetBadge: @escaping @MainActor () -> Void = { AppBadgeSync.update(unreadCount: 0) }
     ) {
-        self.store = PushKeychainStorage(access: keychain ?? PushSystemKeychainAccess())
+        let resolvedKeychain = keychain ?? PushSystemKeychainAccess()
+        self.store = PushKeychainStorage(access: resolvedKeychain)
+        self.relayCoordinator = relayCoordinator ?? RelayGrantCoordinator(keychain: resolvedKeychain, now: now)
         self.registerCall = registerCall
         self.deleteCall = deleteCall
         self.cancelAttemptCall = cancelAttemptCall
+        self.fetchPreferencesCall = fetchPreferencesCall
         self.configSnapshot = configSnapshot
         self.isPushEnabled = isPushEnabled
         self.resolveAPNsEnv = resolveAPNsEnv
@@ -616,12 +674,265 @@ final class PushRegistrationManager {
             let tokenHash = Self.sha256Hex(latestTokenHex)
             let capturedEpoch = expectedEpoch
             let capturedConfig = refreshedConfig
+            let contractVersion = PushNotificationConstants.inboxContractVersion
+
+            // Determine server push transport mode with full backward compatibility:
+            // - 404 on /api/notifications/preferences (Stage 2 server) -> Direct fallback
+            // - 200 with nil/missing apns_transport_mode (Stage 3 server) -> Direct fallback
+            // - 200 with "direct" -> Direct
+            // - 200 with "relay" -> Validate pinned origin -> App Attest + Relay grant
+            // - 200 with "none" -> Explicit notConfiguredOnServer without POST
+            enum ResolvedTransport {
+                case direct
+                case relay(URL)
+                case stop(PushServerStatus, String?)
+            }
+            let resolvedTransport: ResolvedTransport
+            do {
+                let prefs: NotificationPreferencesResponse?
+                if let customFetch = fetchPreferencesCall {
+                    prefs = try await customFetch(capturedConfig.endpoint, capturedConfig.apiKey)
+                } else if SyncRuntime.isTestMode {
+                    prefs = nil
+                } else {
+                    prefs = try await ServerClient.shared.notificationPreferences(
+                        endpoint: capturedConfig.endpoint,
+                        apiKey: capturedConfig.apiKey
+                    )
+                }
+                if let prefs, let rawMode = prefs.apnsTransportMode?.trimmingCharacters(in: .whitespacesAndNewlines), !rawMode.isEmpty {
+                    switch rawMode {
+                    case "direct":
+                        resolvedTransport = .direct
+                    case "none":
+                        resolvedTransport = .stop(.notConfiguredOnServer, nil)
+                    case "relay":
+                        if let trustedURL = relayCoordinator.validateOrigin(prefs.apnsRelayURL) {
+                            resolvedTransport = .relay(trustedURL)
+                        } else {
+                            resolvedTransport = .stop(.untrustedRelayURL, RelayPushError.untrustedRelayOrigin.localizedDescription)
+                        }
+                    default:
+                        resolvedTransport = .stop(.notConfiguredOnServer, nil)
+                    }
+                } else {
+                    // Stage 3 server (200 without apns_transport_mode) or test mode without custom fetch.
+                    resolvedTransport = .direct
+                }
+            } catch let serverError as ServerError {
+                if case .http(404, _) = serverError {
+                    // Stage 2 server without /api/notifications/preferences -> preserve Direct fallback.
+                    resolvedTransport = .direct
+                } else {
+                    lastRegistrationError = serverError.localizedDescription
+                    continue
+                }
+            } catch {
+                lastRegistrationError = error.localizedDescription
+                continue
+            }
+
+            if capturedEpoch != registrationEpoch || !isPushEnabled() || (try? configSnapshot())?.fingerprint != fingerprint {
+                continue
+            }
+
+            switch resolvedTransport {
+            case .stop(let status, let errMessage):
+                pushServerStatus = status
+                lastRegistrationError = errMessage
+                let retryAt = now().addingTimeInterval(PushNotificationConstants.unsupportedRetryInterval)
+                unsupportedRetryState = (fingerprint, retryAt)
+                unsupportedRetryAfter = retryAt
+                continue
+            case .direct:
+                pushServerStatus = .direct
+            case .relay:
+                pushServerStatus = .relay
+            }
+
+            // Fast-path for existing active Relay registration: rotate APNs token
+            // directly in Relay or refresh 90-day TTL without minting a new grant.
+            // Re-verify epoch, push toggle, profile fingerprint, and live active
+            // registration AFTER every `await` so a late Relay response can never
+            // resurrect a disabled or switched-away registration. When Relay reports
+            // that this grant is terminal (404/409/410 or absent from active_grant_ids),
+            // clear the dead active registration and fall through to mint a fresh grant.
+            if case .relay(let relayURL) = resolvedTransport,
+               let active = loadActiveRegistration(),
+               active.endpointFingerprint == fingerprint,
+               active.transportMode == "relay",
+               let activeGrantID = active.relayGrantID,
+               active.relayOrigin == relayURL.absoluteString,
+               active.apnsEnv == env,
+               active.locale == locale,
+               active.inboxContractVersion == contractVersion,
+               (try? relayCoordinator.hasPendingGrantRevocation(grantID: activeGrantID, relayOrigin: relayURL.absoluteString)) == false {
+                var mustReissueRelayGrant = false
+                if active.tokenHash != tokenHash {
+                    do {
+                        let resp = try await relayCoordinator.updateDeviceToken(
+                            relayURL: relayURL,
+                            apnsToken: latestTokenHex,
+                            apnsEnv: env
+                        )
+                        guard isRelayActiveRegistrationStillCurrent(
+                            capturedEpoch: capturedEpoch,
+                            fingerprint: fingerprint,
+                            expectedBindingID: active.bindingID,
+                            expectedGrantID: activeGrantID
+                        ) else {
+                            continue
+                        }
+                        if resp.confirmsGrantActive(activeGrantID) {
+                            let refreshed = ActivePushRegistration(
+                                deviceID: active.deviceID,
+                                bindingID: active.bindingID,
+                                endpoint: active.endpoint,
+                                apiKey: active.apiKey,
+                                endpointFingerprint: active.endpointFingerprint,
+                                tokenHash: tokenHash,
+                                apnsEnv: active.apnsEnv,
+                                locale: active.locale,
+                                confirmedAt: now(),
+                                inboxContractVersion: active.inboxContractVersion,
+                                registrationAttemptID: active.registrationAttemptID,
+                                transportMode: active.transportMode,
+                                relayGrantID: active.relayGrantID,
+                                relayClientGrantKey: active.relayClientGrantKey,
+                                relayOrigin: active.relayOrigin,
+                                relayLastRefreshedAt: active.relayLastRefreshedAt,
+                                relayAttestKeyID: active.relayAttestKeyID
+                            )
+                            try saveActiveRegistration(refreshed)
+                            lastRegistrationError = nil
+                            continue
+                        }
+                        mustReissueRelayGrant = true
+                    } catch let relayErr as RelayPushError where relayErr.isTerminalGrantError {
+                        guard isRelayActiveRegistrationStillCurrent(
+                            capturedEpoch: capturedEpoch,
+                            fingerprint: fingerprint,
+                            expectedBindingID: active.bindingID,
+                            expectedGrantID: activeGrantID
+                        ) else {
+                            continue
+                        }
+                        mustReissueRelayGrant = true
+                    } catch {
+                        lastRegistrationError = error.localizedDescription
+                        continue
+                    }
+                } else {
+                    let lastRefresh = active.relayLastRefreshedAt ?? active.confirmedAt
+                    if relayCoordinator.requiresGrantValidation(activeGrantID) ||
+                        currentNow.timeIntervalSince(lastRefresh) >= RelayPushConstants.refreshInterval {
+                        do {
+                            try await relayCoordinator.refreshGrant(
+                                relayURL: relayURL,
+                                grantID: activeGrantID,
+                                apnsToken: latestTokenHex,
+                                inboxContractVersion: contractVersion
+                            )
+                            guard isRelayActiveRegistrationStillCurrent(
+                                capturedEpoch: capturedEpoch,
+                                fingerprint: fingerprint,
+                                expectedBindingID: active.bindingID,
+                                expectedGrantID: activeGrantID
+                            ) else {
+                                continue
+                            }
+                            let refreshed = ActivePushRegistration(
+                                deviceID: active.deviceID,
+                                bindingID: active.bindingID,
+                                endpoint: active.endpoint,
+                                apiKey: active.apiKey,
+                                endpointFingerprint: active.endpointFingerprint,
+                                tokenHash: active.tokenHash,
+                                apnsEnv: active.apnsEnv,
+                                locale: active.locale,
+                                confirmedAt: now(),
+                                inboxContractVersion: active.inboxContractVersion,
+                                registrationAttemptID: active.registrationAttemptID,
+                                transportMode: active.transportMode,
+                                relayGrantID: active.relayGrantID,
+                                relayClientGrantKey: active.relayClientGrantKey,
+                                relayOrigin: active.relayOrigin,
+                                relayLastRefreshedAt: now(),
+                                relayAttestKeyID: active.relayAttestKeyID
+                            )
+                            try saveActiveRegistration(refreshed)
+                            lastRegistrationError = nil
+                            continue
+                        } catch let relayErr as RelayPushError where relayErr.isTerminalGrantError {
+                            guard isRelayActiveRegistrationStillCurrent(
+                                capturedEpoch: capturedEpoch,
+                                fingerprint: fingerprint,
+                                expectedBindingID: active.bindingID,
+                                expectedGrantID: activeGrantID
+                            ) else {
+                                continue
+                            }
+                            mustReissueRelayGrant = true
+                        } catch {
+                            lastRegistrationError = error.localizedDescription
+                            continue
+                        }
+                    } else {
+                        continue
+                    }
+                }
+
+                if mustReissueRelayGrant {
+                    guard isRelayActiveRegistrationStillCurrent(
+                        capturedEpoch: capturedEpoch,
+                        fingerprint: fingerprint,
+                        expectedBindingID: active.bindingID,
+                        expectedGrantID: activeGrantID
+                    ) else {
+                        continue
+                    }
+                    try? saveActiveRegistration(nil)
+                    if let oldClientKey = active.relayClientGrantKey {
+                        relayCoordinator.clearPendingGrantAttempt(forFingerprint: fingerprint, clientGrantKey: oldClientKey)
+                    }
+                    // Fall through to mint a fresh Relay grant and re-register on the self-hosted server.
+                }
+            }
+
             let attempt: PendingPushRegistrationAttempt
             let request: PushDeviceRegisterRequest
+            var relayAttemptMeta: (attempt: PendingRelayGrantAttempt, grantID: String, relayURL: URL)? = nil
             do {
                 let deviceID = try ensureDeviceID()
-                let contractVersion = PushNotificationConstants.inboxContractVersion
-                let requestHash = Self.sha256Hex([deviceID, tokenHash, env, bundleID, locale, String(contractVersion)].joined(separator: "\0"))
+                let requestHash: String
+                if case .relay(let relayURL) = resolvedTransport {
+                    guard relayCoordinator.isAppAttestSupported else {
+                        pushServerStatus = .appAttestUnsupported
+                        lastRegistrationError = RelayPushError.appAttestUnsupported.localizedDescription
+                        continue
+                    }
+                    let obtained = try await relayCoordinator.obtainGrant(
+                        relayURL: relayURL,
+                        endpointFingerprint: fingerprint,
+                        apnsToken: latestTokenHex,
+                        apnsEnv: env,
+                        inboxContractVersion: contractVersion
+                    )
+                    if capturedEpoch != registrationEpoch || !isPushEnabled() || (try? configSnapshot())?.fingerprint != fingerprint {
+                        relayCoordinator.movePendingGrantAttemptToRevocationQueue(forFingerprint: fingerprint)
+                        await relayCoordinator.drainPendingRevocations()
+                        continue
+                    }
+                    relayAttemptMeta = (obtained.attempt, obtained.grantID, relayURL)
+                    let secretHash = Self.sha256Hex(obtained.attempt.deliverySecret)
+                    requestHash = Self.sha256Hex([
+                        "relay", deviceID, obtained.attempt.regID.uuidString.lowercased(),
+                        obtained.grantID, secretHash, env, bundleID, locale, String(contractVersion),
+                    ].joined(separator: "\0"))
+                } else {
+                    requestHash = Self.sha256Hex([deviceID, tokenHash, env, bundleID, locale, String(contractVersion)].joined(separator: "\0"))
+                }
+
                 var attempts = try readRegistrationAttempts()
                 if let previous = attempts[fingerprint] {
                     if previous.cancellationRequested || previous.requestHash != requestHash ||
@@ -635,8 +946,10 @@ final class PushRegistrationManager {
                     }
                     attempt = previous
                 } else {
-                    if let active = loadActiveRegistration(),
+                    if case .direct = resolvedTransport,
+                       let active = loadActiveRegistration(),
                        active.endpointFingerprint == fingerprint,
+                       (active.transportMode ?? "direct") == "direct",
                        active.tokenHash == tokenHash,
                        active.apnsEnv == env,
                        active.locale == locale,
@@ -657,12 +970,29 @@ final class PushRegistrationManager {
                     attempts[fingerprint] = attempt
                     try saveRegistrationAttempts(attempts)
                 }
-                request = PushDeviceRegisterRequest(
-                    deviceID: deviceID, apnsToken: latestTokenHex, apnsEnv: env,
-                    bundleID: bundleID, locale: locale,
-                    inboxContractVersion: contractVersion,
-                    registrationAttemptID: attempt.id
-                )
+
+                if let relayMeta = relayAttemptMeta {
+                    request = PushDeviceRegisterRequest(
+                        deviceID: deviceID,
+                        apnsToken: nil,
+                        apnsEnv: env,
+                        bundleID: bundleID,
+                        locale: locale,
+                        inboxContractVersion: contractVersion,
+                        registrationAttemptID: attempt.id,
+                        transport: "relay",
+                        bindingID: relayMeta.attempt.regID.uuidString.lowercased(),
+                        relayGrantID: relayMeta.grantID,
+                        relayGrantSecret: relayMeta.attempt.deliverySecret
+                    )
+                } else {
+                    request = PushDeviceRegisterRequest(
+                        deviceID: deviceID, apnsToken: latestTokenHex, apnsEnv: env,
+                        bundleID: bundleID, locale: locale,
+                        inboxContractVersion: contractVersion,
+                        registrationAttemptID: attempt.id
+                    )
+                }
             } catch {
                 lastRegistrationError = error.localizedDescription
                 continue
@@ -718,26 +1048,74 @@ final class PushRegistrationManager {
                         locale: locale,
                         confirmedAt: now(),
                         inboxContractVersion: response.inboxContractVersion ?? PushNotificationConstants.inboxContractVersion,
-                        registrationAttemptID: attempt.id
+                        registrationAttemptID: attempt.id,
+                        transportMode: relayAttemptMeta != nil ? "relay" : "direct",
+                        relayGrantID: relayAttemptMeta?.grantID,
+                        relayClientGrantKey: relayAttemptMeta?.attempt.clientGrantKey,
+                        relayOrigin: relayAttemptMeta?.relayURL.absoluteString,
+                        relayLastRefreshedAt: relayAttemptMeta != nil ? now() : nil,
+                        relayAttestKeyID: relayAttemptMeta?.attempt.attestKeyID
                     )
                     do {
+                        if let previous = loadActiveRegistration(),
+                           previous.endpointFingerprint == fingerprint,
+                           let oldGrantID = previous.relayGrantID,
+                           let oldOrigin = previous.relayOrigin,
+                           oldGrantID != record.relayGrantID || oldOrigin != record.relayOrigin {
+                            try relayCoordinator.enqueueGrantRevocation(
+                                grantID: oldGrantID,
+                                relayOrigin: oldOrigin,
+                                attestKeyID: previous.relayAttestKeyID
+                            )
+                        }
                         try saveActiveRegistration(record)
-                        try forgetRegistrationAttempt(attempt)
+                        // Once the active record commits, cleanup of a journal
+                        // entry must not revoke that registration.
+                        try? forgetRegistrationAttempt(attempt)
+                        if let relayMeta = relayAttemptMeta {
+                            relayCoordinator.clearPendingGrantAttempt(
+                                forFingerprint: fingerprint,
+                                clientGrantKey: relayMeta.attempt.clientGrantKey
+                            )
+                        }
                         lastRegistrationError = nil
                         unsupportedRetryState = nil
                         unsupportedRetryAfter = nil
-                        shouldDrainDeregistrations = loadPendingDeregistrations().contains {
-                            $0.fingerprint == fingerprint
-                        }
+                        shouldDrainDeregistrations = !relayCoordinator.loadPendingRevocations().isEmpty ||
+                            loadPendingDeregistrations().contains { $0.fingerprint == fingerprint }
                     } catch {
                         if preserveDeregistration(cleanup) {
                             try? forgetRegistrationAttempt(attempt)
+                        }
+                        if let relayMeta = relayAttemptMeta {
+                            if (try? relayCoordinator.enqueueGrantRevocation(
+                                grantID: relayMeta.grantID,
+                                relayOrigin: relayMeta.relayURL.absoluteString,
+                                attestKeyID: relayMeta.attempt.attestKeyID
+                            )) != nil {
+                                relayCoordinator.clearPendingGrantAttempt(
+                                    forFingerprint: fingerprint,
+                                    clientGrantKey: relayMeta.attempt.clientGrantKey
+                                )
+                            }
                         }
                         lastRegistrationError = error.localizedDescription
                     }
                 } else {
                     if preserveDeregistration(cleanup) {
                         try? forgetRegistrationAttempt(attempt)
+                    }
+                    if let relayMeta = relayAttemptMeta {
+                        if (try? relayCoordinator.enqueueGrantRevocation(
+                            grantID: relayMeta.grantID,
+                            relayOrigin: relayMeta.relayURL.absoluteString,
+                            attestKeyID: relayMeta.attempt.attestKeyID
+                        )) != nil {
+                            relayCoordinator.clearPendingGrantAttempt(
+                                forFingerprint: fingerprint,
+                                clientGrantKey: relayMeta.attempt.clientGrantKey
+                            )
+                        }
                     }
                     shouldDrainDeregistrations = true
                 }
@@ -788,6 +1166,8 @@ final class PushRegistrationManager {
         registrationEpoch = capturedEpoch
         unsupportedRetryState = nil
         unsupportedRetryAfter = nil
+        pushServerStatus = .unknown
+        lastRegistrationError = nil
         resetBadge()
         reconcileActiveRegistration()
         await drainPendingDeregistrations()
@@ -801,7 +1181,9 @@ final class PushRegistrationManager {
         registrationEpoch = UUID()
         unsupportedRetryState = nil
         unsupportedRetryAfter = nil
+        pushServerStatus = .unknown
         resetBadge()
+        relayCoordinator.moveAllPendingGrantAttemptsToRevocationQueue(exceptFingerprint: nil)
         await drainPendingDeregistrations()
     }
 
@@ -823,6 +1205,14 @@ final class PushRegistrationManager {
 
     func drainPendingDeregistrations() async {
         reconcileActiveRegistration()
+        if !isPushEnabled() {
+            relayCoordinator.moveAllPendingGrantAttemptsToRevocationQueue(exceptFingerprint: nil)
+        } else if let currentFP = try? configSnapshot().fingerprint {
+            relayCoordinator.moveAllPendingGrantAttemptsToRevocationQueue(exceptFingerprint: currentFP)
+        }
+        // If clearing an active record failed, retain its queued revoke after
+        // delivery so the record still cannot be reused on the next launch.
+        await relayCoordinator.drainPendingRevocations(retainingGrantID: loadActiveRegistration()?.relayGrantID)
         await drainRegistrationAttempts()
         for item in unsavedDeregistrations {
             do {
@@ -984,8 +1374,34 @@ final class PushRegistrationManager {
         }
     }
 
+    private func isRelayActiveRegistrationStillCurrent(
+        capturedEpoch: UUID,
+        fingerprint: String,
+        expectedBindingID: String,
+        expectedGrantID: String
+    ) -> Bool {
+        guard capturedEpoch == registrationEpoch,
+              isPushEnabled(),
+              (try? configSnapshot())?.fingerprint == fingerprint,
+              let live = loadActiveRegistration(),
+              live.endpointFingerprint == fingerprint,
+              live.transportMode == "relay",
+              live.relayGrantID == expectedGrantID,
+              live.bindingID == expectedBindingID
+        else {
+            return false
+        }
+        return true
+    }
+
     private func reconcileActiveRegistration() {
         guard let active = loadActiveRegistration() else { return }
+        if let grantID = active.relayGrantID,
+           let origin = active.relayOrigin,
+           (try? relayCoordinator.hasPendingGrantRevocation(grantID: grantID, relayOrigin: origin)) == true {
+            moveActiveRegistrationToQueue()
+            return
+        }
         if !isPushEnabled() {
             moveActiveRegistrationToQueue()
             return
@@ -1004,6 +1420,15 @@ final class PushRegistrationManager {
     private func moveActiveRegistrationToQueue() {
         guard let active = loadActiveRegistration() else { return }
         do {
+            if active.transportMode == "relay",
+               let grantID = active.relayGrantID,
+               let relayOrigin = active.relayOrigin {
+                try relayCoordinator.enqueueGrantRevocation(
+                    grantID: grantID,
+                    relayOrigin: relayOrigin,
+                    attestKeyID: active.relayAttestKeyID
+                )
+            }
             try enqueueDeregistration(PendingPushDeregistration(
                 deviceID: active.deviceID,
                 bindingID: active.bindingID,

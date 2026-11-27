@@ -9597,6 +9597,102 @@
           }
         }
       }
+    },
+    "Push notifications are not configured on this server.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Push-уведомления не настроены на этом сервере."
+          }
+        },
+        "sr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Push obaveštenja nisu podešena na ovom serveru."
+          }
+        }
+      }
+    },
+    "Untrusted push relay configuration on this server.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Недоверенная конфигурация push relay на этом сервере."
+          }
+        },
+        "sr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nepouzdana konfiguracija push relay-a na ovom serveru."
+          }
+        }
+      }
+    },
+    "Untrusted push relay configuration": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Недоверенная конфигурация push relay"
+          }
+        },
+        "sr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nepouzdana konfiguracija push relay-a"
+          }
+        }
+      }
+    },
+    "Redirects are not allowed for APNs relay requests": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Редиректы запрещены для запросов к APNs relay"
+          }
+        },
+        "sr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preusmeravanja nisu dozvoljena za APNs relay zahteve"
+          }
+        }
+      }
+    },
+    "App Attest is not supported on this device.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Attest не поддерживается на этом устройстве."
+          }
+        },
+        "sr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Attest nije podržan na ovom uređaju."
+          }
+        }
+      }
+    },
+    "App Attest is not supported on this device": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Attest не поддерживается на этом устройстве"
+          }
+        },
+        "sr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Attest nije podržan na ovom uređaju"
+          }
+        }
+      }
     }
   },
   "version": "1.1"
